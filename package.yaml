@@ -1,0 +1,43 @@
+name:                ssh
+version:             0.1.0.0
+github:              lpeterse/haskell-ssh
+license:             MIT
+author:              Lars Petersen
+maintainer:          info@lars-petersen.net
+copyright:           2017 Lars Petersen
+
+extra-source-files:
+- README.md
+- CHANGELOG.md
+
+synopsis:            SSH protocol implementation
+description:         Please see the README on Github at <https://github.com/lpeterse/haskell-ssh#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+- binary
+
+library:
+  source-dirs: src
+
+executables:
+  haskell-ssh-exe:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - ssh
+
+tests:
+  haskell-ssh-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - ssh
