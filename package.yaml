@@ -16,12 +16,13 @@ description:         Please see the README on Github at <https://github.com/lpet
 dependencies:
 - base >= 4.7 && < 5
 - binary
+- bytestring
 
 library:
   source-dirs: src
 
 executables:
-  haskell-ssh-exe:
+ hssh:
     main:                Main.hs
     source-dirs:         app
     ghc-options:
@@ -30,9 +31,12 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - ssh
+    - socket
+    - binary
+    - bytestring
 
 tests:
-  haskell-ssh-test:
+  hssh-test:
     main:                Spec.hs
     source-dirs:         test
     ghc-options:
