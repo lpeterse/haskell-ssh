@@ -204,7 +204,9 @@ exchangeHash ::
   Hash.Digest Hash.SHA256
 exchangeHash vc vs ic is ks qc qs k
   = Hash.hash $ LBS.toStrict $ BS.toLazyByteString $ mconcat
-  [ BS.byteString              vc
+  [ BS.word32BE                vcLen
+  , BS.byteString              vc
+  , BS.word32BE                vsLen
   , BS.byteString              vs
   , BS.word32BE                icLen
   , BS.word8                   20 -- SSH2_MSG_KEXINIT
@@ -218,19 +220,28 @@ exchangeHash vc vs ic is ks qc qs k
   , curve25519DhSecretBuilder  k
   ] :: Hash.Digest Hash.SHA256
   where
+    vcLen = fromIntegral $     BS.length vc
+    vsLen = fromIntegral $     BS.length vs
     icLen = fromIntegral $ 1 + builderLength (kexInitBuilder ic)
     isLen = fromIntegral $ 1 + builderLength (kexInitBuilder is)
 
 ed25519BlobBuilder :: Ed25519.PublicKey -> BS.Builder
-ed25519BlobBuilder key =
-  BS.byteString "ssh-ed25519" <> BS.byteString (BS.pack $ BA.unpack key)
+ed25519BlobBuilder key = mconcat
+  [ BS.word32BE   51
+  , BS.word32BE   11
+  , BS.byteString "ssh-ed25519"
+  , BS.word32BE   32
+  , BS.byteString (BS.pack $ BA.unpack key)
+  ]
 
 curve25519BlobBuilder :: Curve25519.PublicKey -> BS.Builder
-curve25519BlobBuilder =
-  BS.byteString . BS.pack . BA.unpack
+curve25519BlobBuilder key =
+  BS.word32BE 32 <> BS.byteString (BS.pack $ BA.unpack key)
 
 curve25519DhSecretBuilder  :: Curve25519.DhSecret -> BS.Builder
-curve25519DhSecretBuilder =
+curve25519DhSecretBuilder sec = BS.word32BE 32 <> BS.byteString (BS.pack $ BA.unpack sec)
+{-
+  BS.word32BE 32 <>
   bignum2bytes . BA.unpack
   where
     -- FIXME: not constant time
@@ -242,6 +253,7 @@ curve25519DhSecretBuilder =
           | otherwise = a:as
         ys = BS.pack $ prepend $ dropWhile (==0) xs
         zs = BS.word32BE (fromIntegral $ BS.length ys) <> BS.byteString ys
+-}
 
 kexRequestParser :: B.Get DH.PublicKey
 kexRequestParser = do
