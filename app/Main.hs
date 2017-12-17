@@ -14,6 +14,8 @@ import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 
+import qualified Crypto.Hash                    as Hash
+import qualified Crypto.Hash.Algorithms         as Hash
 import qualified Crypto.PubKey.Curve25519       as Curve25519
 import qualified Crypto.PubKey.Ed25519          as Ed25519
 
@@ -50,7 +52,7 @@ main = bracket open close accept
 
       let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
 
-      let signData = mconcat
+      let exchangeHash = Hash.hash $ LBS.toStrict $ BS.toLazyByteString $ mconcat
             [ BS.byteString clientVersionString
             , serverVersionBuilder
             , kexInitBuilder clientKexInit
@@ -59,9 +61,9 @@ main = bracket open close accept
             , curve25519PublicKeyBuilder clientEphemeralPublicKey
             , curve25519PublicKeyBuilder serverEphemeralPublicKey
             , curve25519DhSecretBuilder  dhSecret
-            ]
+            ] :: Hash.Digest Hash.SHA256
 
-      let signature = Ed25519.sign serverSecretKey serverPublicKey (mempty :: BS.ByteString)
+      let signature = Ed25519.sign serverSecretKey serverPublicKey exchangeHash
       let reply = KexReply {
           serverPublicHostKey      = serverPublicKey
         , serverPublicEphemeralKey = serverEphemeralPublicKey

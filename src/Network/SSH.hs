@@ -40,7 +40,7 @@ serverKexInit = KexMsg
   , key_algorithms
   = [ "curve25519-sha256@libssh.org" ]
   , server_host_key_algorithms
-  = [ "ecdsa-sha2-nistp256-cert-v01@openssh.com" ]
+  = [ "ssh-ed25519" ]
   , encryption_algorithms_client_to_server
   = [ "chacha20-poly1305@openssh.com" ]
   , encryption_algorithms_server_to_client
