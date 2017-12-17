@@ -183,7 +183,8 @@ kexReplyBuilder reply = mconcat
     signature    = BS.pack $ BA.unpack (exchangeHashSignature reply)
     signatureLen = BS.length signature
 
-
+newKeysBuilder :: BS.Builder
+newKeysBuilder = BS.word8 21
 
 exchangeHash ::
   BS.ByteString ->         -- client version string
@@ -268,3 +269,12 @@ maxPacketSize = 32767
 builderLength :: BS.Builder -> Int64
 builderLength =
   LBS.length . BS.toLazyByteString
+
+deriveKey :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> Hash.Digest Hash.SHA256 -> BS.ByteString -> Hash.Digest Hash.SHA256
+deriveKey sec hash sess i =
+  Hash.hashFinalize    $
+  flip Hash.hashUpdate sess $
+  flip Hash.hashUpdate i    $
+  flip Hash.hashUpdate hash $
+  flip Hash.hashUpdate sec
+  Hash.hashInit

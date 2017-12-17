@@ -15,6 +15,7 @@ import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 
+import qualified Crypto.Cipher.ChaChaPoly1305   as ChaChaPoly1305
 import qualified Crypto.Hash                    as Hash
 import qualified Crypto.Hash.Algorithms         as Hash
 import qualified Crypto.PubKey.Curve25519       as Curve25519
@@ -72,5 +73,18 @@ main = bracket open close accept
       print reply
       S.sendAllBuilder s 4096 (packetize $ kexReplyBuilder reply) S.msgNoSignal
 
-      bs <- S.receive s 32000 S.msgNoSignal
-      print bs
+      S.sendAllBuilder s 4096 (packetize $ newKeysBuilder) S.msgNoSignal
+
+      let ivCS      = deriveKey dhSecret hash hash "A"
+      let ivSC      = deriveKey dhSecret hash hash "B"
+      let ekCS      = deriveKey dhSecret hash hash "C"
+      let ekSC      = deriveKey dhSecret hash hash "D"
+      let ikCS      = deriveKey dhSecret hash hash "E"
+      let ikSC      = deriveKey dhSecret hash hash "F"
+
+      nonce        <- ChaChaPoly1305.nonce12
+      cryptoState1 <- ChaChaPoly1305.initialize dhSecret
+
+      forever $ do
+        bs <- S.receive s 32000 S.msgNoSignal
+        print bs
