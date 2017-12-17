@@ -24,7 +24,7 @@ main = bracket open close accept
     accept s = do
       S.setSocketOption s (S.ReuseAddress True)
       S.setSocketOption s (S.V6Only False)
-      S.bind s (S.SocketAddressInet6 S.inet6Any 8080 0 0)
+      S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
       S.listen s 5
       forever $ bracket (S.accept s) (S.close . fst) serve
     serve (s,addr) = do
@@ -49,7 +49,7 @@ main = bracket open close accept
         , exchangeHashSignature    = signature
         }
       print reply
+      S.sendAllBuilder s 4096 (packetize $ kexReplyBuilder reply) S.msgNoSignal
 
-      S.sendAllBuilder s 4096 (kexReplyBuilder reply) S.msgNoSignal
       bs <- S.receive s 32000 S.msgNoSignal
       print bs

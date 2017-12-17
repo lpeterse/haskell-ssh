@@ -15,6 +15,7 @@ import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.Error as DH
 import qualified Data.ByteArray as BA
+import qualified Data.ByteString.Lazy as LBS
 
 data KexMsg
   = KexMsg
@@ -173,16 +174,38 @@ data KexReply
   , exchangeHashSignature    :: Ed25519.Signature
   } deriving (Show)
 
+packetize :: BS.Builder -> BS.Builder
+packetize payload = mconcat
+  [ BS.word32BE $ fromIntegral packetLen
+  , BS.word8    $ fromIntegral paddingLen
+  , payload
+  , padding
+  ]
+  where
+    packetLen  = 1 + payloadLen + paddingLen
+    payloadLen = fromIntegral $ LBS.length (BS.toLazyByteString payload)
+    paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8
+    padding    = BS.byteString (BS.replicate paddingLen 0)
+
 kexReplyBuilder :: KexReply -> BS.Builder
 kexReplyBuilder reply = mconcat
-  [ BS.word8      31 -- message type
-  , BS.word32BE   51 -- host key len
-  , BS.byteString "ssh-ed25519"
-  , BS.word32BE   32 -- host key data len
+  [ BS.word8        31 -- message type
+  , BS.word32BE     51 -- host key len
+  , BS.word32BE     11 -- host key algorithm name len
+  , BS.byteString   "ssh-ed25519"
+  , BS.word32BE     32 -- host key data len
   , BS.byteString $ BS.pack $ BA.unpack (serverPublicHostKey reply)
-  , BS.word32BE   32 -- ephemeral key len
+  , BS.word32BE     32 -- ephemeral key len
   , BS.byteString $ BS.pack $ BA.unpack (serverPublicEphemeralKey reply)
+  , BS.word32BE   $ 4 + 11 + 4 + fromIntegral signatureLen
+  , BS.word32BE     11 -- algorithm name len
+  , BS.byteString   "ssh-ed25519"
+  , BS.word32BE   $ fromIntegral signatureLen
+  , BS.byteString   signature
   ]
+  where
+    signature    = BS.pack $ BA.unpack (exchangeHashSignature reply)
+    signatureLen = BS.length signature
 
 dhGroupExchangeRequestParser :: B.Get DiffieHellmanGroupExchangeRequest
 dhGroupExchangeRequestParser =
@@ -204,24 +227,6 @@ dhKeyExchangeInitParser =
     case DH.publicKey bs of
       DH.CryptoPassed a -> pure a
       DH.CryptoFailed e -> fail (show e)
-
-{--
-dhGroupExchangeGroupBuilder :: DH.Params -> BS.Builder
-dhGroupExchangeGroupBuilder (DH.Params p g n) = mconcat
-  [ BS.word32BE   $ fromIntegral packetLen
-  , BS.word8      $ fromIntegral paddingLen
-  , BS.word8        31
-  , pBuilder
-  , qBuilder
-  , BS.byteString $ BS.replicate paddingLen 0
-  ]
-  where
-    packetLen  = 1 + payloadLen + paddingLen
-    payloadLen = undefined
-    paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8
-    (pLen, pBuilder) = mpintLenBuilder p (0, mempty)
-    (qLen, qBuilder) = mpintLenBuilder 0 (0, mempty)
---}
 
 mpintLenBuilder :: Integer -> (Int, BS.Builder) -> (Int, BS.Builder)
 mpingLenBuilder 0 x = x
