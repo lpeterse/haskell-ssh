@@ -5,6 +5,8 @@ module Network.SSH where
 
 import           Control.Monad            (void, when)
 import qualified Crypto.Error             as DH
+import qualified Crypto.Hash              as Hash
+import qualified Crypto.Hash.Algorithms   as Hash
 import qualified Crypto.PubKey.Curve25519 as DH
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
@@ -13,9 +15,14 @@ import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import qualified Data.ByteString.Builder  as BS
 import qualified Data.ByteString.Lazy     as LBS
+import           Data.Int
 import qualified Data.List                as L
 import           Data.Monoid
 import           Data.Word
+
+serverVersionString :: BS.ByteString
+serverVersionString
+  = "SSH-2.0-hssh_0.1"
 
 data KexMsg
   = KexMsg
@@ -80,11 +87,7 @@ versionParser = do
 
 serverVersionBuilder :: BS.Builder
 serverVersionBuilder =
-  version <> BS.int16BE 0x0d0a
-  where
-    version = "SSH-2.0-hssh_0.1"
-
-
+  BS.byteString serverVersionString <> BS.int16BE 0x0d0a
 
 kexInitParser :: B.Get KexMsg
 kexInitParser = do
@@ -111,10 +114,7 @@ kexInitParser = do
 
 kexInitBuilder :: KexMsg -> BS.Builder
 kexInitBuilder msg = mconcat
-  [ -- BS.word32BE (fromIntegral $ 1 + payloadLen + paddingLen)
-  -- , BS.word8    (fromIntegral paddingLen)
-    BS.word8    0x14
-  , BS.byteString (cookie msg)
+  [ BS.byteString (cookie msg)
   , f (key_algorithms msg)
   , f (server_host_key_algorithms msg)
   , f (encryption_algorithms_client_to_server msg)
@@ -127,26 +127,12 @@ kexInitBuilder msg = mconcat
   , f (languages_server_to_client msg)
   , BS.word8 $ if first_kex_packet_follows msg then 0x01 else 0x00
   , BS.word32BE 0x00000000
-  -- , BS.byteString (BS.replicate paddingLen 0)
   ]
   where
     f xs = BS.word32BE (fromIntegral $ g xs)
         <> mconcat (BS.byteString <$> L.intersperse "," xs)
     g [] = 0
     g xs = sum (BS.length <$> xs) + length xs - 1
-    payloadLen =
-      1 + 16 + 40 + 1 + 4
-      + g (key_algorithms msg)
-      + g (server_host_key_algorithms msg)
-      + g (encryption_algorithms_client_to_server msg)
-      + g (encryption_algorithms_server_to_client msg)
-      + g (mac_algorithms_client_to_server msg)
-      + g (mac_algorithms_server_to_client msg)
-      + g (compression_algorithms_client_to_server msg)
-      + g (compression_algorithms_server_to_client msg)
-      + g (languages_client_to_server msg)
-      + g (languages_server_to_client msg)
-    paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8
 
 data KexReply
   = KexReply
@@ -206,13 +192,56 @@ ed25519PublicKeyBuilder key = mconcat
   , BS.byteString $ BS.pack $ BA.unpack key
   ]
 
-curve25519PublicKeyBuilder :: Curve25519.PublicKey -> BS.Builder
-curve25519PublicKeyBuilder key =
-  BS.byteString $ BS.pack $ BA.unpack key
+exchangeHash ::
+  BS.ByteString ->         -- client version string
+  BS.ByteString ->         -- server version string
+  KexMsg ->                -- client kex msg
+  KexMsg ->                -- server kex msg
+  Ed25519.PublicKey ->     -- server host key
+  Curve25519.PublicKey ->  -- client ephemeral key
+  Curve25519.PublicKey ->  -- server ephemeral key
+  Curve25519.DhSecret ->   -- dh secret
+  Hash.Digest Hash.SHA256
+exchangeHash vc vs ic is ks qc qs k
+  = Hash.hash $ LBS.toStrict $ BS.toLazyByteString $ mconcat
+  [ BS.byteString              vc
+  , BS.byteString              vs
+  , BS.word32BE                icLen
+  , BS.word8                   20 -- SSH2_MSG_KEXINIT
+  , kexInitBuilder             ic
+  , BS.word32BE                isLen
+  , BS.word8                   20 -- SSH2_MSG_KEXINIT
+  , kexInitBuilder             is
+  , ed25519BlobBuilder         ks -- 32 bytes
+  , curve25519BlobBuilder      qc -- 32 bytes
+  , curve25519BlobBuilder      qs -- 32 bytes
+  , curve25519DhSecretBuilder  k
+  ] :: Hash.Digest Hash.SHA256
+  where
+    icLen = fromIntegral $ 1 + builderLength (kexInitBuilder ic)
+    isLen = fromIntegral $ 1 + builderLength (kexInitBuilder is)
+
+ed25519BlobBuilder :: Ed25519.PublicKey -> BS.Builder
+ed25519BlobBuilder key =
+  BS.byteString "ssh-ed25519" <> BS.byteString (BS.pack $ BA.unpack key)
+
+curve25519BlobBuilder :: Curve25519.PublicKey -> BS.Builder
+curve25519BlobBuilder =
+  BS.byteString . BS.pack . BA.unpack
 
 curve25519DhSecretBuilder  :: Curve25519.DhSecret -> BS.Builder
-curve25519DhSecretBuilder secret =
-  BS.byteString $ BS.pack $ BA.unpack secret
+curve25519DhSecretBuilder =
+  bignum2bytes . BA.unpack
+  where
+    -- FIXME: not constant time
+    bignum2bytes xs = zs
+      where
+        prepend [] = []
+        prepend (a:as)
+          | a >= 128  = 0:a:as
+          | otherwise = a:as
+        ys = BS.pack $ prepend $ dropWhile (==0) xs
+        zs = BS.word32BE (fromIntegral $ BS.length ys) <> BS.byteString ys
 
 kexRequestParser :: B.Get DH.PublicKey
 kexRequestParser = do
@@ -233,3 +262,7 @@ mpintLenBuilder i (!len, !bld) = mpintLenBuilder q (len + 4, BS.word32BE (fromIn
 
 maxPacketSize :: Word32
 maxPacketSize = 32767
+
+builderLength :: BS.Builder -> Int64
+builderLength =
+  LBS.length . BS.toLazyByteString

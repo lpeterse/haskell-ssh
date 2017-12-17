@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Main where
 
 import           Control.Exception              (bracket)
@@ -46,24 +47,23 @@ main = bracket open close accept
       let clientKexInit = B.runGet (unpacketize kexInitParser) (LBS.fromStrict bs)
       print clientKexInit
 
-      S.sendAllBuilder s 4096 (packetize $ kexInitBuilder serverKexInit) S.msgNoSignal
+      S.sendAllBuilder s 4096 (packetize $ BS.word8 20 <> kexInitBuilder serverKexInit) S.msgNoSignal
       bs <- S.receive s 32000 S.msgNoSignal
       let clientEphemeralPublicKey = B.runGet (unpacketize kexRequestParser) (LBS.fromStrict bs)
 
       let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
 
-      let exchangeHash = Hash.hash $ LBS.toStrict $ BS.toLazyByteString $ mconcat
-            [ BS.byteString clientVersionString
-            , serverVersionBuilder
-            , kexInitBuilder clientKexInit
-            , kexInitBuilder serverKexInit
-            , ed25519PublicKeyBuilder serverPublicKey
-            , curve25519PublicKeyBuilder clientEphemeralPublicKey
-            , curve25519PublicKeyBuilder serverEphemeralPublicKey
-            , curve25519DhSecretBuilder  dhSecret
-            ] :: Hash.Digest Hash.SHA256
+      let hash = exchangeHash
+            clientVersionString      -- check
+            serverVersionString      -- check
+            clientKexInit            -- check
+            serverKexInit            -- check
+            serverPublicKey          -- check
+            clientEphemeralPublicKey -- check
+            serverEphemeralPublicKey -- check
+            dhSecret                 -- check (client pubkey + server seckey)
 
-      let signature = Ed25519.sign serverSecretKey serverPublicKey exchangeHash
+      let signature = Ed25519.sign serverSecretKey serverPublicKey hash
       let reply = KexReply {
           serverPublicHostKey      = serverPublicKey
         , serverPublicEphemeralKey = serverEphemeralPublicKey
