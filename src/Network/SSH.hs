@@ -3,19 +3,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH where
 
-import           Control.Monad           (void, when)
-import qualified Data.Binary.Get         as B
-import qualified Data.ByteString         as BS
-import qualified Data.ByteString.Builder as BS
-import qualified Data.List               as L
-import           Data.Monoid
-import           Data.Word
+import           Control.Monad            (void, when)
+import qualified Crypto.Error             as DH
 import qualified Crypto.PubKey.Curve25519 as DH
 import qualified Crypto.PubKey.Curve25519 as Curve25519
-import qualified Crypto.PubKey.Ed25519 as Ed25519
-import qualified Crypto.Error as DH
-import qualified Data.ByteArray as BA
-import qualified Data.ByteString.Lazy as LBS
+import qualified Crypto.PubKey.Ed25519    as Ed25519
+import qualified Data.Binary.Get          as B
+import qualified Data.ByteArray           as BA
+import qualified Data.ByteString          as BS
+import qualified Data.ByteString.Builder  as BS
+import qualified Data.ByteString.Lazy     as LBS
+import qualified Data.List                as L
+import           Data.Monoid
+import           Data.Word
 
 data KexMsg
   = KexMsg
@@ -33,8 +33,8 @@ data KexMsg
   , first_kex_packet_follows                :: Bool
   } deriving (Eq, Ord, Show)
 
-kexMsg :: KexMsg
-kexMsg = KexMsg
+serverKexInit :: KexMsg
+serverKexInit = KexMsg
   { cookie
   = "\155=\ACK\150\169p\164\v\t\245\223\224\EOT\233\200\SO"
   , key_algorithms
@@ -66,7 +66,7 @@ versionParser = do
   magic <- B.getWord64be
   if magic /= 0x5353482d322e302d -- "SSH-2.0-"
     then stop
-    else untilCRLF 0 []
+    else untilCRLF 0 [0x2d, 0x30, 0x2e, 0x32, 0x2d, 0x48, 0x53, 0x53]
   where
     stop = fail ""
     untilCRLF !i !xs
@@ -78,23 +78,16 @@ versionParser = do
             _    -> stop
           x -> untilCRLF (i+1) (x:xs)
 
-versionBuilder :: BS.Builder
-versionBuilder =
+serverVersionBuilder :: BS.Builder
+serverVersionBuilder =
   version <> BS.int16BE 0x0d0a
   where
     version = "SSH-2.0-hssh_0.1"
 
-packetParser :: B.Get a -> B.Get a
-packetParser parser = do
-  packetLen <- fromIntegral . min maxPacketSize <$> B.getWord32be
-  B.isolate packetLen $ do
-    paddingLen <- fromIntegral <$> B.getWord8
-    x <- parser
-    B.skip paddingLen
-    pure x
 
-kexMsgParser :: B.Get KexMsg
-kexMsgParser = do
+
+kexInitParser :: B.Get KexMsg
+kexInitParser = do
   void $ B.getWord8
   kex <- KexMsg
     <$> B.getByteString 16
@@ -116,11 +109,11 @@ kexMsgParser = do
       n <- fromIntegral . min maxPacketSize <$> B.getWord32be -- avoid undefined conversion
       BS.split 0x2c <$> B.getByteString n
 
-kexMsgBuilder :: KexMsg -> BS.Builder
-kexMsgBuilder msg = mconcat
-  [ BS.word32BE (fromIntegral $ 1 + payloadLen + paddingLen)
-  , BS.word8    (fromIntegral paddingLen)
-  , BS.word8    0x14
+kexInitBuilder :: KexMsg -> BS.Builder
+kexInitBuilder msg = mconcat
+  [ -- BS.word32BE (fromIntegral $ 1 + payloadLen + paddingLen)
+  -- , BS.word8    (fromIntegral paddingLen)
+    BS.word8    0x14
   , BS.byteString (cookie msg)
   , f (key_algorithms msg)
   , f (server_host_key_algorithms msg)
@@ -134,7 +127,7 @@ kexMsgBuilder msg = mconcat
   , f (languages_server_to_client msg)
   , BS.word8 $ if first_kex_packet_follows msg then 0x01 else 0x00
   , BS.word32BE 0x00000000
-  , BS.byteString (BS.replicate paddingLen 0)
+  -- , BS.byteString (BS.replicate paddingLen 0)
   ]
   where
     f xs = BS.word32BE (fromIntegral $ g xs)
@@ -154,18 +147,6 @@ kexMsgBuilder msg = mconcat
       + g (languages_client_to_server msg)
       + g (languages_server_to_client msg)
     paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8
-
-data DiffieHellmanGroupExchangeRequest
-  = DiffieHellmanGroupExchangeRequest
-  { dhGexMin :: Word32
-  , dhGexN   :: Word32
-  , dhGexMax :: Word32
-  } deriving (Show)
-
-data DiffieHellmanGroupExchangeGroup
-  = DiffieHelmannGroupExchangeGroup
-  {
-  }
 
 data KexReply
   = KexReply
@@ -187,6 +168,15 @@ packetize payload = mconcat
     paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8
     padding    = BS.byteString (BS.replicate paddingLen 0)
 
+unpacketize :: B.Get a -> B.Get a
+unpacketize parser = do
+  packetLen <- fromIntegral . min maxPacketSize <$> B.getWord32be
+  B.isolate packetLen $ do
+    paddingLen <- fromIntegral <$> B.getWord8
+    x <- parser
+    B.skip paddingLen
+    pure x
+
 kexReplyBuilder :: KexReply -> BS.Builder
 kexReplyBuilder reply = mconcat
   [ BS.word8        31 -- message type
@@ -207,26 +197,33 @@ kexReplyBuilder reply = mconcat
     signature    = BS.pack $ BA.unpack (exchangeHashSignature reply)
     signatureLen = BS.length signature
 
-dhGroupExchangeRequestParser :: B.Get DiffieHellmanGroupExchangeRequest
-dhGroupExchangeRequestParser =
-  packetParser $ do
-    B.getWord8 >>= \w8-> when (w8 /= 34) (fail "expected SSH_MSG_KEY_DH_GEX_REQUEST")
-    DiffieHellmanGroupExchangeRequest
-      <$> B.getWord32be
-      <*> B.getWord32be
-      <*> B.getWord32be
+ed25519PublicKeyBuilder :: Ed25519.PublicKey -> BS.Builder
+ed25519PublicKeyBuilder key = mconcat
+  [ BS.word32BE     51 -- host key len
+  , BS.word32BE     11 -- host key algorithm name len
+  , BS.byteString   "ssh-ed25519"
+  , BS.word32BE     32 -- host key data len
+  , BS.byteString $ BS.pack $ BA.unpack key
+  ]
 
-dhKeyExchangeInitParser :: B.Get DH.PublicKey
-dhKeyExchangeInitParser =
-  packetParser $ do
-    msg <- B.getWord8
-    when (msg /= 30) (fail "expected SSH_MSG_KEX_ECDH_INIT")
-    keySize <- B.getWord32be
-    when (keySize /= 32) (fail "expected key size to be 32 bytes")
-    bs <- B.getByteString 32
-    case DH.publicKey bs of
-      DH.CryptoPassed a -> pure a
-      DH.CryptoFailed e -> fail (show e)
+curve25519PublicKeyBuilder :: Curve25519.PublicKey -> BS.Builder
+curve25519PublicKeyBuilder key =
+  BS.byteString $ BS.pack $ BA.unpack key
+
+curve25519DhSecretBuilder  :: Curve25519.DhSecret -> BS.Builder
+curve25519DhSecretBuilder secret =
+  BS.byteString $ BS.pack $ BA.unpack secret
+
+kexRequestParser :: B.Get DH.PublicKey
+kexRequestParser = do
+  msg <- B.getWord8
+  when (msg /= 30) (fail "expected SSH_MSG_KEX_ECDH_INIT")
+  keySize <- B.getWord32be
+  when (keySize /= 32) (fail "expected key size to be 32 bytes")
+  bs <- B.getByteString 32
+  case DH.publicKey bs of
+    DH.CryptoPassed a -> pure a
+    DH.CryptoFailed e -> fail (show e)
 
 mpintLenBuilder :: Integer -> (Int, BS.Builder) -> (Int, BS.Builder)
 mpingLenBuilder 0 x = x

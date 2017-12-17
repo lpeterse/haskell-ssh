@@ -5,6 +5,7 @@ import           Control.Monad                  (forever)
 import qualified Crypto.PubKey.Curve25519       as DH
 import qualified Data.Binary.Get                as B
 import qualified Data.ByteString                as BS
+import qualified Data.ByteString.Builder        as BS
 import qualified Data.ByteString.Lazy           as LBS
 import           Data.Monoid
 import           Network.SSH
@@ -30,22 +31,40 @@ main = bracket open close accept
     serve (s,addr) = do
       serverSecretKey <- Ed25519.generateSecretKey
       serverPublicKey <- pure $ Ed25519.toPublic serverSecretKey
-      ephemeralSecretKey <- Curve25519.generateSecretKey
-      ephemeralPublicKey <- pure $ Curve25519.toPublic ephemeralSecretKey
+      serverEphemeralSecretKey <- Curve25519.generateSecretKey
+      serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
 
       bs <- S.receive s 4096 S.msgNoSignal
-      print $ B.runGet versionParser (LBS.fromStrict bs)
-      S.sendAllBuilder s 4096 versionBuilder S.msgNoSignal
+      let clientVersionString = B.runGet versionParser (LBS.fromStrict bs)
+      print clientVersionString
+
+      S.sendAllBuilder s 4096 serverVersionBuilder S.msgNoSignal
+
+      bs  <- S.receive s 32000 S.msgNoSignal
+      let clientKexInit = B.runGet (unpacketize kexInitParser) (LBS.fromStrict bs)
+      print clientKexInit
+
+      S.sendAllBuilder s 4096 (packetize $ kexInitBuilder serverKexInit) S.msgNoSignal
       bs <- S.receive s 32000 S.msgNoSignal
-      print $ B.runGet (packetParser kexMsgParser) (LBS.fromStrict bs)
-      S.sendAllBuilder s 4096 (kexMsgBuilder kexMsg) S.msgNoSignal
-      bs <- S.receive s 32000 S.msgNoSignal
-      let pubkey = B.runGet (dhKeyExchangeInitParser) (LBS.fromStrict bs)
-      print pubkey
+      let clientEphemeralPublicKey = B.runGet (unpacketize kexRequestParser) (LBS.fromStrict bs)
+
+      let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
+
+      let signData = mconcat
+            [ BS.byteString clientVersionString
+            , serverVersionBuilder
+            , kexInitBuilder clientKexInit
+            , kexInitBuilder serverKexInit
+            , ed25519PublicKeyBuilder serverPublicKey
+            , curve25519PublicKeyBuilder clientEphemeralPublicKey
+            , curve25519PublicKeyBuilder serverEphemeralPublicKey
+            , curve25519DhSecretBuilder  dhSecret
+            ]
+
       let signature = Ed25519.sign serverSecretKey serverPublicKey (mempty :: BS.ByteString)
       let reply = KexReply {
           serverPublicHostKey      = serverPublicKey
-        , serverPublicEphemeralKey = ephemeralPublicKey
+        , serverPublicEphemeralKey = serverEphemeralPublicKey
         , exchangeHashSignature    = signature
         }
       print reply
