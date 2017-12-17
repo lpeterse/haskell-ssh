@@ -183,14 +183,7 @@ kexReplyBuilder reply = mconcat
     signature    = BS.pack $ BA.unpack (exchangeHashSignature reply)
     signatureLen = BS.length signature
 
-ed25519PublicKeyBuilder :: Ed25519.PublicKey -> BS.Builder
-ed25519PublicKeyBuilder key = mconcat
-  [ BS.word32BE     51 -- host key len
-  , BS.word32BE     11 -- host key algorithm name len
-  , BS.byteString   "ssh-ed25519"
-  , BS.word32BE     32 -- host key data len
-  , BS.byteString $ BS.pack $ BA.unpack key
-  ]
+
 
 exchangeHash ::
   BS.ByteString ->         -- client version string
@@ -214,9 +207,9 @@ exchangeHash vc vs ic is ks qc qs k
   , BS.word32BE                isLen
   , BS.word8                   20 -- SSH2_MSG_KEXINIT
   , kexInitBuilder             is
-  , ed25519BlobBuilder         ks -- 32 bytes
-  , curve25519BlobBuilder      qc -- 32 bytes
-  , curve25519BlobBuilder      qs -- 32 bytes
+  , ed25519PublicKeyBuilder    ks
+  , curve25519BlobBuilder      qc
+  , curve25519BlobBuilder      qs
   , curve25519DhSecretBuilder  k
   ] :: Hash.Digest Hash.SHA256
   where
@@ -225,13 +218,13 @@ exchangeHash vc vs ic is ks qc qs k
     icLen = fromIntegral $ 1 + builderLength (kexInitBuilder ic)
     isLen = fromIntegral $ 1 + builderLength (kexInitBuilder is)
 
-ed25519BlobBuilder :: Ed25519.PublicKey -> BS.Builder
-ed25519BlobBuilder key = mconcat
-  [ BS.word32BE   51
-  , BS.word32BE   11
-  , BS.byteString "ssh-ed25519"
-  , BS.word32BE   32
-  , BS.byteString (BS.pack $ BA.unpack key)
+ed25519PublicKeyBuilder :: Ed25519.PublicKey -> BS.Builder
+ed25519PublicKeyBuilder key = mconcat
+  [ BS.word32BE     51 -- host key len
+  , BS.word32BE     11 -- host key algorithm name len
+  , BS.byteString   "ssh-ed25519"
+  , BS.word32BE     32 -- host key data len
+  , BS.byteString $ BS.pack $ BA.unpack key
   ]
 
 curve25519BlobBuilder :: Curve25519.PublicKey -> BS.Builder
@@ -239,10 +232,8 @@ curve25519BlobBuilder key =
   BS.word32BE 32 <> BS.byteString (BS.pack $ BA.unpack key)
 
 curve25519DhSecretBuilder  :: Curve25519.DhSecret -> BS.Builder
-curve25519DhSecretBuilder sec = BS.word32BE 32 <> BS.byteString (BS.pack $ BA.unpack sec)
-{-
-  BS.word32BE 32 <>
-  bignum2bytes . BA.unpack
+curve25519DhSecretBuilder sec = do
+  bignum2bytes (BA.unpack sec)
   where
     -- FIXME: not constant time
     bignum2bytes xs = zs
@@ -253,7 +244,6 @@ curve25519DhSecretBuilder sec = BS.word32BE 32 <> BS.byteString (BS.pack $ BA.un
           | otherwise = a:as
         ys = BS.pack $ prepend $ dropWhile (==0) xs
         zs = BS.word32BE (fromIntegral $ BS.length ys) <> BS.byteString ys
--}
 
 kexRequestParser :: B.Get DH.PublicKey
 kexRequestParser = do
