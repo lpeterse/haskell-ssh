@@ -107,17 +107,16 @@ main = bracket open close accept
       ciph2 <- S.receive s (fromIntegral len) S.msgNoSignal
       print "ENCRYPTED PACKET PAYLOAD:"
       print ciph2
-      let CryptoPassed nonce2 = ChaChaPoly1305.nonce8 (BS.pack [0,0,0,0]) (BS.pack [0,0,0,0, 0,0,0,3])
-      let CryptoPassed st2 = ChaChaPoly1305.initialize ekCS_K1 nonce2
-      let st3 = ChaChaPoly1305.appendAAD ciph1 st2
-      let (plain2,st4) = ChaChaPoly1305.decrypt ciph2 st3
-      print "DECRYPTED PACKET PAYLOAD:"
-      print plain2
-      let Poly1305.Auth auth = ChaChaPoly1305.finalize st4
-      print "POLY AUTH TAG:"
-      print auth
 
-      print "MAC:"
+      let st5 = ChaCha.initialize 20 ekCS_K1 nonce1
+      let (polyKey, st6) = ChaCha.generate st5 64
+      let Poly1305.Auth auth2 = Poly1305.auth (BS.take 32 polyKey) (ciph1 <> ciph2)
+      let (plain3, st7) = ChaCha.combine st6 ciph2
+      print "DECRYPTED PACKET PAYLOAD:"
+      print plain3
+      print "EXPECTED MAC:"
+      print auth2
+      print "ACTUAL MAC:"
       bs <- S.receive s 512 S.msgNoSignal
       print bs
 
