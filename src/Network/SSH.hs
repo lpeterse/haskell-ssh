@@ -270,19 +270,19 @@ builderLength :: BS.Builder -> Int64
 builderLength =
   LBS.length . BS.toLazyByteString
 
-deriveKey :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> Hash.Digest Hash.SHA256 -> BS.ByteString -> Hash.Digest Hash.SHA256
-deriveKey sec hash sess i =
-  Hash.hashFinalize    $
-  flip Hash.hashUpdate sess $
-  flip Hash.hashUpdate i    $
-  flip Hash.hashUpdate hash $
-  flip Hash.hashUpdate sec
-  Hash.hashInit
-
-deriveKey' :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> Hash.Digest Hash.SHA256 -> Hash.Digest Hash.SHA256
-deriveKey' sec hash prev =
-  Hash.hashFinalize    $
-  flip Hash.hashUpdate prev $
-  flip Hash.hashUpdate hash $
-  flip Hash.hashUpdate sec
-  Hash.hashInit
+deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> BS.ByteString -> Hash.Digest Hash.SHA256 -> [Hash.Digest Hash.SHA256]
+deriveKeys sec hash i sess =
+  k1:(f [k1])
+  where
+    k1   = Hash.hashFinalize    $
+      flip Hash.hashUpdate sess $
+      flip Hash.hashUpdate i st
+    f ks = kx:(f $ ks ++ [kx])
+      where
+        kx = Hash.hashFinalize (foldl Hash.hashUpdate st ks)
+    st =
+      flip Hash.hashUpdate hash $
+      flip Hash.hashUpdate secmpint
+      Hash.hashInit
+    secmpint =
+      LBS.toStrict $ BS.toLazyByteString $ curve25519DhSecretBuilder sec

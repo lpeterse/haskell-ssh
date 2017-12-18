@@ -3,8 +3,10 @@ module Main where
 
 import           Control.Exception              (bracket)
 import           Control.Monad                  (forever)
+import           Control.Monad                  (forM_, when)
 import qualified Crypto.PubKey.Curve25519       as DH
 import qualified Data.Binary.Get                as B
+import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
 import qualified Data.ByteString.Builder        as BS
 import qualified Data.ByteString.Lazy           as LBS
@@ -15,6 +17,7 @@ import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 
+import qualified Crypto.Cipher.ChaCha           as ChaCha
 import qualified Crypto.Cipher.ChaChaPoly1305   as ChaChaPoly1305
 import qualified Crypto.Hash                    as Hash
 import qualified Crypto.Hash.Algorithms         as Hash
@@ -63,6 +66,7 @@ main = bracket open close accept
             clientEphemeralPublicKey -- check
             serverEphemeralPublicKey -- check
             dhSecret                 -- check (client pubkey + server seckey)
+      let sess = hash
 
       let signature = Ed25519.sign serverSecretKey serverPublicKey hash
       let reply = KexReply {
@@ -75,18 +79,27 @@ main = bracket open close accept
 
       S.sendAllBuilder s 4096 (packetize $ newKeysBuilder) S.msgNoSignal
 
-      let ivCS_1    = deriveKey  dhSecret hash hash "A"
-      let ivCS_2    = deriveKey' dhSecret hash ivCS_1
-      let ivSC_1    = deriveKey  dhSecret hash hash "B"
-      let ivSC_2    = deriveKey' dhSecret hash ivSC_1
-      let ekCS      = deriveKey  dhSecret hash hash "C"
-      let ekSC      = deriveKey  dhSecret hash hash "D"
-      let ikCS      = deriveKey  dhSecret hash hash "E"
-      let ikSC      = deriveKey  dhSecret hash hash "F"
+      let ivCS_K1:ivCS_K2:_ = deriveKeys dhSecret hash "A" sess
+      let ivSC_K1:ivSC_K2:_ = deriveKeys dhSecret hash "B" sess
+      let ekCS_K1:ekCS_K2:_ = deriveKeys dhSecret hash "C" sess
+      let ekSC_K1:ekSC_K2:_ = deriveKeys dhSecret hash "D" sess
+      let ikCS_K1:ikCS_K2:_ = deriveKeys dhSecret hash "E" sess
+      let ikSC_K1:ikSC_K2:_ = deriveKeys dhSecret hash "F" sess
 
-      --nonce        <- ChaChaPoly1305.nonce12
-      --cryptoState1 <- ChaChaPoly1305.initialize dhSecret
+      bs <- S.receive s 32000 S.msgNoSignal
+      print "NEWKEYS"
+      print bs
 
-      forever $ do
-        bs <- S.receive s 32000 S.msgNoSignal
-        print bs
+      bs <- S.receive s 32000 S.msgNoSignal
+      let ciph1 = BS.take 4 bs
+      print "ENCRYPTED PACKET LEN:"
+      print ciph1
+      let nonce = BS.pack [0,0,0,0, 0,0,0,3]
+      let st1 = ChaCha.initialize 20 ekCS_K2 nonce
+      let (plain1,_) = ChaCha.combine st1 ciph1
+      print "DECRYPTED PACKET LEN:"
+      print plain1
+
+      --forever $ do
+      --  bs <- S.receive s 32000 S.msgNoSignal
+      --  print bs
