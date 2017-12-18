@@ -75,15 +75,17 @@ main = bracket open close accept
 
       S.sendAllBuilder s 4096 (packetize $ newKeysBuilder) S.msgNoSignal
 
-      let ivCS      = deriveKey dhSecret hash hash "A"
-      let ivSC      = deriveKey dhSecret hash hash "B"
-      let ekCS      = deriveKey dhSecret hash hash "C"
-      let ekSC      = deriveKey dhSecret hash hash "D"
-      let ikCS      = deriveKey dhSecret hash hash "E"
-      let ikSC      = deriveKey dhSecret hash hash "F"
+      let ivCS_1    = deriveKey  dhSecret hash hash "A"
+      let ivCS_2    = deriveKey' dhSecret hash ivCS_1
+      let ivSC_1    = deriveKey  dhSecret hash hash "B"
+      let ivSC_2    = deriveKey' dhSecret hash ivSC_1
+      let ekCS      = deriveKey  dhSecret hash hash "C"
+      let ekSC      = deriveKey  dhSecret hash hash "D"
+      let ikCS      = deriveKey  dhSecret hash hash "E"
+      let ikSC      = deriveKey  dhSecret hash hash "F"
 
-      nonce        <- ChaChaPoly1305.nonce12
-      cryptoState1 <- ChaChaPoly1305.initialize dhSecret
+      --nonce        <- ChaChaPoly1305.nonce12
+      --cryptoState1 <- ChaChaPoly1305.initialize dhSecret
 
       forever $ do
         bs <- S.receive s 32000 S.msgNoSignal

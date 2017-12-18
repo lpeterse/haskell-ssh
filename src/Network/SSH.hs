@@ -278,3 +278,11 @@ deriveKey sec hash sess i =
   flip Hash.hashUpdate hash $
   flip Hash.hashUpdate sec
   Hash.hashInit
+
+deriveKey' :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> Hash.Digest Hash.SHA256 -> Hash.Digest Hash.SHA256
+deriveKey' sec hash prev =
+  Hash.hashFinalize    $
+  flip Hash.hashUpdate prev $
+  flip Hash.hashUpdate hash $
+  flip Hash.hashUpdate sec
+  Hash.hashInit
