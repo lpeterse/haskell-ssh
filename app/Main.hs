@@ -78,7 +78,6 @@ main = bracket open close accept
         }
       print reply
       S.sendAllBuilder s 4096 (packetize $ kexReplyBuilder reply) S.msgNoSignal
-
       S.sendAllBuilder s 4096 (packetize $ newKeysBuilder) S.msgNoSignal
 
       let ivCS_K1:ivCS_K2:_ = deriveKeys dhSecret hash "A" sess
@@ -92,33 +91,47 @@ main = bracket open close accept
       print "NEWKEYS"
       print bs
 
-      -- Packet length deciphering with plain chacha20
-      ciph1 <- S.receive s 4 S.msgNoSignal
-      print "ENCRYPTED PACKET LEN:"
-      print ciph1
-      let nonce1 = BS.pack [0,0,0,0, 0,0,0,3]
-      let st1 = ChaCha.initialize 20 ekCS_K2 nonce1
-      let (plain1,_) = ChaCha.combine st1 ciph1
-      let len = B.runGet B.getWord32be (LBS.fromStrict plain1)
-      print "DECRYPTED PACKET LEN:"
-      print len
-
-      -- Packet payload deciphering
-      ciph2 <- S.receive s (fromIntegral len) S.msgNoSignal
-      print "ENCRYPTED PACKET PAYLOAD:"
-      print ciph2
-
-      let st5 = ChaCha.initialize 20 ekCS_K1 nonce1
-      let (polyKey, st6) = ChaCha.generate st5 64
-      let Poly1305.Auth auth2 = Poly1305.auth (BS.take 32 polyKey) (ciph1 <> ciph2)
-      let (plain3, st7) = ChaCha.combine st6 ciph2
-      print "DECRYPTED PACKET PAYLOAD:"
+      plain3 <- decrypt 3 ekCS_K2 ekCS_K1 (\i->S.receive s i S.msgNoSignal)
+      print "RECV PLAIN3"
       print plain3
-      print "EXPECTED MAC:"
-      print auth2
-      print "ACTUAL MAC:"
-      bs <- S.receive s 512 S.msgNoSignal
-      print bs
+      let msg3 = B.runGet messageParser $ LBS.fromStrict $ plain3
+      print msg3
+
+      let ciph = encrypt 3 ekSC_K2 ekSC_K1 $ messageBuilder $ ServiceAccept ServiceUserAuth
+      print $ BS.length ciph
+      S.sendAll s ciph S.msgNoSignal
+
+      print "RECV PLAIN4"
+      plain4 <- decrypt 4 ekCS_K2 ekCS_K1 (\i->S.receive s i S.msgNoSignal)
+      print plain4
+      let msg4 = B.runGet messageParser $ LBS.fromStrict $ plain4
+      print msg4
+
+      let ciph = encrypt 4 ekSC_K2 ekSC_K1 $ messageBuilder $ UserAuthSuccess
+      print $ BS.length ciph
+      S.sendAll s ciph S.msgNoSignal
+
+      print "RECV PLAIN5"
+      plain5 <- decrypt 5 ekCS_K2 ekCS_K1 (\i->S.receive s i S.msgNoSignal)
+      print plain5
+      let q@(ChannelOpen _ c x y) = B.runGet messageParser $ LBS.fromStrict $ plain5
+      print q
+
+      let plain = ChannelOpenConfirmation c c x y
+      let ciph = encrypt 5 ekSC_K2 ekSC_K1 $ messageBuilder plain
+      print "SEND 5:"
+      print plain
+      S.sendAll s ciph S.msgNoSignal
+
+      print "RECV PLAIN6"
+      plain6 <- decrypt 6 ekCS_K2 ekCS_K1 (\i->S.receive s i S.msgNoSignal)
+      print plain6
+      let q = B.runGet messageParser $ LBS.fromStrict $ plain6
+      print q
+
+
+
+      print "ENDE"
 
       --forever $ do
       --  bs <- S.receive s 32000 S.msgNoSignal
@@ -129,3 +142,55 @@ poly1305KeyLen = 32
 
 poly1305TagLen :: Int
 poly1305TagLen = 16
+
+unpacket :: BS.ByteString -> Maybe BS.ByteString
+unpacket bs = do
+  (h,ts) <- BS.uncons bs
+  pure $ BS.take (BS.length ts - fromIntegral h) ts
+
+encrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> BS.Builder -> BS.ByteString
+encrypt seqnr headerKey mainKey dat = ciph3 <> mac
+  where
+    build         = LBS.toStrict . BS.toLazyByteString
+
+    datlen        = BS.length datBS                :: Int
+    padlen        = let p = 8 - ((1 + datlen) `mod` 8)
+                    in  if p < 4 then p + 8 else p :: Int
+    paclen        = 1 + datlen + padlen            :: Int
+
+    datBS         = build dat
+    padBS         = BS.replicate padlen 0
+    padlenBS      = build $ BS.word8    (fromIntegral padlen)
+    paclenBS      = build $ BS.word32BE (fromIntegral paclen)
+    nonceBS       = build $ BS.word64BE (fromIntegral seqnr)
+
+    st1           = ChaCha.initialize 20 mainKey nonceBS
+    st2           = ChaCha.initialize 20 headerKey nonceBS
+    (poly, st3)   = ChaCha.generate st1 64
+    ciph1         = fst $ ChaCha.combine st2 paclenBS
+    ciph2         = fst $ ChaCha.combine st3 $ padlenBS <> datBS <> padBS
+    ciph3         = ciph1 <> ciph2
+    mac           = let Poly1305.Auth auth = Poly1305.auth (BS.take 32 poly) ciph3
+                    in  BS.pack (BA.unpack auth)
+
+decrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> (Int -> IO BS.ByteString) -> IO BS.ByteString
+decrypt seqnr headerKey mainKey receive = do
+  ciph1            <- receive 4
+  let paclenBS      = fst $ ChaCha.combine st1 ciph1
+  let paclen        = fromIntegral $ B.runGet B.getWord32be (LBS.fromStrict paclenBS)
+  ciph2            <- receive paclen
+  let expectedMAC   = Poly1305.auth (BS.take 32 poly) (ciph1 <> ciph2)
+  actualMAC        <- Poly1305.Auth . BA.pack . BS.unpack <$> receive maclen
+  when (actualMAC /= expectedMAC) (fail "MAC MISMATCH")
+  let pacBS        = fst $ ChaCha.combine st3 ciph2
+  case unpacket pacBS of
+    Nothing  -> fail "PADDING ERROR"
+    Just msg -> pure msg
+  where
+    build         = LBS.toStrict . BS.toLazyByteString
+    maclen        = 16
+    nonceBS       = build $ BS.word64BE (fromIntegral seqnr)
+    st1           = ChaCha.initialize 20 headerKey nonceBS
+    st2           = ChaCha.initialize 20 mainKey   nonceBS
+    (poly, st3)   = ChaCha.generate st2 64
+

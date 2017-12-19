@@ -286,3 +286,83 @@ deriveKeys sec hash i sess =
       Hash.hashInit
     secmpint =
       LBS.toStrict $ BS.toLazyByteString $ curve25519DhSecretBuilder sec
+
+newtype UserName   = UserName   BS.ByteString deriving (Eq, Ord, Show)
+newtype MethodName = MethodName BS.ByteString deriving (Eq, Ord, Show)
+
+data Message
+  = ServiceRequest ServiceName
+  | ServiceAccept  ServiceName
+  | UserAuthRequest UserName ServiceName MethodName
+  | UserAuthFailure
+  | UserAuthSuccess
+  | ChannelOpen    BS.ByteString Word32 Word32 Word32
+  | ChannelOpenConfirmation Word32 Word32 Word32 Word32
+  | ChannelRequest Word32 ChannelRequest
+  deriving (Show)
+
+data ChannelRequest
+  = ChannelRequestPTY
+    { crptyWantReply     :: Bool
+    , crptyTerminal      :: BS.ByteString
+    , crptyWidthCols     :: Word32
+    , crptyHeightRows    :: Word32
+    , crptyWidthPixels   :: Word32
+    , crptyHeightPixels  :: Word32
+    , crptyTerminalModes :: BS.ByteString
+    }
+  | ChannelRequestOther
+    { crother           :: BS.ByteString
+    } deriving (Eq, Ord, Show)
+
+data ServiceName
+  = ServiceUserAuth
+  | ServiceConnection
+  deriving (Eq, Ord, Show)
+
+messageParser :: B.Get Message
+messageParser = B.getWord8 >>= \case
+  0x05 -> ServiceRequest        <$> serviceParser
+  0x06 -> ServiceAccept         <$> serviceParser
+  0x32 -> UserAuthRequest       <$> (UserName <$> bs) <*> serviceParser <*> (MethodName <$> bs)
+  90   -> channelOpenParser
+  98   -> ChannelRequest        <$> B.getWord32be <*> channelRequestParser
+  -- 99  -> SUCESS
+  -- 100 -> FAILURE
+
+  _    -> fail "UNKNOWN MESSAGE TYPE"
+  where
+    serviceParser = do
+      len <- B.getWord32be
+      B.getByteString (fromIntegral len) >>= \case
+        "ssh-userauth"   -> pure ServiceUserAuth
+        "ssh-connection" -> pure ServiceConnection
+        _                -> fail "UNKNOWN SERVICE REQUEST"
+    channelOpenParser =
+      ChannelOpen <$> bs <*> B.getWord32be <*> B.getWord32be <*> B.getWord32be
+    channelRequestParser = bs >>= \case
+      "pty-req" -> ChannelRequestPTY
+        <$> ( B.getWord8 >>= \case { 0x00 -> pure False; _ -> pure True } )
+        <*> bs
+        <*> B.getWord32be
+        <*> B.getWord32be
+        <*> B.getWord32be
+        <*> B.getWord32be
+        <*> bs
+      other     -> pure (ChannelRequestOther other)
+
+    bs = do
+      len <- B.getWord32be
+      B.getByteString (fromIntegral len)
+
+messageBuilder :: Message -> BS.Builder
+messageBuilder = \case
+  ServiceRequest srv -> BS.word8 0x05 <> serviceBuilder srv
+  ServiceAccept  srv -> BS.word8 0x06 <> serviceBuilder srv
+  UserAuthSuccess    -> BS.word8 0x34
+  ChannelOpenConfirmation a b c d ->
+    BS.word8 91 <> BS.word32BE a <> BS.word32BE b <> BS.word32BE d <> BS.word32BE d
+  otherwise          -> error (show otherwise)
+  where
+    serviceBuilder ServiceUserAuth   = BS.word32BE 12 <> BS.byteString "ssh-userauth"
+    serviceBuilder ServiceConnection = BS.word32BE 14 <> BS.byteString "ssh-connection"
