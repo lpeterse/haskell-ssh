@@ -60,10 +60,9 @@ main = bracket open close accept
 
       S.sendAllBuilder s 4096 (packetize $ BS.word8 20 <> kexInitBuilder serverKexInit) S.msgNoSignal
       bs <- S.receive s 32000 S.msgNoSignal
+
       let clientEphemeralPublicKey = B.runGet (unpacketize kexRequestParser) (LBS.fromStrict bs)
-
       let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
-
       let hash = exchangeHash
             clientVersionString      -- check
             serverVersionString      -- check
@@ -73,28 +72,20 @@ main = bracket open close accept
             clientEphemeralPublicKey -- check
             serverEphemeralPublicKey -- check
             dhSecret                 -- check (client pubkey + server seckey)
-      let sess = hash
-
+      let sess      = hash
       let signature = Ed25519.sign serverSecretKey serverPublicKey hash
-      let reply = KexReply {
+      let reply     = KexReply {
           serverPublicHostKey      = serverPublicKey
         , serverPublicEphemeralKey = serverEphemeralPublicKey
         , exchangeHashSignature    = signature
         }
-      print reply
+
       S.sendAllBuilder s 4096 (packetize $ kexReplyBuilder reply) S.msgNoSignal
       S.sendAllBuilder s 4096 (packetize $ newKeysBuilder) S.msgNoSignal
+      void $ S.receive s 32000 S.msgNoSignal -- newkeys
 
-      let ivCS_K1:ivCS_K2:_ = deriveKeys dhSecret hash "A" sess
-      let ivSC_K1:ivSC_K2:_ = deriveKeys dhSecret hash "B" sess
       let ekCS_K1:ekCS_K2:_ = deriveKeys dhSecret hash "C" sess
       let ekSC_K1:ekSC_K2:_ = deriveKeys dhSecret hash "D" sess
-      let ikCS_K1:ikCS_K2:_ = deriveKeys dhSecret hash "E" sess
-      let ikSC_K1:ikSC_K2:_ = deriveKeys dhSecret hash "F" sess
-
-      bs <- S.receive s 32000 S.msgNoSignal
-      print "NEWKEYS"
-      print bs
 
       serveConnection $ ConnectionState
         (\b-> S.sendAll s b S.msgNoSignal >> pure ())
@@ -153,12 +144,6 @@ serveConnection st = evalStateT m st
   where
   Connection m = connectionHandler
 
-poly1305KeyLen :: Int
-poly1305KeyLen = 32
-
-poly1305TagLen :: Int
-poly1305TagLen = 16
-
 unpacket :: BS.ByteString -> Maybe BS.ByteString
 unpacket bs = do
   (h,ts) <- BS.uncons bs
@@ -209,4 +194,3 @@ decrypt seqnr headerKey mainKey receive = do
     st1           = ChaCha.initialize 20 headerKey nonceBS
     st2           = ChaCha.initialize 20 mainKey   nonceBS
     (poly, st3)   = ChaCha.generate st2 64
-
