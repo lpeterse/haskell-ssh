@@ -17,6 +17,7 @@ import qualified Data.ByteString.Lazy           as LBS
 import           Data.Function                  (fix)
 import qualified Data.Map.Strict                as M
 import           Data.Monoid
+import           Data.Word
 import           Network.SSH
 import qualified System.Socket                  as S
 import qualified System.Socket.Family.Inet6     as S
@@ -92,12 +93,15 @@ main = bracket open close accept
         (\b-> S.sendAll s b S.msgNoSignal >> pure ())
         (\i-> S.receive s i S.msgNoSignal)
         ekCS_K2 ekCS_K1 ekSC_K2 ekSC_K1
-        3 3
+        3 3 mempty
 
 class (Monad m) => ConnectionM m where
-  send    :: Message -> m ()
-  receive :: m Message
-  println :: Show a => a -> m ()
+  send           :: Message -> m ()
+  receive        :: m Message
+  println        :: Show a => a -> m ()
+  openChannel    :: Word32 -> m (Maybe Word32)
+  closeChannel   :: Word32 -> m (Maybe Word32)
+  modifyChannel_ :: Word32 -> (Word32 -> Channel -> m Channel) -> m ()
 
 newtype Connection a
   = Connection (StateT ConnectionState IO a)
@@ -115,6 +119,33 @@ instance ConnectionM Connection where
     pure $ B.runGet messageParser (LBS.fromStrict bs)
   println x = Connection $ do
     lift (print x)
+  openChannel n = Connection $ do
+    st <- get
+    lift $ print (channels st)
+    case available st of
+      Nothing -> pure Nothing
+      Just m  -> put st { channels = M.insert m (Just (n, Channel mempty)) (channels st) } >> pure (Just m)
+    where
+      available st      = f 1 $ M.keys (channels st)
+      f i []            = Just i
+      f i (k:ks)
+        | i == maxBound = Nothing
+        | i == k        = f (i+1) ks
+        | otherwise     = Just i
+  closeChannel n = Connection $ do
+    st <- get
+    case M.lookup n (channels st) of
+      Nothing           -> fail "CHANNEL DOES NOT EXIST (1)"
+      Just Nothing      -> put st { channels = M.delete n         (channels st) } >> pure Nothing
+      Just (Just (m,_)) -> put st { channels = M.insert n Nothing (channels st) } >> pure (Just m)
+  modifyChannel_ n f = Connection $ do
+    st <- get
+    case M.lookup n (channels st) of
+      Nothing           -> fail "CHANNEL DOES NOT EXIST (2)"
+      Just Nothing      -> fail "CHANNEL IS CLOSING"
+      Just (Just (m,c)) -> do
+        c' <- let Connection x = f m c in x
+        put st { channels = M.insert n (Just (m,c')) (channels st) }
 
 data ConnectionState
   = ConnectionState
@@ -126,11 +157,11 @@ data ConnectionState
   , ekSC_K1   :: Hash.Digest Hash.SHA256
   , seqIN     :: Int
   , seqOUT    :: Int
-  , channels  :: M.Map Word32 Channel
+  , channels  :: M.Map Word32 (Maybe (Word32, Channel))
   }
 
 data Channel
-  = EchoChannel BS.ByteString
+  = Channel BS.ByteString
   deriving (Eq, Ord, Show)
 
 connectionHandler :: ConnectionM m => m ()
@@ -138,10 +169,19 @@ connectionHandler = fix $ \continue->
   receive >>= \case
     ServiceRequest x    -> send (ServiceAccept x) >> continue
     UserAuthRequest {}  -> send UserAuthSuccess >> continue
-    ChannelOpen _ c x y -> send (ChannelOpenConfirmation c c x y) >> continue
+    ChannelOpen _ n x y -> do
+      Just m <- openChannel n
+      send (ChannelOpenConfirmation n m x y) >> continue
     ChannelRequest c r  -> send (ChannelRequestSuccess c) >> continue
-    ChannelData    c s  -> println s >> continue
+    ChannelData    n s  -> do
+      modifyChannel_ n $ \m (Channel b)-> do
+        println (n,m,b)
+        pure (Channel $ b <> s)
+      continue
     ChannelEof     c    -> continue
+    ChannelClose   n    -> closeChannel n >>= \case
+      Nothing -> continue
+      Just m  -> send (ChannelClose m) >> continue
     Disconnect _ b _    -> println b
     other               -> println other
 

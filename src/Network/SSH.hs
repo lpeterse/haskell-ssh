@@ -304,6 +304,7 @@ data Message
   | ChannelRequestFailure Word32
   | ChannelData           Word32 BS.ByteString
   | ChannelEof            Word32
+  | ChannelClose          Word32
   deriving (Show)
 
 data ChannelRequest
@@ -337,6 +338,7 @@ messageParser = B.getWord8 >>= \case
   90   -> channelOpenParser
   94   -> ChannelData           <$> uint32 <*> string
   96   -> ChannelEof            <$> uint32
+  97   -> ChannelClose          <$> uint32
   98   -> ChannelRequest        <$> uint32 <*> channelRequestParser
   99   -> ChannelRequestSuccess <$> uint32
   100  -> ChannelRequestFailure <$> uint32
@@ -380,6 +382,7 @@ messageBuilder = \case
   UserAuthSuccess    -> BS.word8 0x34
   ChannelOpenConfirmation a b c d ->
     BS.word8 91 <> BS.word32BE a <> BS.word32BE b <> BS.word32BE d <> BS.word32BE d
+  ChannelClose n          -> BS.word8  97 <> BS.word32BE n
   ChannelRequestSuccess c -> BS.word8  99 <> BS.word32BE c
   ChannelRequestFailure c -> BS.word8 100 <> BS.word32BE c
   otherwise          -> error (show otherwise)
