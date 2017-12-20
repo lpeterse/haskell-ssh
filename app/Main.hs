@@ -15,6 +15,7 @@ import qualified Data.ByteString                as BS
 import qualified Data.ByteString.Builder        as BS
 import qualified Data.ByteString.Lazy           as LBS
 import           Data.Function                  (fix)
+import qualified Data.Map.Strict                as M
 import           Data.Monoid
 import           Network.SSH
 import qualified System.Socket                  as S
@@ -125,7 +126,12 @@ data ConnectionState
   , ekSC_K1   :: Hash.Digest Hash.SHA256
   , seqIN     :: Int
   , seqOUT    :: Int
+  , channels  :: M.Map Word32 Channel
   }
+
+data Channel
+  = EchoChannel BS.ByteString
+  deriving (Eq, Ord, Show)
 
 connectionHandler :: ConnectionM m => m ()
 connectionHandler = fix $ \continue->

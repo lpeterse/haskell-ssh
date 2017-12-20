@@ -18,6 +18,7 @@ dependencies:
 - binary
 - bytestring
 - mtl
+- containers
 
 library:
   source-dirs: src
@@ -36,6 +37,7 @@ executables:
     - binary
     - bytestring
     - mtl
+    - containers
 
 tests:
   hssh-test:
