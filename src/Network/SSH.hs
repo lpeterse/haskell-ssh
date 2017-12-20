@@ -291,14 +291,19 @@ newtype UserName   = UserName   BS.ByteString deriving (Eq, Ord, Show)
 newtype MethodName = MethodName BS.ByteString deriving (Eq, Ord, Show)
 
 data Message
-  = ServiceRequest ServiceName
+  = Disconnect            Word32 BS.ByteString BS.ByteString
+  | ServiceRequest ServiceName
   | ServiceAccept  ServiceName
   | UserAuthRequest UserName ServiceName MethodName
   | UserAuthFailure
   | UserAuthSuccess
   | ChannelOpen    BS.ByteString Word32 Word32 Word32
   | ChannelOpenConfirmation Word32 Word32 Word32 Word32
-  | ChannelRequest Word32 ChannelRequest
+  | ChannelRequest        Word32 ChannelRequest
+  | ChannelRequestSuccess Word32
+  | ChannelRequestFailure Word32
+  | ChannelData           Word32 BS.ByteString
+  | ChannelEof            Word32
   deriving (Show)
 
 data ChannelRequest
@@ -311,6 +316,9 @@ data ChannelRequest
     , crptyHeightPixels  :: Word32
     , crptyTerminalModes :: BS.ByteString
     }
+  | ChannelRequestShell
+    { crshlWantReply     :: Bool
+    }
   | ChannelRequestOther
     { crother           :: BS.ByteString
     } deriving (Eq, Ord, Show)
@@ -322,38 +330,48 @@ data ServiceName
 
 messageParser :: B.Get Message
 messageParser = B.getWord8 >>= \case
+  1    -> Disconnect            <$> uint32 <*> string <*> string
   0x05 -> ServiceRequest        <$> serviceParser
   0x06 -> ServiceAccept         <$> serviceParser
-  0x32 -> UserAuthRequest       <$> (UserName <$> bs) <*> serviceParser <*> (MethodName <$> bs)
+  0x32 -> UserAuthRequest       <$> (UserName <$> string) <*> serviceParser <*> (MethodName <$> string)
   90   -> channelOpenParser
-  98   -> ChannelRequest        <$> B.getWord32be <*> channelRequestParser
-  -- 99  -> SUCESS
+  94   -> ChannelData           <$> uint32 <*> string
+  96   -> ChannelEof            <$> uint32
+  98   -> ChannelRequest        <$> uint32 <*> channelRequestParser
+  99   -> ChannelRequestSuccess <$> uint32
+  100  -> ChannelRequestFailure <$> uint32
   -- 100 -> FAILURE
 
   _    -> fail "UNKNOWN MESSAGE TYPE"
   where
     serviceParser = do
-      len <- B.getWord32be
+      len <- uint32
       B.getByteString (fromIntegral len) >>= \case
         "ssh-userauth"   -> pure ServiceUserAuth
         "ssh-connection" -> pure ServiceConnection
         _                -> fail "UNKNOWN SERVICE REQUEST"
     channelOpenParser =
-      ChannelOpen <$> bs <*> B.getWord32be <*> B.getWord32be <*> B.getWord32be
-    channelRequestParser = bs >>= \case
+      ChannelOpen <$> string <*> uint32 <*> uint32 <*> uint32
+    channelRequestParser = string >>= \case
       "pty-req" -> ChannelRequestPTY
-        <$> ( B.getWord8 >>= \case { 0x00 -> pure False; _ -> pure True } )
-        <*> bs
-        <*> B.getWord32be
-        <*> B.getWord32be
-        <*> B.getWord32be
-        <*> B.getWord32be
-        <*> bs
+        <$> bool
+        <*> string
+        <*> uint32
+        <*> uint32
+        <*> uint32
+        <*> uint32
+        <*> string
+      "shell"   -> ChannelRequestShell <$> bool
       other     -> pure (ChannelRequestOther other)
 
-    bs = do
+    uint8 = B.getWord8
+    uint32 = B.getWord32be
+    string = do
       len <- B.getWord32be
       B.getByteString (fromIntegral len)
+    bool = B.getWord8 >>= \case
+      0x00 -> pure False
+      _ -> pure True
 
 messageBuilder :: Message -> BS.Builder
 messageBuilder = \case
@@ -362,6 +380,8 @@ messageBuilder = \case
   UserAuthSuccess    -> BS.word8 0x34
   ChannelOpenConfirmation a b c d ->
     BS.word8 91 <> BS.word32BE a <> BS.word32BE b <> BS.word32BE d <> BS.word32BE d
+  ChannelRequestSuccess c -> BS.word8  99 <> BS.word32BE c
+  ChannelRequestFailure c -> BS.word8 100 <> BS.word32BE c
   otherwise          -> error (show otherwise)
   where
     serviceBuilder ServiceUserAuth   = BS.word32BE 12 <> BS.byteString "ssh-userauth"

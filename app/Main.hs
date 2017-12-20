@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
@@ -10,6 +11,7 @@ import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
 import qualified Data.ByteString.Builder        as BS
 import qualified Data.ByteString.Lazy           as LBS
+import           Data.Function                  (fix)
 import           Data.Monoid
 import           Network.SSH
 import qualified System.Socket                  as S
@@ -91,51 +93,44 @@ main = bracket open close accept
       print "NEWKEYS"
       print bs
 
-      plain3 <- decrypt 3 ekCS_K2 ekCS_K1 (\i->S.receive s i S.msgNoSignal)
-      print "RECV PLAIN3"
-      print plain3
-      let msg3 = B.runGet messageParser $ LBS.fromStrict $ plain3
-      print msg3
+      let dispatch msg = case msg of
+            Disconnect _ b _    -> print b >> pure Nothing
+            ServiceRequest x    -> pure $ Just [ServiceAccept x]
+            UserAuthRequest {}  -> pure $ Just [UserAuthSuccess]
+            ChannelOpen _ c x y -> pure $ Just [ChannelOpenConfirmation c c x y]
+            ChannelRequest c r  -> pure $ Just [ChannelRequestSuccess c]
+            ChannelEof     c    -> pure $ Just []
+            other               -> print other >> pure (Just [])
 
-      let ciph = encrypt 3 ekSC_K2 ekSC_K1 $ messageBuilder $ ServiceAccept ServiceUserAuth
-      print $ BS.length ciph
-      S.sendAll s ciph S.msgNoSignal
+      dialog
+        (\b-> S.sendAll s b S.msgNoSignal >> pure ())
+        (\i-> S.receive s i S.msgNoSignal)
+        ekCS_K2 ekCS_K1 ekSC_K2 ekSC_K1
+        dispatch
+        3 3
 
-      print "RECV PLAIN4"
-      plain4 <- decrypt 4 ekCS_K2 ekCS_K1 (\i->S.receive s i S.msgNoSignal)
-      print plain4
-      let msg4 = B.runGet messageParser $ LBS.fromStrict $ plain4
-      print msg4
-
-      let ciph = encrypt 4 ekSC_K2 ekSC_K1 $ messageBuilder $ UserAuthSuccess
-      print $ BS.length ciph
-      S.sendAll s ciph S.msgNoSignal
-
-      print "RECV PLAIN5"
-      plain5 <- decrypt 5 ekCS_K2 ekCS_K1 (\i->S.receive s i S.msgNoSignal)
-      print plain5
-      let q@(ChannelOpen _ c x y) = B.runGet messageParser $ LBS.fromStrict $ plain5
-      print q
-
-      let plain = ChannelOpenConfirmation c c x y
-      let ciph = encrypt 5 ekSC_K2 ekSC_K1 $ messageBuilder plain
-      print "SEND 5:"
-      print plain
-      S.sendAll s ciph S.msgNoSignal
-
-      print "RECV PLAIN6"
-      plain6 <- decrypt 6 ekCS_K2 ekCS_K1 (\i->S.receive s i S.msgNoSignal)
-      print plain6
-      let q = B.runGet messageParser $ LBS.fromStrict $ plain6
-      print q
-
-
-
-      print "ENDE"
-
-      --forever $ do
-      --  bs <- S.receive s 32000 S.msgNoSignal
-      --  print bs
+dialog :: (BA.ByteArrayAccess ba)
+       => (BS.ByteString -> IO ())
+       -> (Int -> IO BS.ByteString)
+       -> ba -> ba -> ba -> ba
+       -> (Message -> IO (Maybe [Message]))
+       -> Int -> Int
+       -> IO ()
+dialog send receive ekCS_K2 ekCS_K1 ekSC_K2 ekSC_K1 dispatch = loop
+  where
+    loop seqIN seqOUT = do
+      requestBS <- decrypt seqIN ekCS_K2 ekCS_K1 receive
+      print requestBS
+      let request = B.runGet messageParser (LBS.fromStrict requestBS)
+      -- print request
+      dispatch request >>= \case
+        Nothing -> pure ()
+        Just replies -> do
+          print replies
+          forM_ (zip replies [seqOUT..]) $ \(reply,seqOUT')-> do
+            let ciph = encrypt seqOUT' ekSC_K2 ekSC_K1 (messageBuilder reply)
+            send ciph
+          loop (seqIN + 1) (seqOUT + length replies)
 
 poly1305KeyLen :: Int
 poly1305KeyLen = 32
