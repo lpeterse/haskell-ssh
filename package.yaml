@@ -17,6 +17,7 @@ dependencies:
 - base >= 4.7 && < 5
 - binary
 - bytestring
+- mtl
 
 library:
   source-dirs: src
@@ -34,6 +35,7 @@ executables:
     - socket
     - binary
     - bytestring
+    - mtl
 
 tests:
   hssh-test:

@@ -1,10 +1,13 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE OverloadedStrings          #-}
 module Main where
 
 import           Control.Exception              (bracket)
 import           Control.Monad                  (forever)
 import           Control.Monad                  (forM_, when)
+import           Control.Monad.Reader
+import           Control.Monad.State.Lazy
 import qualified Crypto.PubKey.Curve25519       as DH
 import qualified Data.Binary.Get                as B
 import qualified Data.ByteArray                 as BA
@@ -93,44 +96,62 @@ main = bracket open close accept
       print "NEWKEYS"
       print bs
 
-      let dispatch msg = case msg of
-            Disconnect _ b _    -> print b >> pure Nothing
-            ServiceRequest x    -> pure $ Just [ServiceAccept x]
-            UserAuthRequest {}  -> pure $ Just [UserAuthSuccess]
-            ChannelOpen _ c x y -> pure $ Just [ChannelOpenConfirmation c c x y]
-            ChannelRequest c r  -> pure $ Just [ChannelRequestSuccess c]
-            ChannelEof     c    -> pure $ Just []
-            other               -> print other >> pure (Just [])
-
-      dialog
+      serveConnection $ ConnectionState
         (\b-> S.sendAll s b S.msgNoSignal >> pure ())
         (\i-> S.receive s i S.msgNoSignal)
         ekCS_K2 ekCS_K1 ekSC_K2 ekSC_K1
-        dispatch
         3 3
 
-dialog :: (BA.ByteArrayAccess ba)
-       => (BS.ByteString -> IO ())
-       -> (Int -> IO BS.ByteString)
-       -> ba -> ba -> ba -> ba
-       -> (Message -> IO (Maybe [Message]))
-       -> Int -> Int
-       -> IO ()
-dialog send receive ekCS_K2 ekCS_K1 ekSC_K2 ekSC_K1 dispatch = loop
+class (Monad m) => ConnectionM m where
+  send    :: Message -> m ()
+  receive :: m Message
+  println :: Show a => a -> m ()
+
+newtype Connection a
+  = Connection (StateT ConnectionState IO a)
+  deriving (Functor, Applicative, Monad)
+
+instance ConnectionM Connection where
+  send msg = Connection $ do
+    st <- get
+    lift $ sendBS st $ encrypt (seqOUT st) (ekSC_K2 st) (ekSC_K1 st) (messageBuilder msg)
+    put st { seqOUT = seqOUT st + 1 }
+  receive = Connection $ do
+    st <- get
+    bs <- lift $ decrypt (seqIN st) (ekCS_K2 st) (ekCS_K1 st) (receiveBS st)
+    put st { seqIN = seqIN st + 1 }
+    pure $ B.runGet messageParser (LBS.fromStrict bs)
+  println x = Connection $ do
+    lift (print x)
+
+data ConnectionState
+  = ConnectionState
+  { sendBS    :: BS.ByteString -> IO ()
+  , receiveBS :: Int -> IO BS.ByteString
+  , ekCS_K2   :: Hash.Digest Hash.SHA256
+  , ekCS_K1   :: Hash.Digest Hash.SHA256
+  , ekSC_K2   :: Hash.Digest Hash.SHA256
+  , ekSC_K1   :: Hash.Digest Hash.SHA256
+  , seqIN     :: Int
+  , seqOUT    :: Int
+  }
+
+connectionHandler :: ConnectionM m => m ()
+connectionHandler = fix $ \continue->
+  receive >>= \case
+    ServiceRequest x    -> send (ServiceAccept x) >> continue
+    UserAuthRequest {}  -> send UserAuthSuccess >> continue
+    ChannelOpen _ c x y -> send (ChannelOpenConfirmation c c x y) >> continue
+    ChannelRequest c r  -> send (ChannelRequestSuccess c) >> continue
+    ChannelData    c s  -> println s >> continue
+    ChannelEof     c    -> continue
+    Disconnect _ b _    -> println b
+    other               -> println other
+
+serveConnection :: ConnectionState -> IO ()
+serveConnection st = evalStateT m st
   where
-    loop seqIN seqOUT = do
-      requestBS <- decrypt seqIN ekCS_K2 ekCS_K1 receive
-      print requestBS
-      let request = B.runGet messageParser (LBS.fromStrict requestBS)
-      -- print request
-      dispatch request >>= \case
-        Nothing -> pure ()
-        Just replies -> do
-          print replies
-          forM_ (zip replies [seqOUT..]) $ \(reply,seqOUT')-> do
-            let ciph = encrypt seqOUT' ekSC_K2 ekSC_K1 (messageBuilder reply)
-            send ciph
-          loop (seqIN + 1) (seqOUT + length replies)
+  Connection m = connectionHandler
 
 poly1305KeyLen :: Int
 poly1305KeyLen = 32

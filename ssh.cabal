@@ -34,7 +34,8 @@ library
       binary,
       bytestring,
       cryptonite,
-      memory
+      memory,
+      mtl
   exposed-modules:
       Network.SSH
   other-modules:
@@ -54,6 +55,7 @@ executable hssh
     , bytestring
     , cryptonite
     , memory
+    , mtl
   other-modules:
       Paths_ssh
   default-language: Haskell2010
