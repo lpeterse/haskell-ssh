@@ -173,8 +173,8 @@ data Channel
   = Channel BS.ByteString
   deriving (Eq, Ord, Show)
 
-connectionHandler :: ConnectionM m => m ()
-connectionHandler = fix $ \continue->
+messageDispatcher :: ConnectionM m => m ()
+messageDispatcher = fix $ \continue->
   receive >>= \case
     ServiceRequest x    -> send (ServiceAccept x) >> continue
     UserAuthRequest {}  -> send UserAuthSuccess >> continue
@@ -205,7 +205,7 @@ serveConnection cfg = do
     `race_` sender queueOUT 3
     `race_` receiver queueIN 3
   where
-    Connection m = connectionHandler
+    Connection m = messageDispatcher
     sender q i = do
       msg <- takeMVar q
       sendBS cfg $ encrypt i (ekSC_K2 cfg) (ekSC_K1 cfg) (messageBuilder msg)
