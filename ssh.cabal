@@ -36,7 +36,8 @@ library
       cryptonite,
       memory,
       mtl,
-      containers
+      containers,
+      async
   exposed-modules:
       Network.SSH
   other-modules:
@@ -58,6 +59,7 @@ executable hssh
     , memory
     , mtl
     , containers
+    , async
   other-modules:
       Paths_ssh
   default-language: Haskell2010

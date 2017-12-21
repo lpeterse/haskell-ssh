@@ -382,6 +382,7 @@ messageBuilder = \case
   UserAuthSuccess    -> BS.word8 0x34
   ChannelOpenConfirmation a b c d ->
     BS.word8 91 <> BS.word32BE a <> BS.word32BE b <> BS.word32BE d <> BS.word32BE d
+  ChannelData           n s -> BS.word8 94 <> BS.word32BE n <> BS.word32BE (fromIntegral $ BS.length s) <> BS.byteString s
   ChannelClose n          -> BS.word8  97 <> BS.word32BE n
   ChannelRequestSuccess c -> BS.word8  99 <> BS.word32BE c
   ChannelRequestFailure c -> BS.word8 100 <> BS.word32BE c

@@ -24,6 +24,8 @@ import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 
+import           Control.Concurrent.Async
+import           Control.Concurrent.MVar
 import qualified Crypto.Cipher.ChaCha           as ChaCha
 import qualified Crypto.Cipher.ChaChaPoly1305   as ChaChaPoly1305
 import           Crypto.Error
@@ -89,11 +91,10 @@ main = bracket open close accept
       let ekCS_K1:ekCS_K2:_ = deriveKeys dhSecret hash "C" sess
       let ekSC_K1:ekSC_K2:_ = deriveKeys dhSecret hash "D" sess
 
-      serveConnection $ ConnectionState
+      serveConnection $ ConnectionConfig
         (\b-> S.sendAll s b S.msgNoSignal >> pure ())
         (\i-> S.receive s i S.msgNoSignal)
         ekCS_K2 ekCS_K1 ekSC_K2 ekSC_K1
-        3 3 mempty
 
 class (Monad m) => ConnectionM m where
   send           :: Message -> m ()
@@ -101,6 +102,7 @@ class (Monad m) => ConnectionM m where
   println        :: Show a => a -> m ()
   openChannel    :: Word32 -> m (Maybe Word32)
   closeChannel   :: Word32 -> m (Maybe Word32)
+  withChannel    :: Word32 -> (Word32 -> Channel -> m a) -> m a
   modifyChannel_ :: Word32 -> (Word32 -> Channel -> m Channel) -> m ()
 
 newtype Connection a
@@ -110,13 +112,10 @@ newtype Connection a
 instance ConnectionM Connection where
   send msg = Connection $ do
     st <- get
-    lift $ sendBS st $ encrypt (seqOUT st) (ekSC_K2 st) (ekSC_K1 st) (messageBuilder msg)
-    put st { seqOUT = seqOUT st + 1 }
+    lift $ sendMsg st msg
   receive = Connection $ do
     st <- get
-    bs <- lift $ decrypt (seqIN st) (ekCS_K2 st) (ekCS_K1 st) (receiveBS st)
-    put st { seqIN = seqIN st + 1 }
-    pure $ B.runGet messageParser (LBS.fromStrict bs)
+    lift $ receiveMsg st
   println x = Connection $ do
     lift (print x)
   openChannel n = Connection $ do
@@ -138,6 +137,12 @@ instance ConnectionM Connection where
       Nothing           -> fail "CHANNEL DOES NOT EXIST (1)"
       Just Nothing      -> put st { channels = M.delete n         (channels st) } >> pure Nothing
       Just (Just (m,_)) -> put st { channels = M.insert n Nothing (channels st) } >> pure (Just m)
+  withChannel n f = Connection $ do
+    st <- get
+    case M.lookup n (channels st) of
+      Nothing           -> fail "CHANNEL DOES NOT EXIST (2)"
+      Just Nothing      -> fail "CHANNEL IS CLOSING"
+      Just (Just (m,c)) -> let Connection x = f m c in x
   modifyChannel_ n f = Connection $ do
     st <- get
     case M.lookup n (channels st) of
@@ -149,15 +154,19 @@ instance ConnectionM Connection where
 
 data ConnectionState
   = ConnectionState
+  { sendMsg    :: Message -> IO ()
+  , receiveMsg :: IO Message
+  , channels   :: M.Map Word32 (Maybe (Word32, Channel))
+  }
+
+data ConnectionConfig
+  = ConnectionConfig
   { sendBS    :: BS.ByteString -> IO ()
   , receiveBS :: Int -> IO BS.ByteString
   , ekCS_K2   :: Hash.Digest Hash.SHA256
   , ekCS_K1   :: Hash.Digest Hash.SHA256
   , ekSC_K2   :: Hash.Digest Hash.SHA256
   , ekSC_K1   :: Hash.Digest Hash.SHA256
-  , seqIN     :: Int
-  , seqOUT    :: Int
-  , channels  :: M.Map Word32 (Maybe (Word32, Channel))
   }
 
 data Channel
@@ -174,9 +183,10 @@ connectionHandler = fix $ \continue->
       send (ChannelOpenConfirmation n m x y) >> continue
     ChannelRequest c r  -> send (ChannelRequestSuccess c) >> continue
     ChannelData    n s  -> do
-      modifyChannel_ n $ \m (Channel b)-> do
-        println (n,m,b)
-        pure (Channel $ b <> s)
+      --modifyChannel_ n $ \m (Channel b)-> do
+      --  println (n,m,b)
+      --  pure (Channel $ b <> s)
+      withChannel n $ \m c-> send (ChannelData m s)
       continue
     ChannelEof     c    -> continue
     ChannelClose   n    -> closeChannel n >>= \case
@@ -185,10 +195,25 @@ connectionHandler = fix $ \continue->
     Disconnect _ b _    -> println b
     other               -> println other
 
-serveConnection :: ConnectionState -> IO ()
-serveConnection st = evalStateT m st
+serveConnection :: ConnectionConfig -> IO ()
+serveConnection cfg = do
+  queueIN  <- newEmptyMVar
+  queueOUT <- newEmptyMVar
+  let s = putMVar queueOUT
+  let r = takeMVar queueIN
+  evalStateT m (ConnectionState s r mempty)
+    `race_` sender queueOUT 3
+    `race_` receiver queueIN 3
   where
-  Connection m = connectionHandler
+    Connection m = connectionHandler
+    sender q i = do
+      msg <- takeMVar q
+      sendBS cfg $ encrypt i (ekSC_K2 cfg) (ekSC_K1 cfg) (messageBuilder msg)
+      sender q (i + 1)
+    receiver q i = do
+      bs <- decrypt i (ekCS_K2 cfg) (ekCS_K1 cfg) (receiveBS cfg)
+      putMVar q $ B.runGet messageParser (LBS.fromStrict bs)
+      receiver q (i + 1)
 
 unpacket :: BS.ByteString -> Maybe BS.ByteString
 unpacket bs = do
@@ -240,3 +265,21 @@ decrypt seqnr headerKey mainKey receive = do
     st1           = ChaCha.initialize 20 headerKey nonceBS
     st2           = ChaCha.initialize 20 mainKey   nonceBS
     (poly, st3)   = ChaCha.generate st2 64
+
+{-
+newShell :: IO (BS.ByteString -> IO (), IO BS.ByteString, IO BS.ByteString, Async Word8)
+newShell = do
+  stdin  <- newEmptyMVar
+  stdout <- newEmptyMVar
+  stderr <- newEmptyMVar
+  a      <- async (echo stdin stdout `race_` ping stdout)
+  pure (putMVar stdin, takeMVar stdout, takeMVar stderr, a)
+  where
+    echo stdin =
+      takeMVar stdin >>= \case
+        "X" -> pure 0
+        x   -> putMVar stdout x
+    ping = forever $ do
+      threadDelay 1000000
+      putMVar stdout "PING\n"
+-}
