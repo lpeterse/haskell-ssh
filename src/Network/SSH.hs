@@ -19,6 +19,7 @@ import           Data.Int
 import qualified Data.List                as L
 import           Data.Monoid
 import           Data.Word
+import           System.Exit
 
 serverVersionString :: BS.ByteString
 serverVersionString
@@ -290,21 +291,27 @@ deriveKeys sec hash i sess =
 newtype UserName   = UserName   BS.ByteString deriving (Eq, Ord, Show)
 newtype MethodName = MethodName BS.ByteString deriving (Eq, Ord, Show)
 
+data DisconnectReason
+  = DisconnectReason Word32
+  deriving (Eq, Ord, Show)
+
 data Message
-  = Disconnect            Word32 BS.ByteString BS.ByteString
+  = Disconnect     DisconnectReason BS.ByteString BS.ByteString
   | ServiceRequest ServiceName
   | ServiceAccept  ServiceName
   | UserAuthRequest UserName ServiceName MethodName
   | UserAuthFailure
   | UserAuthSuccess
-  | ChannelOpen    BS.ByteString Word32 Word32 Word32
-  | ChannelOpenConfirmation Word32 Word32 Word32 Word32
-  | ChannelRequest        Word32 ChannelRequest
-  | ChannelRequestSuccess Word32
-  | ChannelRequestFailure Word32
-  | ChannelData           Word32 BS.ByteString
-  | ChannelEof            Word32
-  | ChannelClose          Word32
+  | ChannelOpen             ChannelType ChannelId InitWindowSize MaxPacketSize
+  | ChannelOpenConfirmation ChannelId ChannelId InitWindowSize MaxPacketSize
+  | ChannelOpenFailure      ChannelId ChannelOpenFailureReason BS.ByteString BS.ByteString
+  | ChannelRequest          ChannelId ChannelRequest
+  | ChannelRequestSuccess   ChannelId
+  | ChannelRequestFailure   ChannelId
+  | ChannelData             ChannelId BS.ByteString
+  | ChannelDataExtended     ChannelId Word32 BS.ByteString
+  | ChannelEof              ChannelId
+  | ChannelClose            ChannelId
   deriving (Show)
 
 data ChannelRequest
@@ -329,19 +336,39 @@ data ServiceName
   | ServiceConnection
   deriving (Eq, Ord, Show)
 
+newtype ChannelType     = ChannelType BS.ByteString deriving (Eq, Ord, Show)
+newtype ChannelId  = ChannelId Word32 deriving (Eq, Ord, Show)
+newtype InitWindowSize  = InitWindowSize Word32 deriving (Eq, Ord, Show)
+newtype MaxPacketSize   = MaxPacketSize Word32 deriving (Eq, Ord, Show)
+
+data ChannelOpenFailureReason
+  = AdministrativelyProhibited
+  | ConnectFailed
+  | UnknownChannelType
+  | ResourceShortage
+  deriving (Eq, Ord, Show)
+
 messageParser :: B.Get Message
 messageParser = B.getWord8 >>= \case
-  1    -> Disconnect            <$> uint32 <*> string <*> string
-  0x05 -> ServiceRequest        <$> serviceParser
-  0x06 -> ServiceAccept         <$> serviceParser
-  0x32 -> UserAuthRequest       <$> (UserName <$> string) <*> serviceParser <*> (MethodName <$> string)
-  90   -> channelOpenParser
-  94   -> ChannelData           <$> uint32 <*> string
-  96   -> ChannelEof            <$> uint32
-  97   -> ChannelClose          <$> uint32
-  98   -> ChannelRequest        <$> uint32 <*> channelRequestParser
-  99   -> ChannelRequestSuccess <$> uint32
-  100  -> ChannelRequestFailure <$> uint32
+  1    -> Disconnect
+      <$> (DisconnectReason <$> uint32)
+      <*> string
+      <*> string
+  5   -> ServiceRequest        <$> serviceParser
+  6   -> ServiceAccept         <$> serviceParser
+  50  -> UserAuthRequest       <$> (UserName <$> string) <*> serviceParser <*> (MethodName <$> string)
+  90  -> ChannelOpen
+      <$> (ChannelType     <$> string)
+      <*> (ChannelId <$> uint32)
+      <*> (InitWindowSize  <$> uint32)
+      <*> (MaxPacketSize   <$> uint32)
+  94  -> ChannelData           <$> (ChannelId <$> uint32) <*> string
+  95  -> ChannelDataExtended   <$> (ChannelId <$> uint32) <*> uint32 <*> string
+  96  -> ChannelEof            <$> (ChannelId <$> uint32)
+  97  -> ChannelClose          <$> (ChannelId <$> uint32)
+  98  -> ChannelRequest        <$> (ChannelId <$> uint32) <*> channelRequestParser
+  99  -> ChannelRequestSuccess <$> (ChannelId <$> uint32)
+  100 -> ChannelRequestFailure <$> (ChannelId <$> uint32)
   -- 100 -> FAILURE
 
   _    -> fail "UNKNOWN MESSAGE TYPE"
@@ -352,8 +379,7 @@ messageParser = B.getWord8 >>= \case
         "ssh-userauth"   -> pure ServiceUserAuth
         "ssh-connection" -> pure ServiceConnection
         _                -> fail "UNKNOWN SERVICE REQUEST"
-    channelOpenParser =
-      ChannelOpen <$> string <*> uint32 <*> uint32 <*> uint32
+
     channelRequestParser = string >>= \case
       "pty-req" -> ChannelRequestPTY
         <$> bool
@@ -380,12 +406,13 @@ messageBuilder = \case
   ServiceRequest srv -> BS.word8 0x05 <> serviceBuilder srv
   ServiceAccept  srv -> BS.word8 0x06 <> serviceBuilder srv
   UserAuthSuccess    -> BS.word8 0x34
-  ChannelOpenConfirmation a b c d ->
+  ChannelOpenConfirmation (ChannelId a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d) ->
     BS.word8 91 <> BS.word32BE a <> BS.word32BE b <> BS.word32BE d <> BS.word32BE d
-  ChannelData           n s -> BS.word8 94 <> BS.word32BE n <> BS.word32BE (fromIntegral $ BS.length s) <> BS.byteString s
-  ChannelClose n          -> BS.word8  97 <> BS.word32BE n
-  ChannelRequestSuccess c -> BS.word8  99 <> BS.word32BE c
-  ChannelRequestFailure c -> BS.word8 100 <> BS.word32BE c
+  ChannelData (ChannelId lid) s ->
+    BS.word8 94 <> BS.word32BE lid <> BS.word32BE (fromIntegral $ BS.length s) <> BS.byteString s
+  ChannelClose (ChannelId lid)          -> BS.word8  97 <> BS.word32BE lid
+  ChannelRequestSuccess (ChannelId lid) -> BS.word8  99 <> BS.word32BE lid
+  ChannelRequestFailure (ChannelId lid) -> BS.word8 100 <> BS.word32BE lid
   otherwise          -> error (show otherwise)
   where
     serviceBuilder ServiceUserAuth   = BS.word32BE 12 <> BS.byteString "ssh-userauth"

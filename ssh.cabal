@@ -37,9 +37,11 @@ library
       memory,
       mtl,
       containers,
-      async
+      async,
+      stm
   exposed-modules:
-      Network.SSH
+      Network.SSH,
+      Network.SSH.Connection
   other-modules:
       Paths_ssh
   default-language: Haskell2010
