@@ -116,24 +116,19 @@ kexInitParser = do
 kexInitBuilder :: KexMsg -> BS.Builder
 kexInitBuilder msg = mconcat
   [ BS.byteString (cookie msg)
-  , f (key_algorithms msg)
-  , f (server_host_key_algorithms msg)
-  , f (encryption_algorithms_client_to_server msg)
-  , f (encryption_algorithms_server_to_client msg)
-  , f (mac_algorithms_client_to_server msg)
-  , f (mac_algorithms_server_to_client msg)
-  , f (compression_algorithms_client_to_server msg)
-  , f (compression_algorithms_server_to_client msg)
-  , f (languages_client_to_server msg)
-  , f (languages_server_to_client msg)
+  , nameListBuilder (key_algorithms msg)
+  , nameListBuilder (server_host_key_algorithms msg)
+  , nameListBuilder (encryption_algorithms_client_to_server msg)
+  , nameListBuilder (encryption_algorithms_server_to_client msg)
+  , nameListBuilder (mac_algorithms_client_to_server msg)
+  , nameListBuilder (mac_algorithms_server_to_client msg)
+  , nameListBuilder (compression_algorithms_client_to_server msg)
+  , nameListBuilder (compression_algorithms_server_to_client msg)
+  , nameListBuilder (languages_client_to_server msg)
+  , nameListBuilder (languages_server_to_client msg)
   , BS.word8 $ if first_kex_packet_follows msg then 0x01 else 0x00
   , BS.word32BE 0x00000000
   ]
-  where
-    f xs = BS.word32BE (fromIntegral $ g xs)
-        <> mconcat (BS.byteString <$> L.intersperse "," xs)
-    g [] = 0
-    g xs = sum (BS.length <$> xs) + length xs - 1
 
 data KexReply
   = KexReply
@@ -141,6 +136,14 @@ data KexReply
   , serverPublicEphemeralKey :: Curve25519.PublicKey
   , exchangeHashSignature    :: Ed25519.Signature
   } deriving (Show)
+
+nameListBuilder :: [BS.ByteString] -> BS.Builder
+nameListBuilder xs =
+  BS.word32BE (fromIntegral $ g xs)
+  <> mconcat (BS.byteString <$> L.intersperse "," xs)
+  where
+    g [] = 0
+    g xs = sum (BS.length <$> xs) + length xs - 1
 
 packetize :: BS.Builder -> BS.Builder
 packetize payload = mconcat
@@ -288,20 +291,27 @@ deriveKeys sec hash i sess =
     secmpint =
       LBS.toStrict $ BS.toLazyByteString $ curve25519DhSecretBuilder sec
 
-newtype UserName   = UserName   BS.ByteString deriving (Eq, Ord, Show)
-newtype MethodName = MethodName BS.ByteString deriving (Eq, Ord, Show)
-
 data DisconnectReason
   = DisconnectReason Word32
   deriving (Eq, Ord, Show)
 
+data AuthenticationData
+  = None
+  | HostBased
+  | Password  BS.ByteString
+  | PublicKey BS.ByteString BS.ByteString (Maybe BS.ByteString)
+  deriving (Eq, Ord, Show)
+
 data Message
-  = Disconnect     DisconnectReason BS.ByteString BS.ByteString
-  | ServiceRequest ServiceName
-  | ServiceAccept  ServiceName
-  | UserAuthRequest UserName ServiceName MethodName
-  | UserAuthFailure
+  = Disconnect              DisconnectReason BS.ByteString BS.ByteString
+  | Ignore
+  | Unimplemented
+  | ServiceRequest          ServiceName
+  | ServiceAccept           ServiceName
+  | UserAuthRequest         UserName ServiceName AuthenticationData
+  | UserAuthFailure         [MethodName] Bool
   | UserAuthSuccess
+  | UserAuthBanner          BS.ByteString BS.ByteString
   | ChannelOpen             ChannelType ChannelId InitWindowSize MaxPacketSize
   | ChannelOpenConfirmation ChannelId ChannelId InitWindowSize MaxPacketSize
   | ChannelOpenFailure      ChannelId ChannelOpenFailureReason BS.ByteString BS.ByteString
@@ -331,10 +341,9 @@ data ChannelRequest
     { crother           :: BS.ByteString
     } deriving (Eq, Ord, Show)
 
-data ServiceName
-  = ServiceUserAuth
-  | ServiceConnection
-  deriving (Eq, Ord, Show)
+newtype UserName   = UserName   BS.ByteString deriving (Eq, Ord, Show)
+newtype MethodName  = MethodName { methodName :: BS.ByteString } deriving (Eq, Ord, Show)
+newtype ServiceName = ServiceName BS.ByteString deriving (Eq, Ord, Show)
 
 newtype ChannelType     = ChannelType BS.ByteString deriving (Eq, Ord, Show)
 newtype ChannelId  = ChannelId Word32 deriving (Eq, Ord, Show)
@@ -354,12 +363,14 @@ messageParser = B.getWord8 >>= \case
       <$> (DisconnectReason <$> uint32)
       <*> string
       <*> string
+  2   -> pure Ignore
+  3   -> pure Unimplemented
   5   -> ServiceRequest        <$> serviceParser
   6   -> ServiceAccept         <$> serviceParser
-  50  -> UserAuthRequest       <$> (UserName <$> string) <*> serviceParser <*> (MethodName <$> string)
+  50  -> UserAuthRequest       <$> (UserName <$> string) <*> serviceParser <*> authMethodParser
   90  -> ChannelOpen
       <$> (ChannelType     <$> string)
-      <*> (ChannelId <$> uint32)
+      <*> (ChannelId       <$> uint32)
       <*> (InitWindowSize  <$> uint32)
       <*> (MaxPacketSize   <$> uint32)
   94  -> ChannelData           <$> (ChannelId <$> uint32) <*> string
@@ -371,15 +382,11 @@ messageParser = B.getWord8 >>= \case
   100 -> ChannelRequestFailure <$> (ChannelId <$> uint32)
   -- 100 -> FAILURE
 
-  _    -> fail "UNKNOWN MESSAGE TYPE"
+  x    -> fail ("UNKNOWN MESSAGE TYPE: " ++ show x)
   where
     serviceParser = do
       len <- uint32
-      B.getByteString (fromIntegral len) >>= \case
-        "ssh-userauth"   -> pure ServiceUserAuth
-        "ssh-connection" -> pure ServiceConnection
-        _                -> fail "UNKNOWN SERVICE REQUEST"
-
+      ServiceName <$> B.getByteString (fromIntegral len)
     channelRequestParser = string >>= \case
       "pty-req" -> ChannelRequestPTY
         <$> bool
@@ -392,7 +399,15 @@ messageParser = B.getWord8 >>= \case
       "shell"   -> ChannelRequestShell <$> bool
       other     -> pure (ChannelRequestOther other)
 
-    uint8 = B.getWord8
+    authMethodParser = string >>= \case
+      "none"      -> pure None
+      "hostbased" -> pure HostBased
+      "password"  -> void bool >> Password  <$> string
+      "publickey" -> bool >>= \signed-> if signed
+        then PublicKey <$> string <*> string <*> (Just <$> string)
+        else PublicKey <$> string <*> string <*> pure Nothing
+
+    uint8  = B.getWord8
     uint32 = B.getWord32be
     string = do
       len <- B.getWord32be
@@ -405,15 +420,22 @@ messageBuilder :: Message -> BS.Builder
 messageBuilder = \case
   ServiceRequest srv -> BS.word8 0x05 <> serviceBuilder srv
   ServiceAccept  srv -> BS.word8 0x06 <> serviceBuilder srv
-  UserAuthSuccess    -> BS.word8 0x34
+  UserAuthFailure methods partialSuccess ->
+    BS.word8 51 <> nameListBuilder (methodName <$> methods) <> bool partialSuccess
+  UserAuthSuccess ->
+    BS.word8 52
+  UserAuthBanner banner lang ->
+    BS.word8 53 <> string banner <> string lang
   ChannelOpenConfirmation (ChannelId a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d) ->
     BS.word8 91 <> BS.word32BE a <> BS.word32BE b <> BS.word32BE d <> BS.word32BE d
   ChannelData (ChannelId lid) s ->
     BS.word8 94 <> BS.word32BE lid <> BS.word32BE (fromIntegral $ BS.length s) <> BS.byteString s
-  ChannelClose (ChannelId lid)          -> BS.word8  97 <> BS.word32BE lid
+  ChannelClose (ChannelId lid) ->
+    BS.word8  97 <> BS.word32BE lid
   ChannelRequestSuccess (ChannelId lid) -> BS.word8  99 <> BS.word32BE lid
   ChannelRequestFailure (ChannelId lid) -> BS.word8 100 <> BS.word32BE lid
   otherwise          -> error (show otherwise)
   where
-    serviceBuilder ServiceUserAuth   = BS.word32BE 12 <> BS.byteString "ssh-userauth"
-    serviceBuilder ServiceConnection = BS.word32BE 14 <> BS.byteString "ssh-connection"
+    serviceBuilder (ServiceName bs) = BS.word32BE (fromIntegral $ BS.length bs) <> BS.byteString bs
+    string x = BS.word32BE (fromIntegral $ BS.length x) <> BS.byteString x
+    bool   x = BS.word8 (if x then 0x01 else 0x00)

@@ -41,17 +41,12 @@ data Channel
   , chanWaitClosed     :: STM ()
   }
 
-data Pty
-  = Pty
-  { ptyStdin  :: TChan BS.ByteString
-  , ptyStdout :: TChan BS.ByteString
-  , ptyStderr :: TChan BS.ByteString
-  }
+data ProtocolException
+  = ChannelDoesNotExist ChannelId
+  | ChannelIsClosing    ChannelId
+  deriving (Eq, Ord, Show, Typeable)
 
-data Process
-  = Process
-  { procKill  :: STM ()
-  }
+instance Exception ProtocolException
 
 serve :: STM Message -> (Message -> STM ()) ->  IO ()
 serve input output = do
@@ -70,8 +65,9 @@ serve input output = do
      `race_` runExec
   where
     runDebug :: Connection -> TChan String -> IO ()
-    runDebug conn ch = forever $
-      atomically (readTChan ch) >>= putStr
+    runDebug conn ch = forever $ do
+      s <- atomically (readTChan ch)
+      putStrLn $ "DEBUG: " ++ s
 
     runConnection :: Connection -> IO ()
     runConnection conn = do
@@ -100,12 +96,19 @@ runShell readStdin writeStdout writeStderr = forever $ do
 
 handleInput :: Connection -> STM () -> STM ()
 handleInput conn disconnect = receive conn >>= \case
-  Disconnect {} ->
-    disconnect
-  ServiceRequest x ->
+  Disconnect {} -> disconnect
+  Ignore        -> pure ()
+  Unimplemented -> pure ()
+  ServiceRequest x -> do
+    println conn (show x)
     send conn (ServiceAccept x)
-  UserAuthRequest {} ->
-    send conn UserAuthSuccess
+  x@(UserAuthRequest user service method) -> do
+    println conn (show x)
+    case method of
+      None        -> send conn (UserAuthFailure [MethodName "password"] False)
+      HostBased   -> send conn (UserAuthFailure [MethodName "password"] False)
+      Password pw -> send conn UserAuthSuccess
+      PublicKey alg key sig -> send conn UserAuthSuccess
   ChannelOpen t rid ws ps ->
     openChannel conn t rid ws ps >>= \case
       Nothing  -> send conn $ ChannelOpenFailure rid ResourceShortage "" ""
@@ -200,9 +203,4 @@ closeChannel conn lid = do
       writeTVar (channels conn) (M.insert lid Nothing cs)
       pure (Just $ chanRemoteId ch)
 
-data ProtocolException
-  = ChannelDoesNotExist ChannelId
-  | ChannelIsClosing    ChannelId
-  deriving (Eq, Ord, Show, Typeable)
 
-instance Exception ProtocolException
