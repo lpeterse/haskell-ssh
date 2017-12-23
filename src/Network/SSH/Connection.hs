@@ -1,22 +1,15 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase                 #-}
-{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Connection where
 
+import           Control.Concurrent
 import           Control.Concurrent.Async
-import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Exception
 import           Control.Monad                (forM_, forever, when)
-import           Control.Monad.Reader
-import           Control.Monad.State.Lazy
 import           Control.Monad.STM
-import qualified Data.Binary.Get              as B
-import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
-import qualified Data.ByteString.Builder      as BS
-import qualified Data.ByteString.Lazy         as LBS
 import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
 import           Data.Monoid
@@ -30,6 +23,7 @@ data Connection
   { receive  :: STM Message
   , send     :: Message -> STM ()
   , println  :: String -> STM ()
+  , exec     :: STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> STM () -> STM ()
   , channels :: TVar (M.Map ChannelId (Maybe Channel))
   }
 
@@ -43,6 +37,8 @@ data Channel
   , chanReadFd         :: TChan BS.ByteString
   , chanWriteFd        :: TChan BS.ByteString
   , chanExtendedFd     :: TChan BS.ByteString
+  , chanClose          :: STM ()
+  , chanWaitClosed     :: STM ()
   }
 
 data Pty
@@ -61,13 +57,17 @@ serve :: STM Message -> (Message -> STM ()) ->  IO ()
 serve input output = do
   debug  <- newTChanIO
   chans  <- newTVarIO mempty
+  (reqExec, runExec) <- setupExec
   let conn = Connection {
       receive  = input
     , send     = output
     , println  = writeTChan debug
+    , exec     = reqExec
     , channels = chans
     }
-  runDebug conn debug `race_` runConnection conn
+  runConnection conn
+     `race_` runDebug conn debug
+     `race_` runExec
   where
     runDebug :: Connection -> TChan String -> IO ()
     runDebug conn ch = forever $
@@ -82,6 +82,21 @@ serve input output = do
         isDisconnected >>= \case
           True  -> pure ()  -- this is the only thread that may return
           False -> continue
+
+    setupExec = do
+      ch <- newTChanIO
+      let reqExec rin wout werr wait =
+            writeTChan ch (rin, wout, werr, wait)
+      let runExec = forever $ do
+            (rin,wout,werr,wait) <- atomically (readTChan ch)
+            forkIO $ atomically wait `race_` runShell rin wout werr
+      pure (reqExec, runExec)
+
+runShell :: STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> IO ()
+runShell readStdin writeStdout writeStderr = forever $ do
+  bs <- atomically $ readStdin `orElse` pure "X"
+  threadDelay 1000000
+  atomically $ writeStdout bs
 
 handleInput :: Connection -> STM () -> STM ()
 handleInput conn disconnect = receive conn >>= \case
@@ -116,7 +131,12 @@ handleInput conn disconnect = receive conn >>= \case
     case x of
       ChannelRequestPTY {} ->
         send conn (ChannelRequestSuccess $ chanRemoteId ch)
-      ChannelRequestShell wantReply ->
+      ChannelRequestShell wantReply -> do
+        exec conn
+          (readTChan  $ chanReadFd ch)
+          (writeTChan $ chanWriteFd ch)
+          (writeTChan $ chanExtendedFd ch)
+          (chanWaitClosed ch)
         send conn (ChannelRequestSuccess $ chanRemoteId ch)
       ChannelRequestOther other ->
         send conn (ChannelRequestFailure $ chanRemoteId ch)
@@ -143,7 +163,13 @@ openChannel conn t rid ws ps = do
   case freeLocalId cs of
     Nothing -> pure Nothing
     Just lid -> do
-      ch <- Channel t lid rid ws ps <$> newTChan <*> newTChan <*> newTChan
+      isClosed <- newTVar False
+      ch <- Channel t lid rid ws ps
+        <$> newTChan
+        <*> newTChan
+        <*> newTChan
+        <*> pure (writeTVar isClosed True)
+        <*> pure (readTVar isClosed >>= \x-> if x then pure () else retry)
       writeTVar (channels conn) (M.insert lid (Just ch) cs)
       pure (Just ch)
   where
