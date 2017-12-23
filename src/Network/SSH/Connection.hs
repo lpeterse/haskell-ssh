@@ -77,9 +77,8 @@ serve input output = do
     runConnection conn = do
       (disconnect, isDisconnected) <- newTVarIO False >>= \d-> pure (writeTVar d True, readTVarIO d)
       fix $ \continue-> do
-        atomically $
-          handleInput conn disconnect `orElse`
-          handleChannelFds conn
+        atomically $ handleInput conn disconnect
+          `orElse` handleChannelFds conn
         isDisconnected >>= \case
           True  -> pure ()  -- this is the only thread that may return
           False -> continue

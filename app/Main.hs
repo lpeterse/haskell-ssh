@@ -2,12 +2,22 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
+import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
 import           Control.Exception              (bracket)
 import           Control.Monad                  (forM_, forever, when)
 import           Control.Monad.Reader
 import           Control.Monad.State.Lazy
+import           Control.Monad.STM
+import qualified Crypto.Cipher.ChaCha           as ChaCha
+import qualified Crypto.Cipher.ChaChaPoly1305   as ChaChaPoly1305
+import           Crypto.Error
+import qualified Crypto.Hash                    as Hash
+import qualified Crypto.Hash.Algorithms         as Hash
+import qualified Crypto.MAC.Poly1305            as Poly1305
 import qualified Crypto.PubKey.Curve25519       as DH
+import qualified Crypto.PubKey.Curve25519       as Curve25519
+import qualified Crypto.PubKey.Ed25519          as Ed25519
 import qualified Data.Binary.Get                as B
 import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
@@ -17,22 +27,13 @@ import           Data.Function                  (fix)
 import qualified Data.Map.Strict                as M
 import           Data.Monoid
 import           Data.Word
-import           Network.SSH
 import qualified System.Socket                  as S
 import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 
-import           Control.Concurrent.Async
-import           Control.Concurrent.MVar
-import qualified Crypto.Cipher.ChaCha           as ChaCha
-import qualified Crypto.Cipher.ChaChaPoly1305   as ChaChaPoly1305
-import           Crypto.Error
-import qualified Crypto.Hash                    as Hash
-import qualified Crypto.Hash.Algorithms         as Hash
-import qualified Crypto.MAC.Poly1305            as Poly1305
-import qualified Crypto.PubKey.Curve25519       as Curve25519
-import qualified Crypto.PubKey.Ed25519          as Ed25519
+import           Network.SSH
+import           Network.SSH.Connection
 
 main :: IO ()
 main = bracket open close accept
@@ -114,12 +115,12 @@ serveConnection cfg = do
     `race_` runReceiver input 3
   where
     runSender q i = do
-      msg <- takeMVar q
+      msg <- atomically $ readTChan q
       sendBS cfg $ encrypt i (ekSC_K2 cfg) (ekSC_K1 cfg) (messageBuilder msg)
       runSender q (i + 1)
     runReceiver q i = do
       bs <- decrypt i (ekCS_K2 cfg) (ekCS_K1 cfg) (receiveBS cfg)
-      putMVar q $ B.runGet messageParser (LBS.fromStrict bs)
+      atomically $ writeTChan q $! B.runGet messageParser (LBS.fromStrict bs)
       runReceiver q (i + 1)
 
 unpacket :: BS.ByteString -> Maybe BS.ByteString
