@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
+import           Control.Concurrent.STM.TChan
 import           Control.Exception              (bracket)
 import           Control.Monad                  (forM_, forever, when)
 import           Control.Monad.Reader
@@ -106,23 +107,20 @@ data ConnectionConfig
 
 serveConnection :: ConnectionConfig -> IO ()
 serveConnection cfg = do
-  queueIN  <- newEmptyMVar
-  queueOUT <- newEmptyMVar
-  let s = putMVar queueOUT
-  let r = takeMVar queueIN
-  evalStateT m (ConnectionState s r mempty)
-    `race_` sender queueOUT 3
-    `race_` receiver queueIN 3
+  input <- newTChanIO
+  output <- newTChanIO
+  serve (readTChan input) (writeTChan output)
+    `race_` runSender output 3
+    `race_` runReceiver input 3
   where
-    Connection m = messageDispatcher
-    sender q i = do
+    runSender q i = do
       msg <- takeMVar q
       sendBS cfg $ encrypt i (ekSC_K2 cfg) (ekSC_K1 cfg) (messageBuilder msg)
-      sender q (i + 1)
-    receiver q i = do
+      runSender q (i + 1)
+    runReceiver q i = do
       bs <- decrypt i (ekCS_K2 cfg) (ekCS_K1 cfg) (receiveBS cfg)
       putMVar q $ B.runGet messageParser (LBS.fromStrict bs)
-      receiver q (i + 1)
+      runReceiver q (i + 1)
 
 unpacket :: BS.ByteString -> Maybe BS.ByteString
 unpacket bs = do

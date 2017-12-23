@@ -57,27 +57,21 @@ data Process
   { procKill  :: STM ()
   }
 
-serve :: (String -> IO ()) -> (Message -> IO ()) -> IO Message ->  IO ()
-serve p s r = do
-  input  <- newTChanIO
-  output <- newTChanIO
+serve :: STM Message -> (Message -> STM ()) ->  IO ()
+serve input output = do
   debug  <- newTChanIO
   chans  <- newTVarIO mempty
   let conn = Connection {
-      receive  = readTChan  input
-    , send     = writeTChan output
+      receive  = input
+    , send     = output
     , println  = writeTChan debug
     , channels = chans
     }
-  runSender conn output `race_` runReceiver conn input `race_` runConnection conn
+  runDebug conn debug `race_` runConnection conn
   where
-    runSender :: Connection -> TChan Message -> IO ()
-    runSender conn ch = forever $
-      atomically (readTChan ch) >>= s
-
-    runReceiver :: Connection -> TChan Message -> IO ()
-    runReceiver conn ch = forever $
-      atomically . writeTChan ch =<< r
+    runDebug :: Connection -> TChan String -> IO ()
+    runDebug conn ch = forever $
+      atomically (readTChan ch) >>= putStr
 
     runConnection :: Connection -> IO ()
     runConnection conn = do
