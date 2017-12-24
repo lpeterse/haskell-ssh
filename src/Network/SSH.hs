@@ -4,6 +4,7 @@
 module Network.SSH where
 
 import           Control.Monad            (void, when)
+import           Crypto.Error
 import qualified Crypto.Error             as DH
 import qualified Crypto.Hash              as Hash
 import qualified Crypto.Hash.Algorithms   as Hash
@@ -299,8 +300,18 @@ data AuthenticationData
   = None
   | HostBased
   | Password  BS.ByteString
-  | PublicKey BS.ByteString BS.ByteString (Maybe BS.ByteString)
-  deriving (Eq, Ord, Show)
+  | PublicKey PublicKey (Maybe Signature)
+  deriving (Eq, Show)
+
+data PublicKey
+  = PublicKeyEd25519 Ed25519.PublicKey
+  | PublicKeyOther   BS.ByteString BS.ByteString
+  deriving (Eq, Show)
+
+data Signature
+  = SignatureEd25519 Ed25519.Signature
+  | SignatureOther   BS.ByteString BS.ByteString
+  deriving (Eq, Show)
 
 data Message
   = Disconnect              DisconnectReason BS.ByteString BS.ByteString
@@ -312,6 +323,7 @@ data Message
   | UserAuthFailure         [MethodName] Bool
   | UserAuthSuccess
   | UserAuthBanner          BS.ByteString BS.ByteString
+  | UserAuthPublicKeyOk     PublicKey
   | ChannelOpen             ChannelType ChannelId InitWindowSize MaxPacketSize
   | ChannelOpenConfirmation ChannelId ChannelId InitWindowSize MaxPacketSize
   | ChannelOpenFailure      ChannelId ChannelOpenFailureReason BS.ByteString BS.ByteString
@@ -403,18 +415,35 @@ messageParser = B.getWord8 >>= \case
       "none"      -> pure None
       "hostbased" -> pure HostBased
       "password"  -> void bool >> Password  <$> string
-      "publickey" -> bool >>= \signed-> if signed
-        then PublicKey <$> string <*> string <*> (Just <$> string)
-        else PublicKey <$> string <*> string <*> pure Nothing
-
+      "publickey" -> do
+        signed <- bool
+        algo   <- string
+        case algo of
+          "ssh-ed25519" -> do
+            keysize <- fromIntegral <$> uint32
+            key <- B.isolate keysize $ do
+              keyalgo <- string
+              when (keyalgo /= algo) (fail "KEY ALGORITHM NAME MISMATCH")
+              Ed25519.publicKey <$> string >>= \case
+                CryptoPassed k -> pure (PublicKeyEd25519 k)
+                CryptoFailed e -> fail (show e)
+            msig <- if not signed
+              then pure Nothing
+              else do
+                sigsize <- fromIntegral <$> uint32
+                B.isolate sigsize $ do
+                  sigalgo <- string
+                  when (sigalgo /= algo) (fail "SIGNATURE ALGORITHM NAME MISMATCH")
+                  Ed25519.signature <$> string >>= \case
+                    CryptoPassed s -> pure (Just (SignatureEd25519 s))
+                    CryptoFailed e -> fail (show e)
+            pure $ PublicKey key msig
+          _ -> fail "FOOBAR"
+    -- parser synomyns named as in the RFC
     uint8  = B.getWord8
     uint32 = B.getWord32be
-    string = do
-      len <- B.getWord32be
-      B.getByteString (fromIntegral len)
-    bool = B.getWord8 >>= \case
-      0x00 -> pure False
-      _ -> pure True
+    string = (fromIntegral <$> B.getWord32be) >>= B.getByteString
+    bool   = B.getWord8 >>= \case { 0 -> pure False; _ -> pure True; }
 
 messageBuilder :: Message -> BS.Builder
 messageBuilder = \case
@@ -426,6 +455,8 @@ messageBuilder = \case
     BS.word8 52
   UserAuthBanner banner lang ->
     BS.word8 53 <> string banner <> string lang
+  UserAuthPublicKeyOk pk ->
+    BS.word8 60 <> publicKey pk
   ChannelOpenConfirmation (ChannelId a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d) ->
     BS.word8 91 <> BS.word32BE a <> BS.word32BE b <> BS.word32BE d <> BS.word32BE d
   ChannelData (ChannelId lid) s ->
@@ -439,3 +470,7 @@ messageBuilder = \case
     serviceBuilder (ServiceName bs) = BS.word32BE (fromIntegral $ BS.length bs) <> BS.byteString bs
     string x = BS.word32BE (fromIntegral $ BS.length x) <> BS.byteString x
     bool   x = BS.word8 (if x then 0x01 else 0x00)
+    uint32 x = BS.word32BE
+    publicKey (PublicKeyEd25519 pk) = string "ssh-ed25519" <> ed25519PublicKeyBuilder pk
+    publicKey _                     = error "ABCDEF"
+

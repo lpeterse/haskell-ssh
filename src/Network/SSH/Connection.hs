@@ -105,10 +105,12 @@ handleInput conn disconnect = receive conn >>= \case
   x@(UserAuthRequest user service method) -> do
     println conn (show x)
     case method of
-      None        -> send conn (UserAuthFailure [MethodName "password"] False)
-      HostBased   -> send conn (UserAuthFailure [MethodName "password"] False)
-      Password pw -> send conn UserAuthSuccess
-      PublicKey alg key sig -> send conn UserAuthSuccess
+      None        -> send conn (UserAuthFailure [MethodName "publickey"] False)
+      HostBased   -> send conn (UserAuthFailure [MethodName "publickey"] False)
+      Password pw -> send conn (UserAuthFailure [MethodName "publickey"] False)
+      PublicKey pk msig -> case msig of
+        Nothing  -> send conn (UserAuthPublicKeyOk pk)
+        Just sig -> send conn UserAuthSuccess
   ChannelOpen t rid ws ps ->
     openChannel conn t rid ws ps >>= \case
       Nothing  -> send conn $ ChannelOpenFailure rid ResourceShortage "" ""
