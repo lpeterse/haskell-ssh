@@ -20,11 +20,12 @@ import           Network.SSH
 
 data Connection
   = Connection
-  { receive  :: STM Message
-  , send     :: Message -> STM ()
-  , println  :: String -> STM ()
-  , exec     :: STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> STM () -> STM ()
-  , channels :: TVar (M.Map ChannelId (Maybe Channel))
+  { sessionId :: SessionId
+  , receive   :: STM Message
+  , send      :: Message -> STM ()
+  , println   :: String -> STM ()
+  , exec      :: STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> STM () -> STM ()
+  , channels  :: TVar (M.Map ChannelId (Maybe Channel))
   }
 
 data Channel
@@ -48,13 +49,14 @@ data ProtocolException
 
 instance Exception ProtocolException
 
-serve :: STM Message -> (Message -> STM ()) ->  IO ()
-serve input output = do
+serve :: SessionId -> STM Message -> (Message -> STM ()) ->  IO ()
+serve sid input output = do
   debug  <- newTChanIO
   chans  <- newTVarIO mempty
   (reqExec, runExec) <- setupExec
   let conn = Connection {
-      receive  = input
+      sessionId = sid
+    , receive  = input
     , send     = output
     , println  = writeTChan debug
     , exec     = reqExec
@@ -110,7 +112,9 @@ handleInput conn disconnect = receive conn >>= \case
       Password pw -> send conn (UserAuthFailure [MethodName "publickey"] False)
       PublicKey pk msig -> case msig of
         Nothing  -> send conn (UserAuthPublicKeyOk pk)
-        Just sig -> send conn UserAuthSuccess
+        Just sig -> if verifyAuthSignature (sessionId conn) user service pk sig
+          then println conn "SUCCESS" >> send conn UserAuthSuccess
+          else send conn (UserAuthFailure [MethodName "publickey"] False)
   ChannelOpen t rid ws ps ->
     openChannel conn t rid ws ps >>= \case
       Nothing  -> send conn $ ChannelOpenFailure rid ResourceShortage "" ""

@@ -76,7 +76,7 @@ main = bracket open close accept
             clientEphemeralPublicKey -- check
             serverEphemeralPublicKey -- check
             dhSecret                 -- check (client pubkey + server seckey)
-      let sess      = hash
+      let sess      = SessionId (BS.pack $ BA.unpack hash)
       let signature = Ed25519.sign serverSecretKey serverPublicKey hash
       let reply     = KexReply {
           serverPublicHostKey      = serverPublicKey
@@ -91,7 +91,7 @@ main = bracket open close accept
       let ekCS_K1:ekCS_K2:_ = deriveKeys dhSecret hash "C" sess
       let ekSC_K1:ekSC_K2:_ = deriveKeys dhSecret hash "D" sess
 
-      serveConnection $ ConnectionConfig
+      serveConnection sess $ ConnectionConfig
         (\b-> S.sendAll s b S.msgNoSignal >> pure ())
         (\i-> S.receive s i S.msgNoSignal)
         ekCS_K2 ekCS_K1 ekSC_K2 ekSC_K1
@@ -106,11 +106,11 @@ data ConnectionConfig
   , ekSC_K1   :: Hash.Digest Hash.SHA256
   }
 
-serveConnection :: ConnectionConfig -> IO ()
-serveConnection cfg = do
+serveConnection :: SessionId -> ConnectionConfig -> IO ()
+serveConnection sess cfg = do
   input <- newTChanIO
   output <- newTChanIO
-  serve (readTChan input) (writeTChan output)
+  serve sess (readTChan input) (writeTChan output)
     `race_` runSender output 3
     `race_` runReceiver input 3
   where

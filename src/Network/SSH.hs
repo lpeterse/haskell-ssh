@@ -275,8 +275,8 @@ builderLength :: BS.Builder -> Int64
 builderLength =
   LBS.length . BS.toLazyByteString
 
-deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> BS.ByteString -> Hash.Digest Hash.SHA256 -> [Hash.Digest Hash.SHA256]
-deriveKeys sec hash i sess =
+deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> BS.ByteString -> SessionId -> [Hash.Digest Hash.SHA256]
+deriveKeys sec hash i (SessionId sess) =
   k1:(f [k1])
   where
     k1   = Hash.hashFinalize    $
@@ -353,14 +353,14 @@ data ChannelRequest
     { crother           :: BS.ByteString
     } deriving (Eq, Ord, Show)
 
-newtype UserName   = UserName   BS.ByteString deriving (Eq, Ord, Show)
-newtype MethodName  = MethodName { methodName :: BS.ByteString } deriving (Eq, Ord, Show)
-newtype ServiceName = ServiceName BS.ByteString deriving (Eq, Ord, Show)
-
-newtype ChannelType     = ChannelType BS.ByteString deriving (Eq, Ord, Show)
-newtype ChannelId  = ChannelId Word32 deriving (Eq, Ord, Show)
+newtype SessionId       = SessionId     BS.ByteString deriving (Eq, Ord, Show)
+newtype UserName        = UserName      BS.ByteString deriving (Eq, Ord, Show)
+newtype MethodName      = MethodName    { methodName :: BS.ByteString } deriving (Eq, Ord, Show)
+newtype ServiceName     = ServiceName    BS.ByteString deriving (Eq, Ord, Show)
+newtype ChannelType     = ChannelType    BS.ByteString deriving (Eq, Ord, Show)
+newtype ChannelId       = ChannelId      Word32 deriving (Eq, Ord, Show)
 newtype InitWindowSize  = InitWindowSize Word32 deriving (Eq, Ord, Show)
-newtype MaxPacketSize   = MaxPacketSize Word32 deriving (Eq, Ord, Show)
+newtype MaxPacketSize   = MaxPacketSize  Word32 deriving (Eq, Ord, Show)
 
 data ChannelOpenFailureReason
   = AdministrativelyProhibited
@@ -474,3 +474,29 @@ messageBuilder = \case
     publicKey (PublicKeyEd25519 pk) = string "ssh-ed25519" <> ed25519PublicKeyBuilder pk
     publicKey _                     = error "ABCDEF"
 
+verifyAuthSignature :: SessionId -> UserName -> ServiceName -> PublicKey -> Signature -> Bool
+verifyAuthSignature
+  (SessionId   sessionIdentifier)
+  (UserName    userName)
+  (ServiceName serviceName) publicKey signature = case (publicKey,signature) of
+    (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
+    _                                        -> False
+  where
+    signedData :: BS.ByteString
+    signedData = LBS.toStrict $ BS.toLazyByteString $ mconcat
+      [ string    sessionIdentifier
+      , byte      50
+      , string    userName
+      , string    serviceName
+      , string    "publickey"
+      , bool      True
+      , pk        publicKey
+      ]
+
+    byte     = BS.word8
+    uint32   = BS.word32BE
+    string x = BS.word32BE (fromIntegral $ BS.length x) <> BS.byteString x
+    bool   x = BS.word8 (if x then 0x01 else 0x00)
+    pk       = \case
+      PublicKeyEd25519 x -> string "ssh-ed25519" <> ed25519PublicKeyBuilder x
+      other              -> error "ABCDEF"
