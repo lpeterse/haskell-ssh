@@ -208,5 +208,3 @@ closeChannel conn lid = do
       -- TODO: free all resources!
       writeTVar (channels conn) (M.insert lid Nothing cs)
       pure (Just $ chanRemoteId ch)
-
-

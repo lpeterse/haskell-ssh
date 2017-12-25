@@ -11,16 +11,18 @@ import qualified Crypto.Hash.Algorithms   as Hash
 import qualified Crypto.PubKey.Curve25519 as DH
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
+import qualified Crypto.PubKey.RSA        as RSA
+import qualified Crypto.PubKey.RSA.PKCS15 as RSA.PKCS15
 import qualified Data.Binary.Get          as B
 import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import qualified Data.ByteString.Builder  as BS
 import qualified Data.ByteString.Lazy     as LBS
+import           Data.Foldable
 import           Data.Int
 import qualified Data.List                as L
 import           Data.Monoid
 import           Data.Word
-import           System.Exit
 
 serverVersionString :: BS.ByteString
 serverVersionString
@@ -233,6 +235,26 @@ ed25519PublicKeyBuilder key = mconcat
   , BS.byteString $ BS.pack $ BA.unpack key
   ]
 
+rsaPublicKeyBuilder     :: RSA.PublicKey -> BS.Builder
+rsaPublicKeyBuilder (RSA.PublicKey _ n e) =
+  BS.word32BE (fromIntegral $ LBS.length lbs) <> BS.lazyByteString lbs
+  where
+    lbs = BS.toLazyByteString $ mconcat
+      [ string "ssh-rsa"
+      , integer n
+      , integer e
+      ]
+    string  x = BS.word32BE (fromIntegral $ BS.length x)  <> BS.byteString x
+    integer x = BS.word32BE (fromIntegral $ BS.length bs) <> BS.byteString bs
+      where
+        bs = BS.pack $ g $ f x []
+        f 0 acc = acc
+        f i acc = let (q,r) = quotRem i 256
+                  in  f q (fromIntegral r : acc)
+        g []        = []
+        g xxs@(x:_) | x > 128   = 0:xxs
+                    | otherwise = xxs
+
 curve25519BlobBuilder :: Curve25519.PublicKey -> BS.Builder
 curve25519BlobBuilder key =
   BS.word32BE 32 <> BS.byteString (BS.pack $ BA.unpack key)
@@ -305,12 +327,14 @@ data AuthenticationData
 
 data PublicKey
   = PublicKeyEd25519 Ed25519.PublicKey
-  | PublicKeyOther   BS.ByteString BS.ByteString
+  | PublicKeyRSA     RSA.PublicKey
+  | PublicKeyOther   BS.ByteString
   deriving (Eq, Show)
 
 data Signature
   = SignatureEd25519 Ed25519.Signature
-  | SignatureOther   BS.ByteString BS.ByteString
+  | SignatureRSA     BS.ByteString
+  | SignatureOther   BS.ByteString
   deriving (Eq, Show)
 
 data Message
@@ -437,13 +461,45 @@ messageParser = B.getWord8 >>= \case
                   Ed25519.signature <$> string >>= \case
                     CryptoPassed s -> pure (Just (SignatureEd25519 s))
                     CryptoFailed e -> fail (show e)
-            pure $ PublicKey key msig
-          _ -> fail "FOOBAR"
+            pure (PublicKey key msig)
+          "ssh-rsa" -> do
+            keysize <- fromIntegral <$> uint32
+            key <- B.isolate keysize $ do
+              keyalgo <- string
+              when (keyalgo /= algo) (fail "KEY ALGORITHM NAME MISMATCH")
+              (_,n) <- sizedInteger
+              (s,e) <- sizedInteger
+              pure (PublicKeyRSA $ RSA.PublicKey s n e)
+            msig <- if not signed
+              then pure Nothing
+              else do
+                sigsize <- fromIntegral <$> uint32
+                B.isolate sigsize $ do
+                  sigalgo <- string
+                  when (sigalgo /= algo) (fail "SIGNATURE ALGORITHM NAME MISMATCH")
+                  Just . SignatureRSA <$> string
+            pure (PublicKey key msig)
+          _ -> do
+            key  <- PublicKeyOther <$> string
+            msig <- if signed then (Just . SignatureOther <$> string) else pure Nothing
+            pure (PublicKey key msig)
     -- parser synomyns named as in the RFC
-    uint8  = B.getWord8
-    uint32 = B.getWord32be
-    string = (fromIntegral <$> B.getWord32be) >>= B.getByteString
-    bool   = B.getWord8 >>= \case { 0 -> pure False; _ -> pure True; }
+    bool    :: B.Get Bool
+    bool     = byte >>= \case { 0 -> pure False; _ -> pure True; }
+    byte    :: B.Get Word8
+    byte     = B.getWord8
+    uint32  :: B.Get Word32
+    uint32   = B.getWord32be
+    size    :: B.Get Int
+    size     = fromIntegral <$> uint32
+    string  :: B.Get BS.ByteString
+    string   = uint32 >>= B.getByteString . fromIntegral
+    -- Observing the encoded length is far cheaper than calculating the
+    -- log2 of the resulting integer.
+    sizedInteger :: B.Get (Int, Integer)
+    sizedInteger  = do
+      bs <- BS.dropWhile (==0) <$> string -- eventually remove leading 0 byte
+      pure (BS.length bs * 8, foldl' (\i b-> i*256 + fromIntegral b) 0 $ BS.unpack bs)
 
 messageBuilder :: Message -> BS.Builder
 messageBuilder = \case
@@ -472,7 +528,7 @@ messageBuilder = \case
     bool   x = BS.word8 (if x then 0x01 else 0x00)
     uint32 x = BS.word32BE
     publicKey (PublicKeyEd25519 pk) = string "ssh-ed25519" <> ed25519PublicKeyBuilder pk
-    publicKey _                     = error "ABCDEF"
+    publicKey (PublicKeyRSA     pk) = string "ssh-rsa"     <> rsaPublicKeyBuilder     pk
 
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> PublicKey -> Signature -> Bool
 verifyAuthSignature
@@ -480,23 +536,24 @@ verifyAuthSignature
   (UserName    userName)
   (ServiceName serviceName) publicKey signature = case (publicKey,signature) of
     (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
+    (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
     _                                        -> False
   where
     signedData :: BS.ByteString
     signedData = LBS.toStrict $ BS.toLazyByteString $ mconcat
-      [ string    sessionIdentifier
-      , byte      50
-      , string    userName
-      , string    serviceName
-      , string    "publickey"
-      , bool      True
-      , pk        publicKey
+      [ string sessionIdentifier
+      , byte   50
+      , string userName
+      , string serviceName
+      , string "publickey"
+      , bool   True
+      , case publicKey of
+          PublicKeyEd25519 x -> string "ssh-ed25519" <> ed25519PublicKeyBuilder x
+          PublicKeyRSA     x -> string "ssh-rsa"     <> rsaPublicKeyBuilder x
+          other              -> error "ABCDEF"
       ]
 
     byte     = BS.word8
     uint32   = BS.word32BE
     string x = BS.word32BE (fromIntegral $ BS.length x) <> BS.byteString x
     bool   x = BS.word8 (if x then 0x01 else 0x00)
-    pk       = \case
-      PublicKeyEd25519 x -> string "ssh-ed25519" <> ed25519PublicKeyBuilder x
-      other              -> error "ABCDEF"
