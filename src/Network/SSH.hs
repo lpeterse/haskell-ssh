@@ -26,7 +26,6 @@ import           Data.Monoid
 import           Data.Word
 
 import           Network.SSH.Message
-import           Network.SSH.Message.Util
 
 serverVersionString :: BS.ByteString
 serverVersionString
@@ -319,21 +318,20 @@ deriveKeys sec hash i (SessionId sess) =
       LBS.toStrict $ B.runPut $ curve25519DhSecretBuilder sec
 
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> PublicKey -> Signature -> Bool
-verifyAuthSignature
-  (SessionId   sessionIdentifier)
-  (UserName    userName)
-  (ServiceName serviceName) publicKey signature = case (publicKey,signature) of
+verifyAuthSignature sessionIdentifier userName serviceName publicKey signature =
+  case (publicKey,signature) of
     (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
     (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
     _                                        -> False
   where
     signedData :: BS.ByteString
     signedData = LBS.toStrict $ B.runPut $ mconcat
-      [ putString    sessionIdentifier
-      , putByte      50
-      , putString    userName
-      , putString    serviceName
-      , putString    "publickey"
-      , putBool      True
-      , putPublicKey publicKey
+      [ B.put           sessionIdentifier
+      , B.putWord8      50
+      , B.put           userName
+      , B.put           serviceName
+      , B.putWord32be   9
+      , B.putByteString "publickey"
+      , B.putWord8      1
+      , B.put           publicKey
       ]

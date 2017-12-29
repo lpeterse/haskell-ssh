@@ -42,8 +42,7 @@ library
   exposed-modules:
       Network.SSH,
       Network.SSH.Connection,
-      Network.SSH.Message,
-      Network.SSH.Message.Util
+      Network.SSH.Message
   other-modules:
       Paths_ssh
   default-language: Haskell2010

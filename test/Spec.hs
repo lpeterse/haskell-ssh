@@ -4,6 +4,7 @@
 import           Crypto.Error
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.RSA     as RSA
+import qualified Data.Binary           as B
 import qualified Data.Binary.Get       as B
 import qualified Data.Binary.Put       as B
 import qualified Data.ByteString       as BS
@@ -15,13 +16,13 @@ import           Network.SSH.Message
 
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH.Message"
-  [ QC.testProperty "id == getPublicKey . putPublicKey" $ \x->
-      x === B.runGet getPublicKey (B.runPut $ putPublicKey x)
-  , QC.testProperty "id == getSignature . putSignature" $ \x->
-      x === B.runGet getSignature (B.runPut $ putSignature x)
-  , QC.testProperty "id == getMessage   . putMessage" $ \x->
-      x === B.runGet getMessage   (B.runPut $ putMessage x)
+  [ QC.testProperty "id == getPublicKey . putPublicKey" (parserIdentity :: PublicKey -> Property)
+  , QC.testProperty "id == getSignature . putSignature" (parserIdentity :: Signature -> Property)
+  , QC.testProperty "id == getMessage   . putMessage"   (parserIdentity :: Message -> Property)
   ]
+  where
+    parserIdentity :: (B.Binary a, Eq a, Show a) => a -> Property
+    parserIdentity x = x === B.runGet B.get (B.runPut $ B.put x)
 
 instance Arbitrary BS.ByteString where
   arbitrary = pure mempty
