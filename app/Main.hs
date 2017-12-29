@@ -18,10 +18,11 @@ import qualified Crypto.MAC.Poly1305            as Poly1305
 import qualified Crypto.PubKey.Curve25519       as DH
 import qualified Crypto.PubKey.Curve25519       as Curve25519
 import qualified Crypto.PubKey.Ed25519          as Ed25519
+import qualified Data.Binary                    as B
 import qualified Data.Binary.Get                as B
+import qualified Data.Binary.Put                as B
 import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
-import qualified Data.ByteString.Builder        as BS
 import qualified Data.ByteString.Lazy           as LBS
 import           Data.Function                  (fix)
 import qualified Data.Map.Strict                as M
@@ -57,13 +58,13 @@ main = bracket open close accept
       let clientVersionString = B.runGet versionParser (LBS.fromStrict bs)
       print clientVersionString
 
-      S.sendAllBuilder s 4096 serverVersionBuilder S.msgNoSignal
+      S.sendAllLazy s (B.runPut serverVersionBuilder) S.msgNoSignal
 
       bs  <- S.receive s 32000 S.msgNoSignal
       let clientKexInit = B.runGet (unpacketize kexInitParser) (LBS.fromStrict bs)
       print clientKexInit
 
-      S.sendAllBuilder s 4096 (packetize $ BS.word8 20 <> kexInitBuilder serverKexInit) S.msgNoSignal
+      S.sendAllLazy s (B.runPut $ packetize $ B.putWord8 20 <> kexInitBuilder serverKexInit) S.msgNoSignal
       bs <- S.receive s 32000 S.msgNoSignal
 
       let clientEphemeralPublicKey = B.runGet (unpacketize kexRequestParser) (LBS.fromStrict bs)
@@ -85,8 +86,8 @@ main = bracket open close accept
         , exchangeHashSignature    = signature
         }
 
-      S.sendAllBuilder s 4096 (packetize $ kexReplyBuilder reply) S.msgNoSignal
-      S.sendAllBuilder s 4096 (packetize newKeysBuilder) S.msgNoSignal
+      S.sendAllLazy s (B.runPut $ packetize $ kexReplyBuilder reply) S.msgNoSignal
+      S.sendAllLazy s (B.runPut $ packetize newKeysBuilder) S.msgNoSignal
       void $ S.receive s 32000 S.msgNoSignal -- newkeys
 
       let ekCS_K1:ekCS_K2:_ = deriveKeys dhSecret hash "C" sess
@@ -129,10 +130,10 @@ unpacket bs = do
   (h,ts) <- BS.uncons bs
   pure $ BS.take (BS.length ts - fromIntegral h) ts
 
-encrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> BS.Builder -> BS.ByteString
+encrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> B.Put -> BS.ByteString
 encrypt seqnr headerKey mainKey dat = ciph3 <> mac
   where
-    build         = LBS.toStrict . BS.toLazyByteString
+    build         = LBS.toStrict . B.runPut
 
     datlen        = BS.length datBS                :: Int
     padlen        = let p = 8 - ((1 + datlen) `mod` 8)
@@ -141,9 +142,9 @@ encrypt seqnr headerKey mainKey dat = ciph3 <> mac
 
     datBS         = build dat
     padBS         = BS.replicate padlen 0
-    padlenBS      = build $ BS.word8    (fromIntegral padlen)
-    paclenBS      = build $ BS.word32BE (fromIntegral paclen)
-    nonceBS       = build $ BS.word64BE (fromIntegral seqnr)
+    padlenBS      = build $ B.putWord8    (fromIntegral padlen)
+    paclenBS      = build $ B.putWord32be (fromIntegral paclen)
+    nonceBS       = build $ B.putWord64be (fromIntegral seqnr)
 
     st1           = ChaCha.initialize 20 mainKey nonceBS
     st2           = ChaCha.initialize 20 headerKey nonceBS
@@ -168,9 +169,9 @@ decrypt seqnr headerKey mainKey receive = do
     Nothing  -> fail "PADDING ERROR"
     Just msg -> pure msg
   where
-    build         = LBS.toStrict . BS.toLazyByteString
+    build         = LBS.toStrict . B.runPut
     maclen        = 16
-    nonceBS       = build $ BS.word64BE (fromIntegral seqnr)
+    nonceBS       = build $ B.putWord64be (fromIntegral seqnr)
     st1           = ChaCha.initialize 20 headerKey nonceBS
     st2           = ChaCha.initialize 20 mainKey   nonceBS
     (poly, st3)   = ChaCha.generate st2 64

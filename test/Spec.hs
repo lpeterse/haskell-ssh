@@ -2,25 +2,25 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE StandaloneDeriving         #-}
 import           Crypto.Error
-import qualified Crypto.PubKey.Ed25519   as Ed25519
-import qualified Crypto.PubKey.RSA       as RSA
-import qualified Data.Binary.Get         as B
-import qualified Data.ByteString         as BS
-import qualified Data.ByteString.Builder as BS
+import qualified Crypto.PubKey.Ed25519 as Ed25519
+import qualified Crypto.PubKey.RSA     as RSA
+import qualified Data.Binary.Get       as B
+import qualified Data.Binary.Put       as B
+import qualified Data.ByteString       as BS
 
 import           Test.Tasty
-import           Test.Tasty.QuickCheck   as QC
+import           Test.Tasty.QuickCheck as QC
 
 import           Network.SSH.Message
 
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH.Message"
   [ QC.testProperty "id == getPublicKey . putPublicKey" $ \x->
-      x === B.runGet getPublicKey (BS.toLazyByteString $ putPublicKey x)
+      x === B.runGet getPublicKey (B.runPut $ putPublicKey x)
   , QC.testProperty "id == getSignature . putSignature" $ \x->
-      x === B.runGet getSignature (BS.toLazyByteString $ putSignature x)
+      x === B.runGet getSignature (B.runPut $ putSignature x)
   , QC.testProperty "id == getMessage   . putMessage" $ \x->
-      x === B.runGet getMessage   (BS.toLazyByteString $ putMessage x)
+      x === B.runGet getMessage   (B.runPut $ putMessage x)
   ]
 
 instance Arbitrary BS.ByteString where
@@ -40,7 +40,7 @@ instance Arbitrary Message where
     , UserAuthPublicKeyOk     <$> arbitrary
     , ChannelOpen             <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
     , ChannelOpenConfirmation <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-    , ChannelOpenFailure      <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+    , ChannelOpenFailure      <$> arbitrary <*> arbitrary
     , ChannelRequest          <$> arbitrary <*> arbitrary
     , ChannelRequestSuccess   <$> arbitrary
     , ChannelRequestFailure   <$> arbitrary
@@ -64,7 +64,9 @@ deriving instance Arbitrary MaxPacketSize
 deriving instance Arbitrary InitWindowSize
 deriving instance Arbitrary ChannelId
 deriving instance Arbitrary ChannelType
-deriving instance Arbitrary ChannelOpenFailureReason
+
+instance Arbitrary ChannelOpenFailureReason where
+  arbitrary = ChannelOpenFailureReason <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary Password where
   arbitrary = elements $ fmap Password
@@ -88,15 +90,15 @@ instance Arbitrary ServiceName where
     [ "ssh-connection"
     ]
 
-instance Arbitrary MethodName where
-  arbitrary = elements $ fmap MethodName
+instance Arbitrary AuthMethodName where
+  arbitrary = elements $ fmap AuthMethodName
     [ "none"
     , "hostbased"
     , "password"
     , "publickey"
     ]
 
-instance Arbitrary AuthenticationData where
+instance Arbitrary AuthMethod where
   arbitrary = oneof
     [ pure AuthNone
     , pure AuthHostBased
