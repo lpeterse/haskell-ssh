@@ -15,12 +15,12 @@ import           Network.SSH.Message
 
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH.Message"
-  [ QC.testProperty "publicKeyParser <-> publicKeyBuilder" $ \msg->
-      msg === B.runGet publicKeyParser (BS.toLazyByteString $ publicKeyBuilder msg)
-  , QC.testProperty "signatureParser <-> signatureBuilder" $ \msg->
-      msg === B.runGet signatureParser (BS.toLazyByteString $ signatureBuilder msg)
-  , QC.testProperty "messageParser <-> messageBuilder" $ \msg->
-      msg === B.runGet messageParser (BS.toLazyByteString $ messageBuilder msg)
+  [ QC.testProperty "id == getPublicKey . putPublicKey" $ \x->
+      x === B.runGet getPublicKey (BS.toLazyByteString $ putPublicKey x)
+  , QC.testProperty "id == getSignature . putSignature" $ \x->
+      x === B.runGet getSignature (BS.toLazyByteString $ putSignature x)
+  , QC.testProperty "id == getMessage   . putMessage" $ \x->
+      x === B.runGet getMessage   (BS.toLazyByteString $ putMessage x)
   ]
 
 instance Arbitrary BS.ByteString where

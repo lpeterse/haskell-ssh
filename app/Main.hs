@@ -34,6 +34,7 @@ import qualified System.Socket.Type.Stream      as S
 
 import           Network.SSH
 import           Network.SSH.Connection
+import           Network.SSH.Message
 
 main :: IO ()
 main = bracket open close accept
@@ -116,11 +117,11 @@ serveConnection sess cfg = do
   where
     runSender q i = do
       msg <- atomically $ readTChan q
-      sendBS cfg $ encrypt i (ekSC_K2 cfg) (ekSC_K1 cfg) (messageBuilder msg)
+      sendBS cfg $ encrypt i (ekSC_K2 cfg) (ekSC_K1 cfg) (putMessage msg)
       runSender q (i + 1)
     runReceiver q i = do
       bs <- decrypt i (ekCS_K2 cfg) (ekCS_K1 cfg) (receiveBS cfg)
-      atomically $ writeTChan q $! B.runGet messageParser (LBS.fromStrict bs)
+      atomically $ writeTChan q $! B.runGet getMessage (LBS.fromStrict bs)
       runReceiver q (i + 1)
 
 unpacket :: BS.ByteString -> Maybe BS.ByteString

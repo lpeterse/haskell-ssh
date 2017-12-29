@@ -17,6 +17,7 @@ import           Data.Typeable
 import           Data.Word
 
 import           Network.SSH
+import           Network.SSH.Message
 
 data Connection
   = Connection
@@ -107,17 +108,17 @@ handleInput conn disconnect = receive conn >>= \case
   x@(UserAuthRequest user service method) -> do
     println conn (show x)
     case method of
-      None        -> send conn (UserAuthFailure [MethodName "publickey"] False)
-      HostBased   -> send conn (UserAuthFailure [MethodName "publickey"] False)
-      Password pw -> send conn (UserAuthFailure [MethodName "publickey"] False)
-      PublicKey pk msig -> case msig of
+      AuthNone        -> send conn (UserAuthFailure [MethodName "publickey"] False)
+      AuthHostBased   -> send conn (UserAuthFailure [MethodName "publickey"] False)
+      AuthPassword pw -> send conn (UserAuthFailure [MethodName "publickey"] False)
+      AuthPublicKey algo pk msig -> case msig of
         Nothing  -> send conn (UserAuthPublicKeyOk pk)
         Just sig -> if verifyAuthSignature (sessionId conn) user service pk sig
           then println conn "SUCCESS" >> send conn UserAuthSuccess
           else send conn (UserAuthFailure [MethodName "publickey"] False)
   ChannelOpen t rid ws ps ->
     openChannel conn t rid ws ps >>= \case
-      Nothing  -> send conn $ ChannelOpenFailure rid ResourceShortage "" ""
+      Nothing  -> send conn $ ChannelOpenFailure rid (ChannelOpenFailureReason 4) "" ""
       Just ch  -> send conn $ ChannelOpenConfirmation
         (chanRemoteId ch)
         (chanLocalId ch)

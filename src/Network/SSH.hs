@@ -24,6 +24,9 @@ import qualified Data.List                as L
 import           Data.Monoid
 import           Data.Word
 
+import           Network.SSH.Message
+import           Network.SSH.Message.Util
+
 serverVersionString :: BS.ByteString
 serverVersionString
   = "SSH-2.0-hssh_0.1"
@@ -314,222 +317,6 @@ deriveKeys sec hash i (SessionId sess) =
     secmpint =
       LBS.toStrict $ BS.toLazyByteString $ curve25519DhSecretBuilder sec
 
-data DisconnectReason
-  = DisconnectReason Word32
-  deriving (Eq, Ord, Show)
-
-data AuthenticationData
-  = None
-  | HostBased
-  | Password  BS.ByteString
-  | PublicKey PublicKey (Maybe Signature)
-  deriving (Eq, Show)
-
-data PublicKey
-  = PublicKeyEd25519 Ed25519.PublicKey
-  | PublicKeyRSA     RSA.PublicKey
-  | PublicKeyOther   BS.ByteString
-  deriving (Eq, Show)
-
-data Signature
-  = SignatureEd25519 Ed25519.Signature
-  | SignatureRSA     BS.ByteString
-  | SignatureOther   BS.ByteString
-  deriving (Eq, Show)
-
-data Message
-  = Disconnect              DisconnectReason BS.ByteString BS.ByteString
-  | Ignore
-  | Unimplemented
-  | ServiceRequest          ServiceName
-  | ServiceAccept           ServiceName
-  | UserAuthRequest         UserName ServiceName AuthenticationData
-  | UserAuthFailure         [MethodName] Bool
-  | UserAuthSuccess
-  | UserAuthBanner          BS.ByteString BS.ByteString
-  | UserAuthPublicKeyOk     PublicKey
-  | ChannelOpen             ChannelType ChannelId InitWindowSize MaxPacketSize
-  | ChannelOpenConfirmation ChannelId ChannelId InitWindowSize MaxPacketSize
-  | ChannelOpenFailure      ChannelId ChannelOpenFailureReason BS.ByteString BS.ByteString
-  | ChannelRequest          ChannelId ChannelRequest
-  | ChannelRequestSuccess   ChannelId
-  | ChannelRequestFailure   ChannelId
-  | ChannelData             ChannelId BS.ByteString
-  | ChannelDataExtended     ChannelId Word32 BS.ByteString
-  | ChannelEof              ChannelId
-  | ChannelClose            ChannelId
-  deriving (Show)
-
-data ChannelRequest
-  = ChannelRequestPTY
-    { crptyWantReply     :: Bool
-    , crptyTerminal      :: BS.ByteString
-    , crptyWidthCols     :: Word32
-    , crptyHeightRows    :: Word32
-    , crptyWidthPixels   :: Word32
-    , crptyHeightPixels  :: Word32
-    , crptyTerminalModes :: BS.ByteString
-    }
-  | ChannelRequestShell
-    { crshlWantReply     :: Bool
-    }
-  | ChannelRequestOther
-    { crother           :: BS.ByteString
-    } deriving (Eq, Ord, Show)
-
-newtype SessionId       = SessionId     BS.ByteString deriving (Eq, Ord, Show)
-newtype UserName        = UserName      BS.ByteString deriving (Eq, Ord, Show)
-newtype MethodName      = MethodName    { methodName :: BS.ByteString } deriving (Eq, Ord, Show)
-newtype ServiceName     = ServiceName    BS.ByteString deriving (Eq, Ord, Show)
-newtype ChannelType     = ChannelType    BS.ByteString deriving (Eq, Ord, Show)
-newtype ChannelId       = ChannelId      Word32 deriving (Eq, Ord, Show)
-newtype InitWindowSize  = InitWindowSize Word32 deriving (Eq, Ord, Show)
-newtype MaxPacketSize   = MaxPacketSize  Word32 deriving (Eq, Ord, Show)
-
-data ChannelOpenFailureReason
-  = AdministrativelyProhibited
-  | ConnectFailed
-  | UnknownChannelType
-  | ResourceShortage
-  deriving (Eq, Ord, Show)
-
-messageParser :: B.Get Message
-messageParser = B.getWord8 >>= \case
-  1    -> Disconnect
-      <$> (DisconnectReason <$> uint32)
-      <*> string
-      <*> string
-  2   -> pure Ignore
-  3   -> pure Unimplemented
-  5   -> ServiceRequest        <$> serviceParser
-  6   -> ServiceAccept         <$> serviceParser
-  50  -> UserAuthRequest       <$> (UserName <$> string) <*> serviceParser <*> authMethodParser
-  90  -> ChannelOpen
-      <$> (ChannelType     <$> string)
-      <*> (ChannelId       <$> uint32)
-      <*> (InitWindowSize  <$> uint32)
-      <*> (MaxPacketSize   <$> uint32)
-  94  -> ChannelData           <$> (ChannelId <$> uint32) <*> string
-  95  -> ChannelDataExtended   <$> (ChannelId <$> uint32) <*> uint32 <*> string
-  96  -> ChannelEof            <$> (ChannelId <$> uint32)
-  97  -> ChannelClose          <$> (ChannelId <$> uint32)
-  98  -> ChannelRequest        <$> (ChannelId <$> uint32) <*> channelRequestParser
-  99  -> ChannelRequestSuccess <$> (ChannelId <$> uint32)
-  100 -> ChannelRequestFailure <$> (ChannelId <$> uint32)
-  -- 100 -> FAILURE
-
-  x    -> fail ("UNKNOWN MESSAGE TYPE: " ++ show x)
-  where
-    serviceParser = do
-      len <- uint32
-      ServiceName <$> B.getByteString (fromIntegral len)
-    channelRequestParser = string >>= \case
-      "pty-req" -> ChannelRequestPTY
-        <$> bool
-        <*> string
-        <*> uint32
-        <*> uint32
-        <*> uint32
-        <*> uint32
-        <*> string
-      "shell"   -> ChannelRequestShell <$> bool
-      other     -> pure (ChannelRequestOther other)
-
-    authMethodParser = string >>= \case
-      "none"      -> pure None
-      "hostbased" -> pure HostBased
-      "password"  -> void bool >> Password  <$> string
-      "publickey" -> do
-        signed <- bool
-        algo   <- string
-        case algo of
-          "ssh-ed25519" -> do
-            keysize <- fromIntegral <$> uint32
-            key <- B.isolate keysize $ do
-              keyalgo <- string
-              when (keyalgo /= algo) (fail "KEY ALGORITHM NAME MISMATCH")
-              Ed25519.publicKey <$> string >>= \case
-                CryptoPassed k -> pure (PublicKeyEd25519 k)
-                CryptoFailed e -> fail (show e)
-            msig <- if not signed
-              then pure Nothing
-              else do
-                sigsize <- fromIntegral <$> uint32
-                B.isolate sigsize $ do
-                  sigalgo <- string
-                  when (sigalgo /= algo) (fail "SIGNATURE ALGORITHM NAME MISMATCH")
-                  Ed25519.signature <$> string >>= \case
-                    CryptoPassed s -> pure (Just (SignatureEd25519 s))
-                    CryptoFailed e -> fail (show e)
-            pure (PublicKey key msig)
-          "ssh-rsa" -> do
-            keysize <- fromIntegral <$> uint32
-            key <- B.isolate keysize $ do
-              keyalgo <- string
-              when (keyalgo /= algo) (fail "KEY ALGORITHM NAME MISMATCH")
-              (_,n) <- sizedInteger
-              (s,e) <- sizedInteger
-              pure (PublicKeyRSA $ RSA.PublicKey s n e)
-            msig <- if not signed
-              then pure Nothing
-              else do
-                sigsize <- fromIntegral <$> uint32
-                B.isolate sigsize $ do
-                  sigalgo <- string
-                  when (sigalgo /= algo) (fail "SIGNATURE ALGORITHM NAME MISMATCH")
-                  Just . SignatureRSA <$> string
-            pure (PublicKey key msig)
-          _ -> do
-            key  <- PublicKeyOther <$> string
-            msig <- if signed then (Just . SignatureOther <$> string) else pure Nothing
-            pure (PublicKey key msig)
-    -- parser synomyns named as in the RFC
-    bool    :: B.Get Bool
-    bool     = byte >>= \case { 0 -> pure False; _ -> pure True; }
-    byte    :: B.Get Word8
-    byte     = B.getWord8
-    uint32  :: B.Get Word32
-    uint32   = B.getWord32be
-    size    :: B.Get Int
-    size     = fromIntegral <$> uint32
-    string  :: B.Get BS.ByteString
-    string   = uint32 >>= B.getByteString . fromIntegral
-    -- Observing the encoded length is far cheaper than calculating the
-    -- log2 of the resulting integer.
-    sizedInteger :: B.Get (Int, Integer)
-    sizedInteger  = do
-      bs <- BS.dropWhile (==0) <$> string -- eventually remove leading 0 byte
-      pure (BS.length bs * 8, foldl' (\i b-> i*256 + fromIntegral b) 0 $ BS.unpack bs)
-
-messageBuilder :: Message -> BS.Builder
-messageBuilder = \case
-  ServiceRequest srv -> BS.word8 0x05 <> serviceBuilder srv
-  ServiceAccept  srv -> BS.word8 0x06 <> serviceBuilder srv
-  UserAuthFailure methods partialSuccess ->
-    BS.word8 51 <> nameListBuilder (methodName <$> methods) <> bool partialSuccess
-  UserAuthSuccess ->
-    BS.word8 52
-  UserAuthBanner banner lang ->
-    BS.word8 53 <> string banner <> string lang
-  UserAuthPublicKeyOk pk ->
-    BS.word8 60 <> publicKey pk
-  ChannelOpenConfirmation (ChannelId a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d) ->
-    BS.word8 91 <> BS.word32BE a <> BS.word32BE b <> BS.word32BE d <> BS.word32BE d
-  ChannelData (ChannelId lid) s ->
-    BS.word8 94 <> BS.word32BE lid <> BS.word32BE (fromIntegral $ BS.length s) <> BS.byteString s
-  ChannelClose (ChannelId lid) ->
-    BS.word8  97 <> BS.word32BE lid
-  ChannelRequestSuccess (ChannelId lid) -> BS.word8  99 <> BS.word32BE lid
-  ChannelRequestFailure (ChannelId lid) -> BS.word8 100 <> BS.word32BE lid
-  otherwise          -> error (show otherwise)
-  where
-    serviceBuilder (ServiceName bs) = BS.word32BE (fromIntegral $ BS.length bs) <> BS.byteString bs
-    string x = BS.word32BE (fromIntegral $ BS.length x) <> BS.byteString x
-    bool   x = BS.word8 (if x then 0x01 else 0x00)
-    uint32 x = BS.word32BE
-    publicKey (PublicKeyEd25519 pk) = string "ssh-ed25519" <> ed25519PublicKeyBuilder pk
-    publicKey (PublicKeyRSA     pk) = string "ssh-rsa"     <> rsaPublicKeyBuilder     pk
-
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> PublicKey -> Signature -> Bool
 verifyAuthSignature
   (SessionId   sessionIdentifier)
@@ -541,19 +328,11 @@ verifyAuthSignature
   where
     signedData :: BS.ByteString
     signedData = LBS.toStrict $ BS.toLazyByteString $ mconcat
-      [ string sessionIdentifier
-      , byte   50
-      , string userName
-      , string serviceName
-      , string "publickey"
-      , bool   True
-      , case publicKey of
-          PublicKeyEd25519 x -> string "ssh-ed25519" <> ed25519PublicKeyBuilder x
-          PublicKeyRSA     x -> string "ssh-rsa"     <> rsaPublicKeyBuilder x
-          other              -> error "ABCDEF"
+      [ putString    sessionIdentifier
+      , putByte      50
+      , putString    userName
+      , putString    serviceName
+      , putString    "publickey"
+      , putBool      True
+      , putPublicKey publicKey
       ]
-
-    byte     = BS.word8
-    uint32   = BS.word32BE
-    string x = BS.word32BE (fromIntegral $ BS.length x) <> BS.byteString x
-    bool   x = BS.word8 (if x then 0x01 else 0x00)

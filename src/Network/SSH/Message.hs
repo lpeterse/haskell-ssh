@@ -1,8 +1,7 @@
-{-# LANGUAGE BangPatterns      #-}
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Message
-  ( Message (..), messageParser, messageBuilder
+  ( Message (..), getMessage, putMessage
   , ChannelRequest (..)
   , MaxPacketSize (..)
   , InitWindowSize (..)
@@ -16,8 +15,9 @@ module Network.SSH.Message
   , ServiceName (..)
   , MethodName (..)
   , AuthenticationData (..)
-  , PublicKey (..), publicKeyParser, publicKeyBuilder
-  , Signature (..), signatureParser, signatureBuilder
+  , SessionId (..)
+  , PublicKey (..), getPublicKey, putPublicKey
+  , Signature (..), getSignature, putSignature
   ) where
 
 import           Control.Monad            (void, when)
@@ -40,6 +40,8 @@ import           Data.Int
 import qualified Data.List                as L
 import           Data.Monoid
 import           Data.Word
+
+import           Network.SSH.Message.Util
 
 data Message
   = Disconnect              DisconnectReason BS.ByteString BS.ByteString
@@ -114,306 +116,188 @@ newtype InitWindowSize   = InitWindowSize   Word32 deriving (Eq, Ord, Show)
 newtype MaxPacketSize    = MaxPacketSize    Word32 deriving (Eq, Ord, Show)
 newtype ChannelOpenFailureReason = ChannelOpenFailureReason Word32 deriving (Eq, Ord, Show)
 
-nameListBuilder :: [BS.ByteString] -> BS.Builder
-nameListBuilder xs =
-  BS.word32BE (fromIntegral $ g xs)
-  <> mconcat (BS.byteString <$> L.intersperse "," xs)
-  where
-    g [] = 0
-    g xs = sum (BS.length <$> xs) + length xs - 1
-
-nameListParser :: B.Get [BS.ByteString]
-nameListParser = do
-  len <- fromIntegral <$> B.getWord32be
-  BS.split 0x2c <$> B.getByteString len
-
-curve25519BlobBuilder :: Curve25519.PublicKey -> BS.Builder
-curve25519BlobBuilder key =
-  BS.word32BE 32 <> BS.byteString (BS.pack $ BA.unpack key)
-
-curve25519DhSecretBuilder  :: Curve25519.DhSecret -> BS.Builder
-curve25519DhSecretBuilder sec =
-  bignum2bytes (BA.unpack sec)
-  where
-    -- FIXME: not constant time
-    bignum2bytes xs = zs
-      where
-        prepend [] = []
-        prepend (a:as)
-          | a >= 128  = 0:a:as
-          | otherwise = a:as
-        ys = BS.pack $ prepend $ dropWhile (==0) xs
-        zs = BS.word32BE (fromIntegral $ BS.length ys) <> BS.byteString ys
-
-mpintLenBuilder :: Integer -> (Int, BS.Builder) -> (Int, BS.Builder)
-mpingLenBuilder 0 x = x
-mpintLenBuilder i (!len, !bld) = mpintLenBuilder q (len + 4, BS.word32BE (fromIntegral r) <> bld)
-  where
-    (q,r) = i `quotRem` 0x0100000000
-
-messageParser :: B.Get Message
-messageParser = B.getWord8 >>= \case
+getMessage :: B.Get Message
+getMessage = getByte >>= \case
   1    -> Disconnect
-      <$> (DisconnectReason <$> uint32)
-      <*> string
-      <*> string
+      <$> (DisconnectReason <$> getUint32)
+      <*> getString
+      <*> getString
   2   -> pure Ignore
   3   -> pure Unimplemented
-  5   -> ServiceRequest        <$> serviceParser
-  6   -> ServiceAccept         <$> serviceParser
-  50  -> UserAuthRequest       <$> (UserName <$> string) <*> serviceParser <*> authMethodParser
-  51  -> UserAuthFailure       <$> (fmap MethodName <$> nameListParser) <*> bool
+  5   -> ServiceRequest
+      <$> (ServiceName <$> getString)
+  6   -> ServiceAccept
+      <$> (ServiceName <$> getString)
+  50  -> UserAuthRequest
+      <$> (UserName <$> getString)
+      <*> (ServiceName <$> getString)
+      <*> authMethodParser
+  51  -> UserAuthFailure
+      <$> (fmap MethodName <$> getNameList)
+      <*> getBool
   52  -> pure UserAuthSuccess
-  53  -> UserAuthBanner        <$> string <*> string
-  60  -> UserAuthPublicKeyOk   <$> publicKeyParser
+  53  -> UserAuthBanner
+      <$> getString
+      <*> getString
+  60  -> UserAuthPublicKeyOk
+      <$> getPublicKey
   90  -> ChannelOpen
-      <$> (ChannelType     <$> string)
-      <*> (ChannelId       <$> uint32)
-      <*> (InitWindowSize  <$> uint32)
-      <*> (MaxPacketSize   <$> uint32)
+      <$> (ChannelType     <$> getString)
+      <*> (ChannelId       <$> getUint32)
+      <*> (InitWindowSize  <$> getUint32)
+      <*> (MaxPacketSize   <$> getUint32)
   91  -> ChannelOpenConfirmation
-      <$> (ChannelId       <$> uint32)
-      <*> (ChannelId       <$> uint32)
-      <*> (InitWindowSize  <$> uint32)
-      <*> (MaxPacketSize   <$> uint32)
-  92  -> ChannelOpenFailure    <$> (ChannelId <$> uint32) <*> (ChannelOpenFailureReason <$> uint32) <*> string <*> string
-  94  -> ChannelData           <$> (ChannelId <$> uint32) <*> string
-  95  -> ChannelDataExtended   <$> (ChannelId <$> uint32) <*> uint32 <*> string
-  96  -> ChannelEof            <$> (ChannelId <$> uint32)
-  97  -> ChannelClose          <$> (ChannelId <$> uint32)
-  98  -> ChannelRequest        <$> (ChannelId <$> uint32) <*> channelRequestParser
-  99  -> ChannelRequestSuccess <$> (ChannelId <$> uint32)
-  100 -> ChannelRequestFailure <$> (ChannelId <$> uint32)
+      <$> (ChannelId       <$> getUint32)
+      <*> (ChannelId       <$> getUint32)
+      <*> (InitWindowSize  <$> getUint32)
+      <*> (MaxPacketSize   <$> getUint32)
+  92  -> ChannelOpenFailure    <$> (ChannelId <$> getUint32) <*> (ChannelOpenFailureReason <$> getUint32) <*> getString <*> getString
+  94  -> ChannelData           <$> (ChannelId <$> getUint32) <*> getString
+  95  -> ChannelDataExtended   <$> (ChannelId <$> getUint32) <*> getUint32 <*> getString
+  96  -> ChannelEof            <$> (ChannelId <$> getUint32)
+  97  -> ChannelClose          <$> (ChannelId <$> getUint32)
+  98  -> ChannelRequest        <$> (ChannelId <$> getUint32) <*> channelRequestParser
+  99  -> ChannelRequestSuccess <$> (ChannelId <$> getUint32)
+  100 -> ChannelRequestFailure <$> (ChannelId <$> getUint32)
   x   -> fail ("UNKNOWN MESSAGE TYPE " ++ show x)
   where
-    serviceParser = do
-      len <- uint32
-      ServiceName <$> B.getByteString (fromIntegral len)
-    channelRequestParser = string >>= \case
+    channelRequestParser = getString >>= \case
       "pty-req" -> ChannelRequestPTY
-        <$> bool
-        <*> string
-        <*> uint32
-        <*> uint32
-        <*> uint32
-        <*> uint32
-        <*> string
-      "shell"   -> ChannelRequestShell <$> bool
+        <$> getBool
+        <*> getString
+        <*> getUint32
+        <*> getUint32
+        <*> getUint32
+        <*> getUint32
+        <*> getString
+      "shell"   -> ChannelRequestShell <$> getBool
       other     -> pure (ChannelRequestOther other)
 
-    authMethodParser = string >>= \case
+    authMethodParser = getString >>= \case
       "none"      -> pure AuthNone
       "hostbased" -> pure AuthHostBased
-      "password"  -> void bool >> AuthPassword  <$> (Password <$> string)
+      "password"  -> void getBool >> AuthPassword  <$> (Password <$> getString)
       "publickey" -> do
-        signed <- bool
-        algo   <- Algorithm <$> string
-        key    <- publicKeyParser
-        msig   <- if signed then Just <$> signatureParser else pure Nothing
+        signed <- getBool
+        algo   <- Algorithm <$> getString
+        key    <- getPublicKey
+        msig   <- if signed then Just <$> getSignature else pure Nothing
         pure (AuthPublicKey algo key msig)
 
-    -- parser synomyns named as in the RFC
-    bool    :: B.Get Bool
-    bool     = byte >>= \case { 0 -> pure False; _ -> pure True; }
-    byte    :: B.Get Word8
-    byte     = B.getWord8
-    uint32  :: B.Get Word32
-    uint32   = B.getWord32be
-    size    :: B.Get Int
-    size     = fromIntegral <$> uint32
-    string  :: B.Get BS.ByteString
-    string   = uint32 >>= B.getByteString . fromIntegral
-    -- Observing the encoded length is far cheaper than calculating the
-    -- log2 of the resulting integer.
-    sizedInteger :: B.Get (Int, Integer)
-    sizedInteger  = do
-      bs <- BS.dropWhile (==0) <$> string -- eventually remove leading 0 byte
-      pure (BS.length bs * 8, foldl' (\i b-> i*256 + fromIntegral b) 0 $ BS.unpack bs)
-
-messageBuilder :: Message -> BS.Builder
-messageBuilder = \case
+putMessage :: Message -> BS.Builder
+putMessage = \case
   Disconnect (DisconnectReason r) x y ->
-    BS.word8   1 <> BS.word32BE r <> string x <> string y
+    putByte   1 <> putUint32 r <> putString x <> putString y
   Ignore ->
-    BS.word8   2
+    putByte   2
   Unimplemented ->
-    BS.word8   3
+    putByte   3
   ServiceRequest (ServiceName sn) ->
-    BS.word8   5 <> string sn
+    putByte   5 <> putString sn
   ServiceAccept  (ServiceName sn) ->
-    BS.word8   6 <> string sn
+    putByte   6 <> putString sn
   UserAuthRequest (UserName un) (ServiceName sn) am ->
-    BS.word8  50 <> string un <> string sn <> authMethodBuilder am
+    putByte  50 <> putString un <> putString sn <> authMethodBuilder am
   UserAuthFailure methods partialSuccess ->
-    BS.word8  51 <> nameListBuilder (methodName <$> methods) <> bool partialSuccess
+    putByte  51 <> putNameList (methodName <$> methods) <> putBool partialSuccess
   UserAuthSuccess ->
-    BS.word8  52
+    putByte  52
   UserAuthBanner banner lang ->
-    BS.word8  53 <> string banner <> string lang
+    putByte  53 <> putString banner <> putString lang
   UserAuthPublicKeyOk pk ->
-    BS.word8  60 <> publicKeyBuilder pk
+    putByte  60 <> putPublicKey pk
   ChannelOpen (ChannelType a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d) ->
-    BS.word8  90 <> string a <> uint32 b <> uint32 c <> uint32 d
+    putByte  90 <> putString a <> putUint32 b <> putUint32 c <> putUint32 d
   ChannelOpenConfirmation (ChannelId a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d) ->
-    BS.word8  91 <> BS.word32BE a <> BS.word32BE b <> BS.word32BE c <> BS.word32BE d
+    putByte  91 <> putUint32 a <> putUint32 b <> putUint32 c <> putUint32 d
   ChannelOpenFailure (ChannelId rid) (ChannelOpenFailureReason reason) x y ->
-    BS.word8  92 <> uint32 rid <> uint32 reason <> string x <> string y
-  ChannelData (ChannelId lid) s ->
-    BS.word8  94 <> BS.word32BE lid <> BS.word32BE (fromIntegral $ BS.length s) <> BS.byteString s
-  ChannelDataExtended (ChannelId lid) x s ->
-    BS.word8  95 <> uint32 lid <> uint32 x <> string s
+    putByte  92 <> putUint32 rid <> putUint32 reason <> putString x <> putString y
+  ChannelData (ChannelId lid) bs ->
+    putByte  94 <> putUint32 lid <> putString bs
+  ChannelDataExtended (ChannelId lid) x bs ->
+    putByte  95 <> putUint32 lid <> putUint32 x <> putString bs
   ChannelEof   (ChannelId lid) ->
-    BS.word8  96 <> uint32 lid
+    putByte  96 <> putUint32 lid
   ChannelClose (ChannelId lid) ->
-    BS.word8  97 <> BS.word32BE lid
+    putByte  97 <> putUint32 lid
   ChannelRequest (ChannelId lid) req ->
-    BS.word8  98 <> BS.word32BE lid <> channelRequestBuilder req
+    putByte  98 <> putUint32 lid <> channelRequestBuilder req
   ChannelRequestSuccess (ChannelId lid) ->
-    BS.word8  99 <> BS.word32BE lid
+    putByte  99 <> putUint32 lid
   ChannelRequestFailure (ChannelId lid) ->
-    BS.word8 100 <> BS.word32BE lid
+    putByte 100 <> putUint32 lid
   where
-    string x = BS.word32BE (fromIntegral $ BS.length x) <> BS.byteString x
-    bool   x = BS.word8 (if x then 0x01 else 0x00)
-    uint32   = BS.word32BE
-
     channelRequestBuilder (ChannelRequestPTY a b c d e f g) = mconcat
-      [ string "pty-req", bool a, string b, uint32 c, uint32 d, uint32 e, uint32 f, string g]
+      [ putString "pty-req", putBool a, putString b, putUint32 c, putUint32 d, putUint32 e, putUint32 f, putString g]
     channelRequestBuilder (ChannelRequestShell wantReply) = mconcat
-      [ string "shell", bool wantReply ]
+      [ putString "shell", putBool wantReply ]
     channelRequestBuilder (ChannelRequestOther other) = mconcat
-      [ string other ]
+      [ putString other ]
 
     authMethodBuilder AuthNone = mconcat
-      [ string "none" ]
+      [ putString "none" ]
     authMethodBuilder AuthHostBased = mconcat
-      [ string "hostbased" ]
+      [ putString "hostbased" ]
     authMethodBuilder (AuthPassword (Password pw)) = mconcat
-      [ string "password", bool False, string pw ]
+      [ putString "password", putBool False, putString pw ]
     authMethodBuilder (AuthPublicKey (Algorithm algo) pk msig) = mconcat $ case msig of
-      Nothing  -> [ string "publickey", bool False, string algo, publicKeyBuilder pk ]
-      Just sig -> [ string "publickey", bool True,  string algo, publicKeyBuilder pk, signatureBuilder sig ]
+      Nothing  -> [ putString "publickey", putBool False, putString algo, putPublicKey pk ]
+      Just sig -> [ putString "publickey", putBool True,  putString algo, putPublicKey pk, putSignature sig ]
 
-publicKeyParser :: B.Get PublicKey
-publicKeyParser = do
-  keysize <- size
-  B.isolate keysize $ string >>= \case
-    "ssh-ed25519" ->
-      Ed25519.publicKey <$> string >>= \case
-        CryptoPassed k -> pure (PublicKeyEd25519 k)
-        CryptoFailed e -> fail (show e)
-    "ssh-rsa" -> do
-      (_,n) <- sizedInteger
-      (s,e) <- sizedInteger
-      pure $ PublicKeyRSA $ RSA.PublicKey s n e
-    other ->
-      PublicKeyOther other <$> string
-  where
-    size    :: B.Get Int
-    size     = fromIntegral <$> uint32
-    uint32  :: B.Get Word32
-    uint32   = B.getWord32be
-    string  :: B.Get BS.ByteString
-    string   = uint32 >>= B.getByteString . fromIntegral
-    -- Observing the encoded length is far cheaper than calculating the
-    -- log2 of the resulting integer.
-    sizedInteger :: B.Get (Int, Integer)
-    sizedInteger  = do
-      bs <- BS.dropWhile (==0) <$> string -- eventually remove leading 0 byte
-      pure (BS.length bs * 8, foldl' (\i b-> i*256 + fromIntegral b) 0 $ BS.unpack bs)
+getPublicKey :: B.Get PublicKey
+getPublicKey = getFramed $ \keysize-> getString >>= \case
+  "ssh-ed25519" ->
+    Ed25519.publicKey <$> getString >>= \case
+      CryptoPassed k -> pure (PublicKeyEd25519 k)
+      CryptoFailed e -> fail (show e)
+  "ssh-rsa" -> do
+    (n,_) <- getIntegerAndSize
+    (e,s) <- getIntegerAndSize
+    pure $ PublicKeyRSA $ RSA.PublicKey s n e
+  other ->
+    PublicKeyOther other <$> getString
 
-publicKeyBuilder :: PublicKey -> BS.Builder
-publicKeyBuilder = \case
+putPublicKey :: PublicKey -> BS.Builder
+putPublicKey = \case
   PublicKeyEd25519    pk -> ed25519Builder    pk
   PublicKeyRSA        pk -> rsaBuilder        pk
   PublicKeyOther name pk -> otherBuilder name pk
   where
-    uint32    = BS.word32BE
-    string  x = BS.word32BE (fromIntegral $ BS.length x)  <> BS.byteString x
-    integer x = BS.word32BE (fromIntegral $ BS.length bs) <> BS.byteString bs
-      where
-        bs = BS.pack $ g $ f x []
-        f 0 acc = acc
-        f i acc = let (q,r) = quotRem i 256
-                  in  f q (fromIntegral r : acc)
-        g []        = []
-        g xxs@(x:_) | x > 128   = 0:xxs
-                    | otherwise = xxs
-
     ed25519Builder :: Ed25519.PublicKey -> BS.Builder
     ed25519Builder key = mconcat
-      [ BS.word32BE  51 -- total length is constant for ed25519
-      , string       "ssh-ed25519"
-      , string       (BS.pack $ BA.unpack key)
+      [ putUint32  51 -- total length is constant for ed25519
+      , putString  "ssh-ed25519"
+      , putString  (BS.pack $ BA.unpack key)
       ]
 
     rsaBuilder :: RSA.PublicKey -> BS.Builder
-    rsaBuilder (RSA.PublicKey _ n e) = sized $ mconcat
-      [ string "ssh-rsa"
-      , integer n
-      , integer e
+    rsaBuilder (RSA.PublicKey _ n e) = putFramed $ mconcat
+      [ putString "ssh-rsa"
+      , putInteger n
+      , putInteger e
       ]
 
     otherBuilder :: BS.ByteString -> BS.ByteString -> BS.Builder
-    otherBuilder name pk = sized $ mconcat
-      [ string name
-      , string pk
+    otherBuilder name pk = putFramed $ mconcat
+      [ putString name
+      , putString pk
       ]
 
-signatureParser :: B.Get Signature
-signatureParser = do
-  sigsize <- size
-  B.isolate sigsize $ string >>= \case
-    "ssh-ed25519" ->
-      Ed25519.signature <$> string >>= \case
-        CryptoPassed s -> pure (SignatureEd25519 s)
-        CryptoFailed e -> fail "56789"
-    "ssh-rsa" ->
-      SignatureRSA <$> string
-    other ->
-      SignatureOther other <$> string
-  where
-    size    :: B.Get Int
-    size     = fromIntegral <$> uint32
-    uint32  :: B.Get Word32
-    uint32   = B.getWord32be
-    string  :: B.Get BS.ByteString
-    string   = uint32 >>= B.getByteString . fromIntegral
+getSignature:: B.Get Signature
+getSignature = getFramed $ \sigsize-> getString >>= \case
+  "ssh-ed25519" ->
+    Ed25519.signature <$> getString >>= \case
+      CryptoPassed s -> pure (SignatureEd25519 s)
+      CryptoFailed e -> fail (show e)
+  "ssh-rsa" ->
+    SignatureRSA <$> getString
+  other ->
+    SignatureOther other <$> getString
 
-signatureBuilder :: Signature -> BS.Builder
-signatureBuilder = sized . \case
-  SignatureEd25519    sig -> string "ssh-ed25519" <> string (BS.pack $ BA.unpack sig)
-  SignatureRSA        sig -> string "ssh-rsa"     <> string sig
-  SignatureOther algo sig -> string algo          <> string sig
-  where
-    string x = BS.word32BE (fromIntegral $ BS.length x) <> BS.byteString x
+putSignature :: Signature -> BS.Builder
+putSignature = putFramed . \case
+  SignatureEd25519    sig -> putString "ssh-ed25519" <> putString (BS.pack $ BA.unpack sig)
+  SignatureRSA        sig -> putString "ssh-rsa"     <> putString sig
+  SignatureOther algo sig -> putString algo          <> putString sig
 
-verifyAuthSignature :: SessionId -> UserName -> ServiceName -> PublicKey -> Signature -> Bool
-verifyAuthSignature
-  (SessionId   sessionIdentifier)
-  (UserName    userName)
-  (ServiceName serviceName) publicKey signature = case (publicKey,signature) of
-    (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
-    (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
-    _                                        -> False
-  where
-    signedData :: BS.ByteString
-    signedData = LBS.toStrict $ BS.toLazyByteString $ mconcat
-      [ string sessionIdentifier
-      , byte   50
-      , string userName
-      , string serviceName
-      , string "publickey"
-      , bool   True
-      , publicKeyBuilder publicKey
-      ]
 
-    byte     = BS.word8
-    uint32   = BS.word32BE
-    string x = BS.word32BE (fromIntegral $ BS.length x) <> BS.byteString x
-    bool   x = BS.word8 (if x then 0x01 else 0x00)
-
-sized :: BS.Builder -> BS.Builder
-sized b = BS.word32BE (fromIntegral $ LBS.length lbs) <> BS.lazyByteString lbs
-  where
-    lbs = BS.toLazyByteString b
