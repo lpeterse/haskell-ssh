@@ -296,7 +296,7 @@ instance B.Binary DisconnectReason where
   get = DisconnectReason <$> B.getWord32be
 
 instance B.Binary ChannelOpenFailureReason where
-  put (ChannelOpenFailureReason c d l) = B.putWord32be c <> putString' d <> putString' l
+  put (ChannelOpenFailureReason c d l) = B.putWord32be c <> putString d <> putString l
   get = ChannelOpenFailureReason <$> B.getWord32be <*> getString <*> getString
 
 instance B.Binary ChannelId where
@@ -312,27 +312,21 @@ instance B.Binary MaxPacketSize where
   get = MaxPacketSize <$> B.getWord32be
 
 instance B.Binary ChannelType where
-  put (ChannelType s) = putString' s
+  put (ChannelType s) = putString s
   get = ChannelType <$> getString
 
 instance B.Binary ServiceName where
-  put (ServiceName s) = putString' s
+  put (ServiceName s) = putString s
   get = ServiceName <$> getString
 
 instance B.Binary UserName where
-  put (UserName s) = putString' s
+  put (UserName s) = putString s
   get = UserName <$> getString
 
 instance B.Binary PublicKey where
-  put = undefined
+  put = putPublicKey
   get = getPublicKey
 
 instance B.Binary Signature where
-  put = undefined
+  put = putSignature
   get = getSignature
-
-putString'  :: BS.ByteString -> B.Put
-putString' x = B.putWord32be (fromIntegral $ BS.length x) <> B.putByteString x
-
-putFramed' :: B.Put -> B.Put
-putFramed' x = let lbs = B.runPut x in B.putWord32be (fromIntegral $ LBS.length lbs) <> B.put lbs
