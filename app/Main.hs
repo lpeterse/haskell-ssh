@@ -63,7 +63,8 @@ main = bracket open close accept
       bs  <- S.receive s 32000 S.msgNoSignal
       let clientKexInit = B.runGet (unpacketize $ B.getWord8 >> B.get) (LBS.fromStrict bs)
       print clientKexInit
-
+      cookie <- newCookie
+      let serverKexInit = kexInit cookie
       S.sendAllLazy s (B.runPut $ packetize $ B.putWord8 20 <> B.put serverKexInit) S.msgNoSignal
       bs <- S.receive s 32000 S.msgNoSignal
 

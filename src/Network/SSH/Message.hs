@@ -10,7 +10,7 @@ module Network.SSH.Message
   , ChannelOpenFailureReason (..)
   , ChannelRequest (..)
   , ChannelType (..)
-  , Cookie (..)
+  , Cookie (), newCookie
   , DisconnectReason (..)
   , InitWindowSize (..)
   , KexInit (..)
@@ -31,6 +31,7 @@ import           Crypto.Error
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
+import           Crypto.Random
 import qualified Data.Binary              as B
 import qualified Data.Binary.Get          as B
 import qualified Data.Binary.Put          as B
@@ -66,6 +67,10 @@ data Message
   deriving (Eq, Show)
 
 newtype Cookie           = Cookie           BS.ByteString deriving (Eq, Ord, Show)
+
+newCookie :: MonadRandom m => m Cookie
+newCookie = Cookie <$> getRandomBytes 16
+
 newtype Version          = Version          BS.ByteString deriving (Eq, Ord, Show)
 newtype Algorithm        = Algorithm        BS.ByteString deriving (Eq, Ord, Show)
 newtype Password         = Password         BS.ByteString deriving (Eq, Ord, Show)
