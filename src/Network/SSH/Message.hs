@@ -14,6 +14,8 @@ module Network.SSH.Message
   , DisconnectReason (..)
   , InitWindowSize (..)
   , KeyExchangeInit (..)
+  , KexEcdhInit (..)
+  , KexEcdhReply (..)
   , MaxPacketSize (..)
   , Password (..)
   , PublicKey (..)
@@ -24,19 +26,20 @@ module Network.SSH.Message
   , Version (..)
   ) where
 
-import           Control.Monad         (void)
+import           Control.Monad            (void, when)
 import           Crypto.Error
-import qualified Crypto.PubKey.Ed25519 as Ed25519
-import qualified Crypto.PubKey.RSA     as RSA
-import qualified Data.Binary           as B
-import qualified Data.Binary.Get       as B
-import qualified Data.Binary.Put       as B
-import qualified Data.ByteArray        as BA
-import qualified Data.ByteString       as BS
-import qualified Data.ByteString.Lazy  as LBS
+import qualified Crypto.PubKey.Curve25519 as Curve25519
+import qualified Crypto.PubKey.Ed25519    as Ed25519
+import qualified Crypto.PubKey.RSA        as RSA
+import qualified Data.Binary              as B
+import qualified Data.Binary.Get          as B
+import qualified Data.Binary.Put          as B
+import qualified Data.ByteArray           as BA
+import qualified Data.ByteString          as BS
+import qualified Data.ByteString.Lazy     as LBS
 import           Data.Foldable
-import qualified Data.List             as L
-import           Data.Monoid           ((<>))
+import qualified Data.List                as L
+import           Data.Monoid              ((<>))
 import           Data.Word
 
 data Message
@@ -91,6 +94,18 @@ data KeyExchangeInit
   , languagesServerToClient             :: [BS.ByteString]
   , firstKexPacketFollows               :: Bool
   } deriving (Eq, Ord, Show)
+
+data KexEcdhInit
+  = KexEcdhInit
+  { kexClientEphemeralKey :: Curve25519.PublicKey
+  } deriving (Eq, Show)
+
+data KexEcdhReply
+  = KexEcdhReply
+  { kexServerHostKey      :: Ed25519.PublicKey
+  , kexServerEphemeralKey :: Curve25519.PublicKey
+  , kexHashSignature      :: Ed25519.Signature
+  } deriving (Eq, Show)
 
 data ChannelRequest
   = ChannelRequestPTY
@@ -391,6 +406,39 @@ instance B.Binary KeyExchangeInit where
       <*> getNameList <*> getNameList <*> getBool
     void getUint32 -- reserved for future extensions
     pure kex
+
+instance B.Binary KexEcdhInit where
+  put = undefined
+  get = do
+    msg <- B.getWord8
+    when (msg /= 30) (fail "expected SSH_MSG_KEX_ECDH_INIT")
+    keySize <- B.getWord32be
+    when (keySize /= 32) (fail "expected key size to be 32 bytes")
+    bs <- B.getByteString 32
+    case Curve25519.publicKey bs of
+      CryptoPassed a -> pure (KexEcdhInit a)
+      CryptoFailed e -> fail (show e)
+
+instance B.Binary KexEcdhReply where
+  put x = mconcat
+    [ B.putWord8        31 -- message type
+    , B.putWord32be     51 -- host key len
+    , B.putWord32be     11 -- host key algorithm name len
+    , B.putByteString   "ssh-ed25519"
+    , B.putWord32be     32 -- host key data len
+    , B.putByteString $ BS.pack $ BA.unpack (kexServerHostKey x)
+    , B.putWord32be     32 -- ephemeral key len
+    , B.putByteString $ BS.pack $ BA.unpack (kexServerEphemeralKey x)
+    , B.putWord32be   $ 4 + 11 + 4 + fromIntegral signatureLen
+    , B.putWord32be     11 -- algorithm name len
+    , B.putByteString   "ssh-ed25519"
+    , B.putWord32be   $ fromIntegral signatureLen
+    , B.putByteString   signature
+    ]
+    where
+      signature    = BS.pack $ BA.unpack (kexHashSignature x)
+      signatureLen = BS.length signature
+  get = undefined
 
 -------------------------------------------------------------------------------
 -- Util functions

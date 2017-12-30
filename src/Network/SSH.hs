@@ -1,7 +1,11 @@
-{-# LANGUAGE BangPatterns      #-}
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Network.SSH where
+module Network.SSH
+  ( packetize, unpacketize
+  , exchangeHash
+  , deriveKeys
+  , verifyAuthSignature
+  ) where
 
 import           Control.Monad            (void, when)
 import           Crypto.Error
@@ -28,49 +32,6 @@ import           Data.Word
 import           Network.SSH.Constants
 import           Network.SSH.Message
 
-serverKexInit :: KeyExchangeInit
-serverKexInit = KeyExchangeInit
-  { cookie
-  = Cookie "\155=\ACK\150\169p\164\v\t\245\223\224\EOT\233\200\SO"
-  , keyAlgorithms
-  = [ "curve25519-sha256@libssh.org" ]
-  , serverHostKeyAlgorithms
-  = [ "ssh-ed25519" ]
-  , encryptionAlgorithmsClientToServer
-  = [ "chacha20-poly1305@openssh.com" ]
-  , encryptionAlgorithmsServerToClient
-  = [ "chacha20-poly1305@openssh.com" ]
-  , macAlgorithmsClientToServer
-  = [ "umac-64-etm@openssh.com" ]
-  , macAlgorithmsServerToClient
-  = [ "umac-64-etm@openssh.com" ]
-  , compressionAlgorithmsClientToServer
-  = [ "none" ]
-  , compressionAlgorithmsServerToClient
-  = [ "none" ]
-  , languagesClientToServer
-  = []
-  , languagesServerToClient
-  = []
-  , firstKexPacketFollows
-  = False
-  }
-
-data KexReply
-  = KexReply
-  { serverPublicHostKey      :: Ed25519.PublicKey
-  , serverPublicEphemeralKey :: Curve25519.PublicKey
-  , exchangeHashSignature    :: Ed25519.Signature
-  } deriving (Show)
-
-nameListBuilder :: [BS.ByteString] -> B.Put
-nameListBuilder xs =
-  B.putWord32be (fromIntegral $ g xs)
-  <> mconcat (B.putByteString <$> L.intersperse "," xs)
-  where
-    g [] = 0
-    g xs = sum (BS.length <$> xs) + length xs - 1
-
 packetize :: B.Put -> B.Put
 packetize payload = mconcat
   [ B.putWord32be $ fromIntegral packetLen
@@ -86,35 +47,12 @@ packetize payload = mconcat
 
 unpacketize :: B.Get a -> B.Get a
 unpacketize parser = do
-  packetLen <- fromIntegral . min maxPacketSize <$> B.getWord32be
+  packetLen <- fromIntegral <$> B.getWord32be
   B.isolate packetLen $ do
     paddingLen <- fromIntegral <$> B.getWord8
     x <- parser
     B.skip paddingLen
     pure x
-
-kexReplyBuilder :: KexReply -> B.Put
-kexReplyBuilder reply = mconcat
-  [ B.putWord8        31 -- message type
-  , B.putWord32be     51 -- host key len
-  , B.putWord32be     11 -- host key algorithm name len
-  , B.putByteString   "ssh-ed25519"
-  , B.putWord32be     32 -- host key data len
-  , B.putByteString $ BS.pack $ BA.unpack (serverPublicHostKey reply)
-  , B.putWord32be     32 -- ephemeral key len
-  , B.putByteString $ BS.pack $ BA.unpack (serverPublicEphemeralKey reply)
-  , B.putWord32be   $ 4 + 11 + 4 + fromIntegral signatureLen
-  , B.putWord32be     11 -- algorithm name len
-  , B.putByteString   "ssh-ed25519"
-  , B.putWord32be   $ fromIntegral signatureLen
-  , B.putByteString   signature
-  ]
-  where
-    signature    = BS.pack $ BA.unpack (exchangeHashSignature reply)
-    signatureLen = BS.length signature
-
-newKeysBuilder :: B.Put
-newKeysBuilder = B.putWord8 21
 
 exchangeHash ::
   Version ->               -- client version string
@@ -141,101 +79,41 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
   , ed25519PublicKeyBuilder    ks
   , curve25519BlobBuilder      qc
   , curve25519BlobBuilder      qs
-  , curve25519DhSecretBuilder  k
+  , putMpint (BA.unpack k)
   ] :: Hash.Digest Hash.SHA256
   where
     vcLen = fromIntegral $     BS.length vc
     vsLen = fromIntegral $     BS.length vs
-    icLen = fromIntegral $ 1 + builderLength (B.put ic)
-    isLen = fromIntegral $ 1 + builderLength (B.put is)
+    icLen = fromIntegral $ 1 + LBS.length (B.runPut $ B.put ic)
+    isLen = fromIntegral $ 1 + LBS.length (B.runPut $ B.put is)
 
-ed25519PublicKeyBuilder :: Ed25519.PublicKey -> B.Put
-ed25519PublicKeyBuilder key = mconcat
-  [ B.putWord32be     51 -- host key len
-  , B.putWord32be     11 -- host key algorithm name len
-  , B.putByteString   "ssh-ed25519"
-  , B.putWord32be     32 -- host key data len
-  , B.putByteString $ BS.pack $ BA.unpack key
-  ]
-
-rsaPublicKeyBuilder     :: RSA.PublicKey -> B.Put
-rsaPublicKeyBuilder (RSA.PublicKey _ n e) =
-  B.putWord32be (fromIntegral $ LBS.length lbs) <> B.putLazyByteString lbs
-  where
-    lbs = B.runPut $ mconcat
-      [ string "ssh-rsa"
-      , integer n
-      , integer e
+    ed25519PublicKeyBuilder :: Ed25519.PublicKey -> B.Put
+    ed25519PublicKeyBuilder key = mconcat
+      [ B.putWord32be     51 -- host key len
+      , B.putWord32be     11 -- host key algorithm name len
+      , B.putByteString   "ssh-ed25519"
+      , B.putWord32be     32 -- host key data len
+      , B.putByteString $ BS.pack $ BA.unpack key
       ]
-    string  x = B.putWord32be (fromIntegral $ BS.length x)  <> B.putByteString x
-    integer x = B.putWord32be (fromIntegral $ BS.length bs) <> B.putByteString bs
-      where
-        bs = BS.pack $ g $ f x []
-        f 0 acc = acc
-        f i acc = let (q,r) = quotRem i 256
-                  in  f q (fromIntegral r : acc)
-        g []        = []
-        g xxs@(x:_) | x > 128   = 0:xxs
-                    | otherwise = xxs
 
-curve25519BlobBuilder :: Curve25519.PublicKey -> B.Put
-curve25519BlobBuilder key =
-  B.putWord32be 32 <> B.putByteString (BS.pack $ BA.unpack key)
-
-curve25519DhSecretBuilder  :: Curve25519.DhSecret -> B.Put
-curve25519DhSecretBuilder sec = do
-  bignum2bytes (BA.unpack sec)
-  where
-    -- FIXME: not constant time
-    bignum2bytes xs = zs
-      where
-        prepend [] = []
-        prepend (a:as)
-          | a >= 128  = 0:a:as
-          | otherwise = a:as
-        ys = BS.pack $ prepend $ dropWhile (==0) xs
-        zs = B.putWord32be (fromIntegral $ BS.length ys) <> B.putByteString ys
-
-kexRequestParser :: B.Get DH.PublicKey
-kexRequestParser = do
-  msg <- B.getWord8
-  when (msg /= 30) (fail "expected SSH_MSG_KEX_ECDH_INIT")
-  keySize <- B.getWord32be
-  when (keySize /= 32) (fail "expected key size to be 32 bytes")
-  bs <- B.getByteString 32
-  case DH.publicKey bs of
-    DH.CryptoPassed a -> pure a
-    DH.CryptoFailed e -> fail (show e)
-
-mpintLenBuilder :: Integer -> (Int, B.Put) -> (Int, B.Put)
-mpingLenBuilder 0 x = x
-mpintLenBuilder i (!len, !bld) = mpintLenBuilder q (len + 4, B.putWord32be (fromIntegral r) <> bld)
-  where
-    (q,r) = i `quotRem` 0x0100000000
-
-maxPacketSize :: Word32
-maxPacketSize = 32767
-
-builderLength :: B.Put -> Int64
-builderLength =
-  LBS.length . B.runPut
+    curve25519BlobBuilder :: Curve25519.PublicKey -> B.Put
+    curve25519BlobBuilder key =
+      B.putWord32be 32 <> B.putByteString (BS.pack $ BA.unpack key)
 
 deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> BS.ByteString -> SessionId -> [Hash.Digest Hash.SHA256]
-deriveKeys sec hash i (SessionId sess) =
-  k1:(f [k1])
+deriveKeys sec hash i (SessionId sess) = k1 : f [k1]
   where
     k1   = Hash.hashFinalize    $
       flip Hash.hashUpdate sess $
-      flip Hash.hashUpdate i st
-    f ks = kx:(f $ ks ++ [kx])
+      Hash.hashUpdate st i
+    f ks = kx : f (ks ++ [kx])
       where
         kx = Hash.hashFinalize (foldl Hash.hashUpdate st ks)
     st =
       flip Hash.hashUpdate hash $
-      flip Hash.hashUpdate secmpint
-      Hash.hashInit
+      Hash.hashUpdate Hash.hashInit secmpint
     secmpint =
-      LBS.toStrict $ B.runPut $ curve25519DhSecretBuilder sec
+      LBS.toStrict $ B.runPut $ putMpint $ BA.unpack sec
 
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
 verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =
@@ -256,3 +134,13 @@ verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey s
       , B.put           algorithm
       , B.put           publicKey
       ]
+
+putMpint :: [Word8] -> B.Put
+putMpint xs = zs
+  where
+    prepend [] = []
+    prepend (a:as)
+      | a >= 128  = 0:a:as
+      | otherwise = a:as
+    ys = BS.pack $ prepend $ dropWhile (==0) xs
+    zs = B.putWord32be (fromIntegral $ BS.length ys) <> B.putByteString ys

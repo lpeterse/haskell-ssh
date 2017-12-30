@@ -68,7 +68,7 @@ main = bracket open close accept
       S.sendAllLazy s (B.runPut $ packetize $ B.putWord8 20 <> B.put serverKexInit) S.msgNoSignal
       bs <- S.receive s 32000 S.msgNoSignal
 
-      let clientEphemeralPublicKey = B.runGet (unpacketize kexRequestParser) (LBS.fromStrict bs)
+      let KexEcdhInit clientEphemeralPublicKey = B.runGet (unpacketize B.get) (LBS.fromStrict bs)
       let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
       let hash = exchangeHash
             clientVersion            -- check
@@ -81,14 +81,14 @@ main = bracket open close accept
             dhSecret                 -- check (client pubkey + server seckey)
       let sess      = SessionId (BS.pack $ BA.unpack hash)
       let signature = Ed25519.sign serverSecretKey serverPublicKey hash
-      let reply     = KexReply {
-          serverPublicHostKey      = serverPublicKey
-        , serverPublicEphemeralKey = serverEphemeralPublicKey
-        , exchangeHashSignature    = signature
+      let reply     = KexEcdhReply {
+          kexServerHostKey      = serverPublicKey
+        , kexServerEphemeralKey = serverEphemeralPublicKey
+        , kexHashSignature      = signature
         }
 
-      S.sendAllLazy s (B.runPut $ packetize $ kexReplyBuilder reply) S.msgNoSignal
-      S.sendAllLazy s (B.runPut $ packetize newKeysBuilder) S.msgNoSignal
+      S.sendAllLazy s (B.runPut $ packetize $ B.put reply) S.msgNoSignal
+      S.sendAllLazy s (B.runPut $ packetize $ B.putWord8 21) S.msgNoSignal
       void $ S.receive s 32000 S.msgNoSignal -- newkeys
 
       let ekCS_K1:ekCS_K2:_ = deriveKeys dhSecret hash "C" sess
