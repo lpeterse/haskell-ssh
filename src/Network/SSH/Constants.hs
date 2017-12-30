@@ -22,9 +22,9 @@ serverKexInit = KexInit
   , kexEncryptionAlgorithmsServerToClient
   = [ "chacha20-poly1305@openssh.com" ]
   , kexMacAlgorithmsClientToServer
-  = [ "none" ]
+  = []
   , kexMacAlgorithmsServerToClient
-  = [ "none" ]
+  = []
   , kexCompressionAlgorithmsClientToServer
   = [ "none" ]
   , kexCompressionAlgorithmsServerToClient
