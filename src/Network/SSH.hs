@@ -317,8 +317,8 @@ deriveKeys sec hash i (SessionId sess) =
     secmpint =
       LBS.toStrict $ B.runPut $ curve25519DhSecretBuilder sec
 
-verifyAuthSignature :: SessionId -> UserName -> ServiceName -> PublicKey -> Signature -> Bool
-verifyAuthSignature sessionIdentifier userName serviceName publicKey signature =
+verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
+verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =
   case (publicKey,signature) of
     (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
     (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
@@ -333,5 +333,6 @@ verifyAuthSignature sessionIdentifier userName serviceName publicKey signature =
       , B.putWord32be   9
       , B.putByteString "publickey"
       , B.putWord8      1
+      , B.put           algorithm
       , B.put           publicKey
       ]

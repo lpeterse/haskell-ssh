@@ -112,10 +112,10 @@ handleInput conn disconnect = receive conn >>= \case
       AuthHostBased   -> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
       AuthPassword pw -> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
       AuthPublicKey algo pk msig -> case msig of
-        Nothing  -> send conn (UserAuthPublicKeyOk pk)
-        Just sig -> if verifyAuthSignature (sessionId conn) user service pk sig
-          then println conn "SUCCESS" >> send conn UserAuthSuccess
-          else send conn (UserAuthFailure [AuthMethodName "publickey"] False)
+        Nothing  -> send conn (UserAuthPublicKeyOk algo pk)
+        Just sig -> if verifyAuthSignature (sessionId conn) user service algo pk sig
+          then println conn "AUTHSUCCESS" >> send conn UserAuthSuccess
+          else println conn "AUTHFAILURE" >> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
   ChannelOpen t rid ws ps ->
     openChannel conn t rid ws ps >>= \case
       Nothing  -> send conn $ ChannelOpenFailure rid (ChannelOpenFailureReason 4 "" "")

@@ -45,7 +45,7 @@ data Message
   | UserAuthFailure         [AuthMethodName] Bool
   | UserAuthSuccess
   | UserAuthBanner          BS.ByteString BS.ByteString
-  | UserAuthPublicKeyOk     PublicKey
+  | UserAuthPublicKeyOk     Algorithm PublicKey
   | ChannelOpen             ChannelType ChannelId InitWindowSize MaxPacketSize
   | ChannelOpenConfirmation ChannelId ChannelId InitWindowSize MaxPacketSize
   | ChannelOpenFailure      ChannelId ChannelOpenFailureReason
@@ -139,8 +139,8 @@ instance B.Binary Message where
       putByte  52
     UserAuthBanner b l ->
       putByte  53 <> putString b <> putString l
-    UserAuthPublicKeyOk pk ->
-      putByte  60 <> B.put pk
+    UserAuthPublicKeyOk alg pk ->
+      putByte  60 <> B.put alg <> B.put pk
     ChannelOpen ct rid ws ps ->
       putByte  90 <> B.put ct <> B.put rid <> B.put ws <> B.put ps
     ChannelOpenConfirmation (ChannelId a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d) ->
@@ -172,7 +172,7 @@ instance B.Binary Message where
     51  -> UserAuthFailure         <$> (fmap AuthMethodName <$> getNameList) <*> getBool
     52  -> pure UserAuthSuccess
     53  -> UserAuthBanner          <$> getString    <*> getString
-    60  -> UserAuthPublicKeyOk     <$> B.get
+    60  -> UserAuthPublicKeyOk     <$> B.get <*> B.get
     90  -> ChannelOpen             <$> B.get <*> B.get <*> B.get  <*> B.get
     91  -> ChannelOpenConfirmation <$> B.get <*> B.get <*> B.get  <*> B.get
     92  -> ChannelOpenFailure      <$> B.get <*> B.get
@@ -184,6 +184,10 @@ instance B.Binary Message where
     99  -> ChannelRequestSuccess   <$> B.get
     100 -> ChannelRequestFailure   <$> B.get
     x   -> fail ("UNKNOWN MESSAGE TYPE " ++ show x)
+
+instance B.Binary Algorithm where
+  put (Algorithm s) = putString s
+  get = Algorithm <$> getString
 
 instance B.Binary DisconnectReason where
   put (DisconnectReason x) = B.putWord32be x

@@ -38,7 +38,7 @@ instance Arbitrary Message where
     , UserAuthFailure         <$> arbitrary <*> arbitrary
     , pure UserAuthSuccess
     , UserAuthBanner          <$> arbitrary <*> arbitrary
-    , UserAuthPublicKeyOk     <$> arbitrary
+    , UserAuthPublicKeyOk     <$> arbitrary <*> arbitrary
     , ChannelOpen             <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
     , ChannelOpenConfirmation <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
     , ChannelOpenFailure      <$> arbitrary <*> arbitrary
