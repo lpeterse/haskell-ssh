@@ -1,7 +1,9 @@
+{-# LANGUAGE BangPatterns      #-}
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Message
   ( Message (..)
+  , Version (..)
   , ChannelRequest (..)
   , MaxPacketSize (..)
   , InitWindowSize (..)
@@ -58,6 +60,7 @@ data Message
   | ChannelClose            ChannelId
   deriving (Eq, Show)
 
+newtype Version          = Version          BS.ByteString deriving (Eq, Ord, Show)
 newtype Algorithm        = Algorithm        BS.ByteString deriving (Eq, Ord, Show)
 newtype Password         = Password         BS.ByteString deriving (Eq, Ord, Show)
 newtype DisconnectReason = DisconnectReason Word32        deriving (Eq, Ord, Show)
@@ -224,6 +227,24 @@ instance B.Binary ServiceName where
 instance B.Binary UserName where
   put (UserName s) = putString s
   get = UserName <$> getString
+
+instance B.Binary Version where
+  put (Version x) = B.putByteString x <> B.putWord16be 0x0d0a
+  get = do
+    magic <- B.getWord64be
+    if magic /= 0x5353482d322e302d -- "SSH-2.0-"
+      then stop
+      else untilCRLF 0 [0x2d, 0x30, 0x2e, 0x32, 0x2d, 0x48, 0x53, 0x53]
+    where
+      stop = fail ""
+      untilCRLF !i !xs
+        = if i >= 255
+          then stop
+          else B.getWord8 >>= \case
+            0x0d -> B.getWord8 >>= \case
+              0x0a -> pure $ Version $ BS.pack (reverse xs)
+              _    -> stop
+            x -> untilCRLF (i+1) (x:xs)
 
 instance B.Binary ChannelRequest where
   put = \case

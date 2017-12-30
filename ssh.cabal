@@ -41,6 +41,7 @@ library
       stm
   exposed-modules:
       Network.SSH,
+      Network.SSH.Constants,
       Network.SSH.Connection,
       Network.SSH.Message
   other-modules:

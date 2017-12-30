@@ -16,9 +16,12 @@ import           Network.SSH.Message
 
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH.Message"
-  [ QC.testProperty "id == getPublicKey . putPublicKey" (parserIdentity :: PublicKey -> Property)
-  , QC.testProperty "id == getSignature . putSignature" (parserIdentity :: Signature -> Property)
-  , QC.testProperty "id == getMessage   . putMessage"   (parserIdentity :: Message -> Property)
+  [ testGroup "put . get == id"
+    [ QC.testProperty ":: Version"   (parserIdentity :: Version   -> Property)
+    , QC.testProperty ":: PublicKey" (parserIdentity :: PublicKey -> Property)
+    , QC.testProperty ":: Signature" (parserIdentity :: Signature -> Property)
+    , QC.testProperty ":: Message"   (parserIdentity :: Message   -> Property)
+    ]
   ]
   where
     parserIdentity :: (B.Binary a, Eq a, Show a) => a -> Property
@@ -49,6 +52,12 @@ instance Arbitrary Message where
     , ChannelDataExtended     <$> arbitrary <*> arbitrary <*> arbitrary
     , ChannelEof              <$> arbitrary
     , ChannelClose            <$> arbitrary
+    ]
+
+instance Arbitrary Version where
+  arbitrary = elements
+    [ Version "SSH-2.0-OpenSSH_4.3"
+    , Version "SSH-2.0-hssh_0.1"
     ]
 
 instance Arbitrary ChannelRequest where

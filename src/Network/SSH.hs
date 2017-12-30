@@ -25,11 +25,8 @@ import qualified Data.List                as L
 import           Data.Monoid
 import           Data.Word
 
+import           Network.SSH.Constants
 import           Network.SSH.Message
-
-serverVersionString :: BS.ByteString
-serverVersionString
-  = "SSH-2.0-hssh_0.1"
 
 data KexMsg
   = KexMsg
@@ -75,26 +72,7 @@ serverKexInit = KexMsg
   = False
   }
 
-versionParser :: B.Get BS.ByteString
-versionParser = do
-  magic <- B.getWord64be
-  if magic /= 0x5353482d322e302d -- "SSH-2.0-"
-    then stop
-    else untilCRLF 0 [0x2d, 0x30, 0x2e, 0x32, 0x2d, 0x48, 0x53, 0x53]
-  where
-    stop = fail ""
-    untilCRLF !i !xs
-      = if i >= 255
-        then stop
-        else B.getWord8 >>= \case
-          0x0d -> B.getWord8 >>= \case
-            0x0a -> pure $ BS.pack (reverse xs)
-            _    -> stop
-          x -> untilCRLF (i+1) (x:xs)
 
-serverVersionBuilder :: B.Put
-serverVersionBuilder =
-  B.putByteString serverVersionString <> B.putWord16be 0x0d0a
 
 kexInitParser :: B.Get KexMsg
 kexInitParser = do
@@ -197,8 +175,8 @@ newKeysBuilder :: B.Put
 newKeysBuilder = B.putWord8 21
 
 exchangeHash ::
-  BS.ByteString ->         -- client version string
-  BS.ByteString ->         -- server version string
+  Version ->               -- client version string
+  Version ->               -- server version string
   KexMsg ->                -- client kex msg
   KexMsg ->                -- server kex msg
   Ed25519.PublicKey ->     -- server host key
@@ -206,7 +184,7 @@ exchangeHash ::
   Curve25519.PublicKey ->  -- server ephemeral key
   Curve25519.DhSecret ->   -- dh secret
   Hash.Digest Hash.SHA256
-exchangeHash vc vs ic is ks qc qs k
+exchangeHash (Version vc) (Version vs) ic is ks qc qs k
   = Hash.hash $ LBS.toStrict $ B.runPut $ mconcat
   [ B.putWord32be              vcLen
   , B.putByteString            vc

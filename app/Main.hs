@@ -35,6 +35,7 @@ import qualified System.Socket.Type.Stream      as S
 
 import           Network.SSH
 import           Network.SSH.Connection
+import           Network.SSH.Constants
 import           Network.SSH.Message
 
 main :: IO ()
@@ -55,10 +56,10 @@ main = bracket open close accept
       serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
 
       bs <- S.receive s 4096 S.msgNoSignal
-      let clientVersionString = B.runGet versionParser (LBS.fromStrict bs)
-      print clientVersionString
+      let clientVersion = B.runGet B.get (LBS.fromStrict bs)
+      print clientVersion
 
-      S.sendAllLazy s (B.runPut serverVersionBuilder) S.msgNoSignal
+      S.sendAllLazy s (B.runPut $ B.put version) S.msgNoSignal
 
       bs  <- S.receive s 32000 S.msgNoSignal
       let clientKexInit = B.runGet (unpacketize kexInitParser) (LBS.fromStrict bs)
@@ -70,8 +71,8 @@ main = bracket open close accept
       let clientEphemeralPublicKey = B.runGet (unpacketize kexRequestParser) (LBS.fromStrict bs)
       let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
       let hash = exchangeHash
-            clientVersionString      -- check
-            serverVersionString      -- check
+            clientVersion            -- check
+            version                  -- check
             clientKexInit            -- check
             serverKexInit            -- check
             serverPublicKey          -- check
