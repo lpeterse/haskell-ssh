@@ -3,23 +3,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Message
   ( Message (..)
-  , Version (..)
-  , ChannelRequest (..)
-  , MaxPacketSize (..)
-  , InitWindowSize (..)
-  , DisconnectReason (..)
-  , ChannelId (..)
-  , ChannelType (..)
-  , ChannelOpenFailureReason (..)
-  , Password (..)
   , Algorithm (..)
-  , UserName (..)
-  , ServiceName (..)
-  , AuthMethodName (..)
   , AuthMethod (..)
-  , SessionId (..)
+  , AuthMethodName (..)
+  , ChannelId (..)
+  , ChannelOpenFailureReason (..)
+  , ChannelRequest (..)
+  , ChannelType (..)
+  , Cookie (..)
+  , DisconnectReason (..)
+  , InitWindowSize (..)
+  , KeyExchangeInit (..)
+  , MaxPacketSize (..)
+  , Password (..)
   , PublicKey (..)
+  , ServiceName (..)
+  , SessionId (..)
   , Signature (..)
+  , UserName (..)
+  , Version (..)
   ) where
 
 import           Control.Monad         (void)
@@ -60,6 +62,7 @@ data Message
   | ChannelClose            ChannelId
   deriving (Eq, Show)
 
+newtype Cookie           = Cookie           BS.ByteString deriving (Eq, Ord, Show)
 newtype Version          = Version          BS.ByteString deriving (Eq, Ord, Show)
 newtype Algorithm        = Algorithm        BS.ByteString deriving (Eq, Ord, Show)
 newtype Password         = Password         BS.ByteString deriving (Eq, Ord, Show)
@@ -72,6 +75,22 @@ newtype ChannelType      = ChannelType      BS.ByteString deriving (Eq, Ord, Sho
 newtype ChannelId        = ChannelId        Word32        deriving (Eq, Ord, Show)
 newtype InitWindowSize   = InitWindowSize   Word32        deriving (Eq, Ord, Show)
 newtype MaxPacketSize    = MaxPacketSize    Word32        deriving (Eq, Ord, Show)
+
+data KeyExchangeInit
+  = KeyExchangeInit
+  { cookie                              :: Cookie
+  , keyAlgorithms                       :: [BS.ByteString]
+  , serverHostKeyAlgorithms             :: [BS.ByteString]
+  , encryptionAlgorithmsClientToServer  :: [BS.ByteString]
+  , encryptionAlgorithmsServerToClient  :: [BS.ByteString]
+  , macAlgorithmsClientToServer         :: [BS.ByteString]
+  , macAlgorithmsServerToClient         :: [BS.ByteString]
+  , compressionAlgorithmsClientToServer :: [BS.ByteString]
+  , compressionAlgorithmsServerToClient :: [BS.ByteString]
+  , languagesClientToServer             :: [BS.ByteString]
+  , languagesServerToClient             :: [BS.ByteString]
+  , firstKexPacketFollows               :: Bool
+  } deriving (Eq, Ord, Show)
 
 data ChannelRequest
   = ChannelRequestPTY
@@ -187,6 +206,10 @@ instance B.Binary Message where
     99  -> ChannelRequestSuccess   <$> B.get
     100 -> ChannelRequestFailure   <$> B.get
     x   -> fail ("UNKNOWN MESSAGE TYPE " ++ show x)
+
+instance B.Binary Cookie where
+  put (Cookie s) = B.putByteString s
+  get = Cookie <$> B.getByteString 16
 
 instance B.Binary Algorithm where
   put (Algorithm s) = putString s
@@ -343,6 +366,31 @@ instance B.Binary Signature where
       SignatureRSA <$> getString
     other ->
       SignatureOther other <$> getString
+
+instance B.Binary KeyExchangeInit where
+  put kex = mconcat
+    [ B.put       (cookie                              kex)
+    , putNameList (keyAlgorithms                       kex)
+    , putNameList (serverHostKeyAlgorithms             kex)
+    , putNameList (encryptionAlgorithmsClientToServer  kex)
+    , putNameList (encryptionAlgorithmsServerToClient  kex)
+    , putNameList (macAlgorithmsClientToServer         kex)
+    , putNameList (macAlgorithmsServerToClient         kex)
+    , putNameList (compressionAlgorithmsClientToServer kex)
+    , putNameList (compressionAlgorithmsServerToClient kex)
+    , putNameList (languagesClientToServer             kex)
+    , putNameList (languagesServerToClient             kex)
+    , putBool     (firstKexPacketFollows               kex)
+    , putUint32   0 -- reserved for future extensions
+    ]
+  get = do
+    kex <- KeyExchangeInit
+      <$> B.get
+      <*> getNameList <*> getNameList <*> getNameList <*> getNameList
+      <*> getNameList <*> getNameList <*> getNameList <*> getNameList
+      <*> getNameList <*> getNameList <*> getBool
+    void getUint32 -- reserved for future extensions
+    pure kex
 
 -------------------------------------------------------------------------------
 -- Util functions

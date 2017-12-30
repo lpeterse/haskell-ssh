@@ -28,91 +28,33 @@ import           Data.Word
 import           Network.SSH.Constants
 import           Network.SSH.Message
 
-data KexMsg
-  = KexMsg
-  { cookie                                  :: BS.ByteString
-  , key_algorithms                          :: [BS.ByteString]
-  , server_host_key_algorithms              :: [BS.ByteString]
-  , encryption_algorithms_client_to_server  :: [BS.ByteString]
-  , encryption_algorithms_server_to_client  :: [BS.ByteString]
-  , mac_algorithms_client_to_server         :: [BS.ByteString]
-  , mac_algorithms_server_to_client         :: [BS.ByteString]
-  , compression_algorithms_client_to_server :: [BS.ByteString]
-  , compression_algorithms_server_to_client :: [BS.ByteString]
-  , languages_client_to_server              :: [BS.ByteString]
-  , languages_server_to_client              :: [BS.ByteString]
-  , first_kex_packet_follows                :: Bool
-  } deriving (Eq, Ord, Show)
-
-serverKexInit :: KexMsg
-serverKexInit = KexMsg
+serverKexInit :: KeyExchangeInit
+serverKexInit = KeyExchangeInit
   { cookie
-  = "\155=\ACK\150\169p\164\v\t\245\223\224\EOT\233\200\SO"
-  , key_algorithms
+  = Cookie "\155=\ACK\150\169p\164\v\t\245\223\224\EOT\233\200\SO"
+  , keyAlgorithms
   = [ "curve25519-sha256@libssh.org" ]
-  , server_host_key_algorithms
+  , serverHostKeyAlgorithms
   = [ "ssh-ed25519" ]
-  , encryption_algorithms_client_to_server
+  , encryptionAlgorithmsClientToServer
   = [ "chacha20-poly1305@openssh.com" ]
-  , encryption_algorithms_server_to_client
+  , encryptionAlgorithmsServerToClient
   = [ "chacha20-poly1305@openssh.com" ]
-  , mac_algorithms_client_to_server
+  , macAlgorithmsClientToServer
   = [ "umac-64-etm@openssh.com" ]
-  , mac_algorithms_server_to_client
+  , macAlgorithmsServerToClient
   = [ "umac-64-etm@openssh.com" ]
-  , compression_algorithms_client_to_server
+  , compressionAlgorithmsClientToServer
   = [ "none" ]
-  , compression_algorithms_server_to_client
+  , compressionAlgorithmsServerToClient
   = [ "none" ]
-  , languages_client_to_server
+  , languagesClientToServer
   = []
-  , languages_server_to_client
+  , languagesServerToClient
   = []
-  , first_kex_packet_follows
+  , firstKexPacketFollows
   = False
   }
-
-
-
-kexInitParser :: B.Get KexMsg
-kexInitParser = do
-  void $ B.getWord8
-  kex <- KexMsg
-    <$> B.getByteString 16
-    <*> nameList
-    <*> nameList
-    <*> nameList
-    <*> nameList
-    <*> nameList
-    <*> nameList
-    <*> nameList
-    <*> nameList
-    <*> nameList
-    <*> nameList
-    <*> ( B.getWord8 >>= \case { 0x00 -> pure False; _ -> pure True } )
-  void $ B.getWord32be -- reserved for future extensions
-  pure kex
-  where
-    nameList = do
-      n <- fromIntegral . min maxPacketSize <$> B.getWord32be -- avoid undefined conversion
-      BS.split 0x2c <$> B.getByteString n
-
-kexInitBuilder :: KexMsg -> B.Put
-kexInitBuilder msg = mconcat
-  [ B.putByteString (cookie msg)
-  , nameListBuilder (key_algorithms msg)
-  , nameListBuilder (server_host_key_algorithms msg)
-  , nameListBuilder (encryption_algorithms_client_to_server msg)
-  , nameListBuilder (encryption_algorithms_server_to_client msg)
-  , nameListBuilder (mac_algorithms_client_to_server msg)
-  , nameListBuilder (mac_algorithms_server_to_client msg)
-  , nameListBuilder (compression_algorithms_client_to_server msg)
-  , nameListBuilder (compression_algorithms_server_to_client msg)
-  , nameListBuilder (languages_client_to_server msg)
-  , nameListBuilder (languages_server_to_client msg)
-  , B.putWord8 $ if first_kex_packet_follows msg then 0x01 else 0x00
-  , B.putWord32be 0x00000000
-  ]
 
 data KexReply
   = KexReply
@@ -177,8 +119,8 @@ newKeysBuilder = B.putWord8 21
 exchangeHash ::
   Version ->               -- client version string
   Version ->               -- server version string
-  KexMsg ->                -- client kex msg
-  KexMsg ->                -- server kex msg
+  KeyExchangeInit ->       -- client kex init msg
+  KeyExchangeInit ->       -- server kex init msg
   Ed25519.PublicKey ->     -- server host key
   Curve25519.PublicKey ->  -- client ephemeral key
   Curve25519.PublicKey ->  -- server ephemeral key
@@ -191,11 +133,11 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
   , B.putWord32be              vsLen
   , B.putByteString            vs
   , B.putWord32be              icLen
-  , B.putWord8                   20 -- SSH2_MSG_KEXINIT
-  , kexInitBuilder             ic
+  , B.putWord8                 20 -- SSH2_MSG_KEXINIT
+  , B.put                      ic
   , B.putWord32be              isLen
-  , B.putWord8                   20 -- SSH2_MSG_KEXINIT
-  , kexInitBuilder             is
+  , B.putWord8                 20 -- SSH2_MSG_KEXINIT
+  , B.put                      is
   , ed25519PublicKeyBuilder    ks
   , curve25519BlobBuilder      qc
   , curve25519BlobBuilder      qs
@@ -204,8 +146,8 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
   where
     vcLen = fromIntegral $     BS.length vc
     vsLen = fromIntegral $     BS.length vs
-    icLen = fromIntegral $ 1 + builderLength (kexInitBuilder ic)
-    isLen = fromIntegral $ 1 + builderLength (kexInitBuilder is)
+    icLen = fromIntegral $ 1 + builderLength (B.put ic)
+    isLen = fromIntegral $ 1 + builderLength (B.put is)
 
 ed25519PublicKeyBuilder :: Ed25519.PublicKey -> B.Put
 ed25519PublicKeyBuilder key = mconcat

@@ -17,10 +17,11 @@ import           Network.SSH.Message
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH.Message"
   [ testGroup "put . get == id"
-    [ QC.testProperty ":: Version"   (parserIdentity :: Version   -> Property)
-    , QC.testProperty ":: PublicKey" (parserIdentity :: PublicKey -> Property)
-    , QC.testProperty ":: Signature" (parserIdentity :: Signature -> Property)
-    , QC.testProperty ":: Message"   (parserIdentity :: Message   -> Property)
+    [ QC.testProperty ":: Version"         (parserIdentity :: Version         -> Property)
+    , QC.testProperty ":: PublicKey"       (parserIdentity :: PublicKey       -> Property)
+    , QC.testProperty ":: Signature"       (parserIdentity :: Signature       -> Property)
+    , QC.testProperty ":: KeyExchangeInit" (parserIdentity :: KeyExchangeInit -> Property)
+    , QC.testProperty ":: Message"         (parserIdentity :: Message         -> Property)
     ]
   ]
   where

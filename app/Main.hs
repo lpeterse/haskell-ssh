@@ -62,10 +62,10 @@ main = bracket open close accept
       S.sendAllLazy s (B.runPut $ B.put version) S.msgNoSignal
 
       bs  <- S.receive s 32000 S.msgNoSignal
-      let clientKexInit = B.runGet (unpacketize kexInitParser) (LBS.fromStrict bs)
+      let clientKexInit = B.runGet (unpacketize $ B.getWord8 >> B.get) (LBS.fromStrict bs)
       print clientKexInit
 
-      S.sendAllLazy s (B.runPut $ packetize $ B.putWord8 20 <> kexInitBuilder serverKexInit) S.msgNoSignal
+      S.sendAllLazy s (B.runPut $ packetize $ B.putWord8 20 <> B.put serverKexInit) S.msgNoSignal
       bs <- S.receive s 32000 S.msgNoSignal
 
       let clientEphemeralPublicKey = B.runGet (unpacketize kexRequestParser) (LBS.fromStrict bs)
