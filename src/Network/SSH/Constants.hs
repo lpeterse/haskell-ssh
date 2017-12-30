@@ -9,30 +9,30 @@ version :: Version
 version
   = Version "SSH-2.0-hssh_0.1"
 
-serverKexInit :: KeyExchangeInit
-serverKexInit = KeyExchangeInit
-  { cookie
+serverKexInit :: KexInit
+serverKexInit = KexInit
+  { kexCookie
   = Cookie "\155=\ACK\150\169p\164\v\t\245\223\224\EOT\233\200\SO"
-  , keyAlgorithms
+  , kexAlgorithms
   = [ "curve25519-sha256@libssh.org" ]
-  , serverHostKeyAlgorithms
+  , kexServerHostKeyAlgorithms
   = [ "ssh-ed25519" ]
-  , encryptionAlgorithmsClientToServer
+  , kexEncryptionAlgorithmsClientToServer
   = [ "chacha20-poly1305@openssh.com" ]
-  , encryptionAlgorithmsServerToClient
+  , kexEncryptionAlgorithmsServerToClient
   = [ "chacha20-poly1305@openssh.com" ]
-  , macAlgorithmsClientToServer
+  , kexMacAlgorithmsClientToServer
   = [ "umac-64-etm@openssh.com" ]
-  , macAlgorithmsServerToClient
+  , kexMacAlgorithmsServerToClient
   = [ "umac-64-etm@openssh.com" ]
-  , compressionAlgorithmsClientToServer
+  , kexCompressionAlgorithmsClientToServer
   = [ "none" ]
-  , compressionAlgorithmsServerToClient
+  , kexCompressionAlgorithmsServerToClient
   = [ "none" ]
-  , languagesClientToServer
+  , kexLanguagesClientToServer
   = []
-  , languagesServerToClient
+  , kexLanguagesServerToClient
   = []
-  , firstKexPacketFollows
+  , kexFirstPacketFollows
   = False
   }

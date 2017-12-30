@@ -13,7 +13,7 @@ module Network.SSH.Message
   , Cookie (..)
   , DisconnectReason (..)
   , InitWindowSize (..)
-  , KeyExchangeInit (..)
+  , KexInit (..)
   , KexEcdhInit (..)
   , KexEcdhReply (..)
   , MaxPacketSize (..)
@@ -79,20 +79,20 @@ newtype ChannelId        = ChannelId        Word32        deriving (Eq, Ord, Sho
 newtype InitWindowSize   = InitWindowSize   Word32        deriving (Eq, Ord, Show)
 newtype MaxPacketSize    = MaxPacketSize    Word32        deriving (Eq, Ord, Show)
 
-data KeyExchangeInit
-  = KeyExchangeInit
-  { cookie                              :: Cookie
-  , keyAlgorithms                       :: [BS.ByteString]
-  , serverHostKeyAlgorithms             :: [BS.ByteString]
-  , encryptionAlgorithmsClientToServer  :: [BS.ByteString]
-  , encryptionAlgorithmsServerToClient  :: [BS.ByteString]
-  , macAlgorithmsClientToServer         :: [BS.ByteString]
-  , macAlgorithmsServerToClient         :: [BS.ByteString]
-  , compressionAlgorithmsClientToServer :: [BS.ByteString]
-  , compressionAlgorithmsServerToClient :: [BS.ByteString]
-  , languagesClientToServer             :: [BS.ByteString]
-  , languagesServerToClient             :: [BS.ByteString]
-  , firstKexPacketFollows               :: Bool
+data KexInit
+  = KexInit
+  { kexCookie                              :: Cookie
+  , kexAlgorithms                          :: [BS.ByteString]
+  , kexServerHostKeyAlgorithms             :: [BS.ByteString]
+  , kexEncryptionAlgorithmsClientToServer  :: [BS.ByteString]
+  , kexEncryptionAlgorithmsServerToClient  :: [BS.ByteString]
+  , kexMacAlgorithmsClientToServer         :: [BS.ByteString]
+  , kexMacAlgorithmsServerToClient         :: [BS.ByteString]
+  , kexCompressionAlgorithmsClientToServer :: [BS.ByteString]
+  , kexCompressionAlgorithmsServerToClient :: [BS.ByteString]
+  , kexLanguagesClientToServer             :: [BS.ByteString]
+  , kexLanguagesServerToClient             :: [BS.ByteString]
+  , kexFirstPacketFollows                  :: Bool
   } deriving (Eq, Ord, Show)
 
 data KexEcdhInit
@@ -382,24 +382,24 @@ instance B.Binary Signature where
     other ->
       SignatureOther other <$> getString
 
-instance B.Binary KeyExchangeInit where
+instance B.Binary KexInit where
   put kex = mconcat
-    [ B.put       (cookie                              kex)
-    , putNameList (keyAlgorithms                       kex)
-    , putNameList (serverHostKeyAlgorithms             kex)
-    , putNameList (encryptionAlgorithmsClientToServer  kex)
-    , putNameList (encryptionAlgorithmsServerToClient  kex)
-    , putNameList (macAlgorithmsClientToServer         kex)
-    , putNameList (macAlgorithmsServerToClient         kex)
-    , putNameList (compressionAlgorithmsClientToServer kex)
-    , putNameList (compressionAlgorithmsServerToClient kex)
-    , putNameList (languagesClientToServer             kex)
-    , putNameList (languagesServerToClient             kex)
-    , putBool     (firstKexPacketFollows               kex)
+    [ B.put       (kexCookie                              kex)
+    , putNameList (kexAlgorithms                          kex)
+    , putNameList (kexServerHostKeyAlgorithms             kex)
+    , putNameList (kexEncryptionAlgorithmsClientToServer  kex)
+    , putNameList (kexEncryptionAlgorithmsServerToClient  kex)
+    , putNameList (kexMacAlgorithmsClientToServer         kex)
+    , putNameList (kexMacAlgorithmsServerToClient         kex)
+    , putNameList (kexCompressionAlgorithmsClientToServer kex)
+    , putNameList (kexCompressionAlgorithmsServerToClient kex)
+    , putNameList (kexLanguagesClientToServer             kex)
+    , putNameList (kexLanguagesServerToClient             kex)
+    , putBool     (kexFirstPacketFollows                  kex)
     , putUint32   0 -- reserved for future extensions
     ]
   get = do
-    kex <- KeyExchangeInit
+    kex <- KexInit
       <$> B.get
       <*> getNameList <*> getNameList <*> getNameList <*> getNameList
       <*> getNameList <*> getNameList <*> getNameList <*> getNameList

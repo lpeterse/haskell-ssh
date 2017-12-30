@@ -15,7 +15,6 @@ import           Crypto.Error
 import qualified Crypto.Hash                    as Hash
 import qualified Crypto.Hash.Algorithms         as Hash
 import qualified Crypto.MAC.Poly1305            as Poly1305
-import qualified Crypto.PubKey.Curve25519       as DH
 import qualified Crypto.PubKey.Curve25519       as Curve25519
 import qualified Crypto.PubKey.Ed25519          as Ed25519
 import qualified Data.Binary                    as B

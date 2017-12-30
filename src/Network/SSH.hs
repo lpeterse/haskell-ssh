@@ -9,10 +9,8 @@ module Network.SSH
 
 import           Control.Monad            (void, when)
 import           Crypto.Error
-import qualified Crypto.Error             as DH
 import qualified Crypto.Hash              as Hash
 import qualified Crypto.Hash.Algorithms   as Hash
-import qualified Crypto.PubKey.Curve25519 as DH
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
@@ -23,13 +21,9 @@ import qualified Data.Binary.Put          as B
 import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import qualified Data.ByteString.Lazy     as LBS
-import           Data.Foldable
-import           Data.Int
-import qualified Data.List                as L
-import           Data.Monoid
+import           Data.Monoid              ((<>))
 import           Data.Word
 
-import           Network.SSH.Constants
 import           Network.SSH.Message
 
 packetize :: B.Put -> B.Put
@@ -57,8 +51,8 @@ unpacketize parser = do
 exchangeHash ::
   Version ->               -- client version string
   Version ->               -- server version string
-  KeyExchangeInit ->       -- client kex init msg
-  KeyExchangeInit ->       -- server kex init msg
+  KexInit ->               -- client kex init msg
+  KexInit ->               -- server kex init msg
   Ed25519.PublicKey ->     -- server host key
   Curve25519.PublicKey ->  -- client ephemeral key
   Curve25519.PublicKey ->  -- server ephemeral key
