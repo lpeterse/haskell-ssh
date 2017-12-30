@@ -37,6 +37,7 @@ import           Network.SSH.Connection
 import           Network.SSH.Constants
 import           Network.SSH.Message
 
+
 main :: IO ()
 main = bracket open close accept
   where
@@ -49,7 +50,7 @@ main = bracket open close accept
       S.listen s 5
       bracket (S.accept s) (S.close . fst) serve
     serve (s,addr) = do
-      serverSecretKey <- Ed25519.generateSecretKey
+      serverSecretKey <- pure hostKey
       serverPublicKey <- pure $ Ed25519.toPublic serverSecretKey
       serverEphemeralSecretKey <- Curve25519.generateSecretKey
       serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
@@ -98,16 +99,6 @@ main = bracket open close accept
         (\b-> S.sendAll s b S.msgNoSignal >> pure ())
         (\i-> S.receive s i S.msgNoSignal)
         ekCS_K2 ekCS_K1 ekSC_K2 ekSC_K1
-
-data ConnectionConfig
-  = ConnectionConfig
-  { sendBS    :: BS.ByteString -> IO ()
-  , receiveBS :: Int -> IO BS.ByteString
-  , ekCS_K2   :: Hash.Digest Hash.SHA256
-  , ekCS_K1   :: Hash.Digest Hash.SHA256
-  , ekSC_K2   :: Hash.Digest Hash.SHA256
-  , ekSC_K1   :: Hash.Digest Hash.SHA256
-  }
 
 serveConnection :: SessionId -> ConnectionConfig -> IO ()
 serveConnection sess cfg = do
@@ -176,3 +167,13 @@ decrypt seqnr headerKey mainKey receive = do
     st1           = ChaCha.initialize 20 headerKey nonceBS
     st2           = ChaCha.initialize 20 mainKey   nonceBS
     (poly, st3)   = ChaCha.generate st2 64
+
+data ConnectionConfig
+  = ConnectionConfig
+  { sendBS    :: BS.ByteString -> IO ()
+  , receiveBS :: Int -> IO BS.ByteString
+  , ekCS_K2   :: Hash.Digest Hash.SHA256
+  , ekCS_K1   :: Hash.Digest Hash.SHA256
+  , ekSC_K2   :: Hash.Digest Hash.SHA256
+  , ekSC_K1   :: Hash.Digest Hash.SHA256
+  }
