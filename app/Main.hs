@@ -23,8 +23,6 @@ import qualified Data.Binary.Put                as B
 import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
 import qualified Data.ByteString.Lazy           as LBS
-import           Data.Function                  (fix)
-import qualified Data.Map.Strict                as M
 import           Data.Monoid
 import           Data.Word
 import qualified System.Socket                  as S
@@ -163,7 +161,7 @@ encrypt seqnr headerKey mainKey dat = ciph3 <> mac
 decrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> (Int -> IO BS.ByteString) -> IO BS.ByteString
 decrypt seqnr headerKey mainKey receive = do
   ciph1            <- receiveExactly 4
-  let paclen        = fromIntegral $ B.runGet B.getWord32be $ LBS.fromStrict (fst $ ChaCha.combine st1 ciph1)
+  let paclen        = sizeFromBS (fst $ ChaCha.combine st1 ciph1)
   ciph2            <- receiveExactly paclen
   ciph3            <- receiveExactly maclen
   let actualMAC     = Poly1305.Auth (BA.pack $ BS.unpack ciph3)
@@ -173,6 +171,7 @@ decrypt seqnr headerKey mainKey receive = do
     else pure $ unpacket $ fst $ ChaCha.combine st3 ciph2
   where
     build         = LBS.toStrict . B.runPut
+    sizeFromBS    = fromIntegral . B.runGet B.getWord32be. LBS.fromStrict
     maclen        = 16
     nonceBS       = build $ B.putWord64be (fromIntegral seqnr)
     st1           = ChaCha.initialize 20 headerKey nonceBS
@@ -194,4 +193,3 @@ decrypt seqnr headerKey mainKey receive = do
               if BS.null bs
                 then throwIO SshUnexpectedEndOfInputException
                 else f $! acc <> bs
-
