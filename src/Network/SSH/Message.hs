@@ -17,6 +17,7 @@ module Network.SSH.Message
   , KexEcdhInit (..)
   , KexEcdhReply (..)
   , MaxPacketSize (..)
+  , NewKeys (..)
   , Password (..)
   , PublicKey (..)
   , ServiceName (..)
@@ -26,7 +27,7 @@ module Network.SSH.Message
   , Version (..)
   ) where
 
-import           Control.Monad            (void, when)
+import           Control.Monad            (unless, void, when)
 import           Crypto.Error
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
@@ -83,6 +84,8 @@ newtype ChannelType      = ChannelType      BS.ByteString deriving (Eq, Ord, Sho
 newtype ChannelId        = ChannelId        Word32        deriving (Eq, Ord, Show)
 newtype InitWindowSize   = InitWindowSize   Word32        deriving (Eq, Ord, Show)
 newtype MaxPacketSize    = MaxPacketSize    Word32        deriving (Eq, Ord, Show)
+
+data NewKeys = NewKeys deriving (Eq, Ord, Show)
 
 data KexInit
   = KexInit
@@ -226,6 +229,12 @@ instance B.Binary Message where
     99  -> ChannelRequestSuccess   <$> B.get
     100 -> ChannelRequestFailure   <$> B.get
     x   -> fail ("UNKNOWN MESSAGE TYPE " ++ show x)
+
+instance B.Binary NewKeys where
+  put NewKeys = B.putWord8 21
+  get = do
+    getMsgType 21
+    pure NewKeys
 
 instance B.Binary Cookie where
   put (Cookie s) = B.putByteString s
@@ -519,3 +528,14 @@ getFramed :: (Int -> B.Get a) -> B.Get a
 getFramed f = do
   i <- getSize
   B.isolate i (f i)
+
+getMsgType :: Word8 -> B.Get ()
+getMsgType expected = do
+  actual <- B.getWord8
+  unless (actual == expected) $ fail $
+    "Expected " ++ msgTypeName expected ++
+    ", got "    ++ msgTypeName actual   ++ "."
+
+msgTypeName :: Word8 -> String
+msgTypeName 21 = "SSH_MSG_NEWKEYS"
+msgTypeName  x = "SSH_MSG_" ++ show x

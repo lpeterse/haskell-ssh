@@ -5,8 +5,10 @@ module Network.SSH
   , exchangeHash
   , deriveKeys
   , verifyAuthSignature
+  , SshException (..)
   ) where
 
+import           Control.Exception
 import           Control.Monad            (void, when)
 import           Crypto.Error
 import qualified Crypto.Hash              as Hash
@@ -22,9 +24,17 @@ import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import qualified Data.ByteString.Lazy     as LBS
 import           Data.Monoid              ((<>))
+import           Data.Typeable
 import           Data.Word
 
 import           Network.SSH.Message
+
+data SshException
+  = SshMacMismatchException
+  | SshUnexpectedEndOfInputException
+  deriving (Eq, Ord, Show, Typeable)
+
+instance Exception SshException
 
 packetize :: B.Put -> B.Put
 packetize payload = mconcat
@@ -94,12 +104,12 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
     curve25519BlobBuilder key =
       B.putWord32be 32 <> B.putByteString (BS.pack $ BA.unpack key)
 
-deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> BS.ByteString -> SessionId -> [Hash.Digest Hash.SHA256]
-deriveKeys sec hash i (SessionId sess) = k1 : f [k1]
+deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> BS.ByteString -> SessionId -> [BA.ScrubbedBytes]
+deriveKeys sec hash i (SessionId sess) = BA.pack . BA.unpack <$> k1 : f [k1]
   where
     k1   = Hash.hashFinalize    $
       flip Hash.hashUpdate sess $
-      Hash.hashUpdate st i
+      Hash.hashUpdate st i :: Hash.Digest Hash.SHA256
     f ks = kx : f (ks ++ [kx])
       where
         kx = Hash.hashFinalize (foldl Hash.hashUpdate st ks)

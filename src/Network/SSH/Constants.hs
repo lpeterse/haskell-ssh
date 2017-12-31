@@ -26,8 +26,8 @@ kexInit cookie = KexInit
   , kexFirstPacketFollows                  = False
   }
 
-hostKey :: Ed25519.SecretKey
-hostKey = case Ed25519.secretKey bs of
+exampleHostKey :: Ed25519.SecretKey
+exampleHostKey = case Ed25519.secretKey bs of
   CryptoPassed k -> k
   CryptoFailed _ -> undefined
   where

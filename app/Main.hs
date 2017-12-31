@@ -4,7 +4,7 @@ module Main where
 
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
-import           Control.Exception              (bracket)
+import           Control.Exception              (bracket, throwIO)
 import           Control.Monad                  (forM_, forever, when)
 import           Control.Monad.Reader
 import           Control.Monad.State.Lazy
@@ -37,90 +37,103 @@ import           Network.SSH.Connection
 import           Network.SSH.Constants
 import           Network.SSH.Message
 
-
 main :: IO ()
 main = bracket open close accept
   where
-    open = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
-    close = S.close
+    open        = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
+    close       = S.close
+    send    s x = S.sendAll s x S.msgNoSignal >> pure ()
+    receive s i = S.receive s i S.msgNoSignal
     accept s = do
       S.setSocketOption s (S.ReuseAddress True)
       S.setSocketOption s (S.V6Only False)
       S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
       S.listen s 5
-      bracket (S.accept s) (S.close . fst) serve
-    serve (s,addr) = do
-      serverSecretKey <- pure hostKey
-      serverPublicKey <- pure $ Ed25519.toPublic serverSecretKey
-      serverEphemeralSecretKey <- Curve25519.generateSecretKey
-      serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
+      bracket (S.accept s) (S.close . fst) (\(s,a)-> run exampleHostKey (send s) (receive s))
 
-      bs <- S.receive s 4096 S.msgNoSignal
-      let clientVersion = B.runGet B.get (LBS.fromStrict bs)
-      print clientVersion
+run :: Ed25519.SecretKey -> (BS.ByteString -> IO ()) -> (Int -> IO BS.ByteString) -> IO ()
+run serverSecretKey send receive = do
+  let sendPut         = send . LBS.toStrict . B.runPut
+  let serverPublicKey = Ed25519.toPublic serverSecretKey
 
-      S.sendAllLazy s (B.runPut $ B.put version) S.msgNoSignal
+  -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
+  -- key exchange.
+  serverEphemeralSecretKey <- Curve25519.generateSecretKey
+  let serverEphemeralPublicKey = Curve25519.toPublic serverEphemeralSecretKey
 
-      bs  <- S.receive s 32000 S.msgNoSignal
-      let clientKexInit = B.runGet (unpacketize $ B.getWord8 >> B.get) (LBS.fromStrict bs)
-      print clientKexInit
-      cookie <- newCookie
-      let serverKexInit = kexInit cookie
-      S.sendAllLazy s (B.runPut $ packetize $ B.putWord8 20 <> B.put serverKexInit) S.msgNoSignal
-      bs <- S.receive s 32000 S.msgNoSignal
+  -- The maximum length of the version string is 255 chars including CR+LF.
+  -- Parsing in chunks of 32 bytes in order to not allocate unnecessarly
+  -- much memory. The version string is usually short and transmitted within
+  -- a single TCP segment.
+  (clientVersion, rem1) <- runGetIncremental B.get (receive 32) mempty
 
-      let KexEcdhInit clientEphemeralPublicKey = B.runGet (unpacketize B.get) (LBS.fromStrict bs)
-      let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
-      let hash = exchangeHash
-            clientVersion            -- check
-            version                  -- check
-            clientKexInit            -- check
-            serverKexInit            -- check
-            serverPublicKey          -- check
-            clientEphemeralPublicKey -- check
-            serverEphemeralPublicKey -- check
-            dhSecret                 -- check (client pubkey + server seckey)
-      let sess      = SessionId (BS.pack $ BA.unpack hash)
-      let signature = Ed25519.sign serverSecretKey serverPublicKey hash
-      let reply     = KexEcdhReply {
-          kexServerHostKey      = serverPublicKey
-        , kexServerEphemeralKey = serverEphemeralPublicKey
-        , kexHashSignature      = signature
-        }
+  -- Reply by sending the server version string.
+  sendPut $ B.put version
 
-      S.sendAllLazy s (B.runPut $ packetize $ B.put reply) S.msgNoSignal
-      S.sendAllLazy s (B.runPut $ packetize $ B.putWord8 21) S.msgNoSignal
-      void $ S.receive s 32000 S.msgNoSignal -- newkeys
+  -- Send KexInit to client.
+  serverKexInit <- kexInit <$> newCookie
+  sendPut $ packetize $ B.putWord8 20 <> B.put serverKexInit
 
-      let ekCS_K1:ekCS_K2:_ = deriveKeys dhSecret hash "C" sess
-      let ekSC_K1:ekSC_K2:_ = deriveKeys dhSecret hash "D" sess
+  -- Receive KexInit from client.
+  (clientKexInit, rem2) <- runGetIncremental (unpacketize $ B.getWord8 >> B.get) (receive 4096) rem1
 
-      serveConnection sess $ ConnectionConfig
-        (\b-> S.sendAll s b S.msgNoSignal >> pure ())
-        (\i-> S.receive s i S.msgNoSignal)
-        ekCS_K2 ekCS_K1 ekSC_K2 ekSC_K1
+  -- Receive KexEcdhInit from client.
+  (KexEcdhInit clientEphemeralPublicKey, rem3) <- runGetIncremental (unpacketize B.get) (receive 4096) rem2
 
-serveConnection :: SessionId -> ConnectionConfig -> IO ()
-serveConnection sess cfg = do
-  input <- newTChanIO
+  -- Compute and perform the Diffie-Helman key exchange.
+  let dhSecret     = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
+  let hash         = exchangeHash
+                        clientVersion            -- check
+                        version                  -- check
+                        clientKexInit            -- check
+                        serverKexInit            -- check
+                        serverPublicKey          -- check
+                        clientEphemeralPublicKey -- check
+                        serverEphemeralPublicKey -- check
+                        dhSecret                 -- check (client pubkey + server seckey)
+  let sessionId    = SessionId (BS.pack $ BA.unpack hash)
+  let signature    = Ed25519.sign serverSecretKey serverPublicKey hash
+  let kexEcdhReply = KexEcdhReply {
+        kexServerHostKey      = serverPublicKey
+      , kexServerEphemeralKey = serverEphemeralPublicKey
+      , kexHashSignature      = signature
+      }
+  sendPut $ packetize $ B.put kexEcdhReply
+  sendPut $ packetize $ B.put NewKeys
+  (NewKeys, rem4) <- runGetIncremental (unpacketize B.get) (receive 1) rem3
+
+  -- Derive the required encryption/decryption keys.
+  -- The integrity keys etc. are not needed with chacha20.
+  let mainKeyCS:headerKeyCS:_ = deriveKeys dhSecret hash "C" sessionId
+  let mainKeySC:headerKeySC:_ = deriveKeys dhSecret hash "D" sessionId
+
+  -- Proceed serving the connection in encrypted mode.
+  input  <- newTChanIO
   output <- newTChanIO
-  serve sess (readTChan input) (writeTChan output)
-    `race_` runSender output 3
-    `race_` runReceiver input 3
-  where
-    runSender q i = do
-      msg <- atomically $ readTChan q
-      sendBS cfg $ encrypt i (ekSC_K2 cfg) (ekSC_K1 cfg) (B.put msg)
-      runSender q (i + 1)
-    runReceiver q i = do
-      bs <- decrypt i (ekCS_K2 cfg) (ekCS_K1 cfg) (receiveBS cfg)
-      atomically $ writeTChan q $! B.runGet B.get (LBS.fromStrict bs)
-      runReceiver q (i + 1)
+  let runSender i = do
+        msg <- atomically $ readTChan output
+        send $ encrypt i headerKeySC mainKeySC (B.put msg)
+        runSender (i + 1)
+  let runReceiver i = do
+        plain <- decrypt i headerKeyCS mainKeyCS receive
+        atomically $ writeTChan input $! B.runGet B.get (LBS.fromStrict plain)
+        runReceiver (i + 1)
+  serve sessionId (readTChan input) (writeTChan output)
+    `race_` runSender 3
+    `race_` runReceiver 3
 
-unpacket :: BS.ByteString -> Maybe BS.ByteString
-unpacket bs = do
-  (h,ts) <- BS.uncons bs
-  pure $ BS.take (BS.length ts - fromIntegral h) ts
+runGetIncremental :: B.Get a -> IO BS.ByteString -> BS.ByteString -> IO (a, BS.ByteString)
+runGetIncremental getter more initial = case B.runGetIncremental getter of
+  B.Done _ _ a       -> pure (a, initial)
+  B.Fail _ _ e       -> fail e
+  B.Partial continue -> f (continue $ Just initial)
+  where
+  f (B.Done remainder _ a) = pure (a, remainder)
+  f (B.Fail _ _ e        ) = fail e
+  f (B.Partial continue  ) = f =<< (continue . nothingIfEmpty <$> more)
+  nothingIfEmpty bs
+    | BS.null bs = Nothing
+    | otherwise  = Just bs
 
 encrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> B.Put -> BS.ByteString
 encrypt seqnr headerKey mainKey dat = ciph3 <> mac
@@ -149,17 +162,15 @@ encrypt seqnr headerKey mainKey dat = ciph3 <> mac
 
 decrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> (Int -> IO BS.ByteString) -> IO BS.ByteString
 decrypt seqnr headerKey mainKey receive = do
-  ciph1            <- receive 4
-  let paclenBS      = fst $ ChaCha.combine st1 ciph1
-  let paclen        = fromIntegral $ B.runGet B.getWord32be (LBS.fromStrict paclenBS)
-  ciph2            <- receive paclen
+  ciph1            <- receiveExactly 4
+  let paclen        = fromIntegral $ B.runGet B.getWord32be $ LBS.fromStrict (fst $ ChaCha.combine st1 ciph1)
+  ciph2            <- receiveExactly paclen
+  ciph3            <- receiveExactly maclen
+  let actualMAC     = Poly1305.Auth (BA.pack $ BS.unpack ciph3)
   let expectedMAC   = Poly1305.auth (BS.take 32 poly) (ciph1 <> ciph2)
-  actualMAC        <- Poly1305.Auth . BA.pack . BS.unpack <$> receive maclen
-  when (actualMAC /= expectedMAC) (fail "MAC MISMATCH")
-  let pacBS        = fst $ ChaCha.combine st3 ciph2
-  case unpacket pacBS of
-    Nothing  -> fail "PADDING ERROR"
-    Just msg -> pure msg
+  if actualMAC /= expectedMAC
+    then throwIO SshMacMismatchException
+    else pure $ unpacket $ fst $ ChaCha.combine st3 ciph2
   where
     build         = LBS.toStrict . B.runPut
     maclen        = 16
@@ -168,12 +179,19 @@ decrypt seqnr headerKey mainKey receive = do
     st2           = ChaCha.initialize 20 mainKey   nonceBS
     (poly, st3)   = ChaCha.generate st2 64
 
-data ConnectionConfig
-  = ConnectionConfig
-  { sendBS    :: BS.ByteString -> IO ()
-  , receiveBS :: Int -> IO BS.ByteString
-  , ekCS_K2   :: Hash.Digest Hash.SHA256
-  , ekCS_K1   :: Hash.Digest Hash.SHA256
-  , ekSC_K2   :: Hash.Digest Hash.SHA256
-  , ekSC_K1   :: Hash.Digest Hash.SHA256
-  }
+    unpacket :: BS.ByteString -> BS.ByteString
+    unpacket bs = case BS.uncons bs of
+      Nothing    -> bs
+      Just (h,t) -> BS.take (BS.length t - fromIntegral h) t
+
+    receiveExactly :: Int -> IO BS.ByteString
+    receiveExactly i = f mempty
+      where
+        f acc
+          | BS.length acc >= i = pure acc
+          | otherwise = do
+              bs <- receive (i - BS.length acc)
+              if BS.null bs
+                then throwIO SshUnexpectedEndOfInputException
+                else f $! acc <> bs
+
