@@ -7,14 +7,12 @@ import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Exception
-import           Control.Monad                (forM_, forever, when)
+import           Control.Monad                (forever)
 import           Control.Monad.STM
 import qualified Data.ByteString              as BS
 import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
-import           Data.Monoid
 import           Data.Typeable
-import           Data.Word
 
 import           Network.SSH
 import           Network.SSH.Message
@@ -68,7 +66,7 @@ serve sid input output = do
      `race_` runExec
   where
     runDebug :: Connection -> TChan String -> IO ()
-    runDebug conn ch = forever $ do
+    runDebug _ ch = forever $ do
       s <- atomically (readTChan ch)
       putStrLn $ "DEBUG: " ++ s
 
@@ -82,17 +80,22 @@ serve sid input output = do
           True  -> pure ()  -- this is the only thread that may return
           False -> continue
 
+    setupExec :: IO (STM BS.ByteString
+              -> (BS.ByteString -> STM ())
+              -> (BS.ByteString -> STM ())
+              -> STM a0
+              -> STM (), IO ())
     setupExec = do
       ch <- newTChanIO
-      let reqExec rin wout werr wait =
-            writeTChan ch (rin, wout, werr, wait)
+      let reqExec rin wout werr wait' =
+            writeTChan ch (rin, wout, werr, wait')
       let runExec = forever $ do
-            (rin,wout,werr,wait) <- atomically (readTChan ch)
-            forkIO $ atomically wait `race_` runShell rin wout werr
+            (rin,wout,werr,wait') <- atomically (readTChan ch)
+            forkIO $ atomically wait' `race_` runShell rin wout werr
       pure (reqExec, runExec)
 
 runShell :: STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> IO ()
-runShell readStdin writeStdout writeStderr = forever $ do
+runShell readStdin writeStdout _writeStderr = forever $ do
   bs <- atomically $ readStdin `orElse` pure "X"
   threadDelay 1000000
   atomically $ writeStdout bs
@@ -105,12 +108,21 @@ handleInput conn disconnect = receive conn >>= \case
   ServiceRequest x -> do
     println conn (show x)
     send conn (ServiceAccept x)
+  ServiceAccept {} -> fail "FIXME"
+  UserAuthFailure {} -> fail "FIXME"
+  UserAuthSuccess {} -> fail "FIXME"
+  UserAuthBanner {} -> fail "FIXME"
+  UserAuthPublicKeyOk {} -> fail "FIXME"
+  ChannelOpenConfirmation {} -> fail "FIXME"
+  ChannelOpenFailure {} -> fail "FIXME"
+  ChannelRequestFailure {} -> fail "FIXME"
+  ChannelRequestSuccess {} -> fail "FIXME"
   x@(UserAuthRequest user service method) -> do
     println conn (show x)
     case method of
       AuthNone        -> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
       AuthHostBased   -> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
-      AuthPassword pw -> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
+      AuthPassword {} -> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
       AuthPublicKey algo pk msig -> case msig of
         Nothing  -> send conn (UserAuthPublicKeyOk algo pk)
         Just sig -> if verifyAuthSignature (sessionId conn) user service algo pk sig
@@ -141,14 +153,14 @@ handleInput conn disconnect = receive conn >>= \case
     case x of
       ChannelRequestPTY {} ->
         send conn (ChannelRequestSuccess $ chanRemoteId ch)
-      ChannelRequestShell wantReply -> do
+      ChannelRequestShell {} -> do
         exec conn
           (readTChan  $ chanReadFd ch)
           (writeTChan $ chanWriteFd ch)
           (writeTChan $ chanExtendedFd ch)
           (chanWaitClosed ch)
         send conn (ChannelRequestSuccess $ chanRemoteId ch)
-      ChannelRequestOther other ->
+      ChannelRequestOther {} ->
         send conn (ChannelRequestFailure $ chanRemoteId ch)
 
 handleChannelFds :: Connection -> STM ()

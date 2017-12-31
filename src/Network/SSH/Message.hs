@@ -290,7 +290,7 @@ instance B.Binary Version where
     where
       stop = fail ""
       untilCRLF !i !xs
-        = if i >= 255
+        = if i >= (255 :: Int)
           then stop
           else B.getWord8 >>= \case
             0x0d -> B.getWord8 >>= \case
@@ -341,6 +341,7 @@ instance B.Binary AuthMethod where
       key    <- B.get
       msig   <- if signed then Just <$> B.get else pure Nothing
       pure (AuthPublicKey algo key msig)
+    other       -> fail $ "Unknown AuthMethod " ++ show other
 
 instance B.Binary PublicKey where
   put = \case
@@ -368,7 +369,7 @@ instance B.Binary PublicKey where
         , putString pk
         ]
 
-  get = getFramed $ \keysize-> getString >>= \case
+  get = getFramed $ const $ getString >>= \case
     "ssh-ed25519" ->
       Ed25519.publicKey <$> getString >>= \case
         CryptoPassed k -> pure (PublicKeyEd25519 k)
@@ -386,7 +387,7 @@ instance B.Binary Signature where
     SignatureRSA        sig -> putString "ssh-rsa"     <> putString sig
     SignatureOther algo sig -> putString algo          <> putString sig
 
-  get = getFramed $ \sigsize-> getString >>= \case
+  get = getFramed $ const $ getString >>= \case
     "ssh-ed25519" ->
       Ed25519.signature <$> getString >>= \case
         CryptoPassed s -> pure (SignatureEd25519 s)
@@ -469,13 +470,10 @@ putNameList xs =
   <> mconcat (B.putByteString <$> L.intersperse "," xs)
   where
     g [] = 0
-    g xs = sum (BS.length <$> xs) + length xs - 1
+    g ys = sum (BS.length <$> ys) + length ys - 1
 
 getSize    :: B.Get Int
 getSize     = fromIntegral <$> getUint32
-
-putSize    :: Int -> B.Put
-putSize   x = putUint32 (fromIntegral x)
 
 getBool    :: B.Get Bool
 getBool     = getByte >>= \case { 0 -> pure False; _ -> pure True; }

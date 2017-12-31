@@ -9,13 +9,9 @@ module Network.SSH
   ) where
 
 import           Control.Exception
-import           Control.Monad            (void, when)
-import           Crypto.Error
 import qualified Crypto.Hash              as Hash
-import qualified Crypto.Hash.Algorithms   as Hash
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
-import qualified Crypto.PubKey.RSA        as RSA
 import qualified Crypto.PubKey.RSA.PKCS15 as RSA.PKCS15
 import qualified Data.Binary              as B
 import qualified Data.Binary.Get          as B

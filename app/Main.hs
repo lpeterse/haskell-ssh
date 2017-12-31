@@ -5,15 +5,8 @@ module Main where
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
 import           Control.Exception              (bracket, throwIO)
-import           Control.Monad                  (forM_, forever, when)
-import           Control.Monad.Reader
-import           Control.Monad.State.Lazy
 import           Control.Monad.STM
 import qualified Crypto.Cipher.ChaCha           as ChaCha
-import qualified Crypto.Cipher.ChaChaPoly1305   as ChaChaPoly1305
-import           Crypto.Error
-import qualified Crypto.Hash                    as Hash
-import qualified Crypto.Hash.Algorithms         as Hash
 import qualified Crypto.MAC.Poly1305            as Poly1305
 import qualified Crypto.PubKey.Curve25519       as Curve25519
 import qualified Crypto.PubKey.Ed25519          as Ed25519
@@ -24,7 +17,6 @@ import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
 import qualified Data.ByteString.Lazy           as LBS
 import           Data.Monoid
-import           Data.Word
 import qualified System.Socket                  as S
 import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
@@ -47,7 +39,7 @@ main = bracket open close accept
       S.setSocketOption s (S.V6Only False)
       S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
       S.listen s 5
-      bracket (S.accept s) (S.close . fst) (\(s,a)-> run exampleHostKey (send s) (receive s))
+      bracket (S.accept s) (S.close . fst) (\(x,_)-> run exampleHostKey (send x) (receive x))
 
 run :: Ed25519.SecretKey -> (BS.ByteString -> IO ()) -> (Int -> IO BS.ByteString) -> IO ()
 run serverSecretKey send receive = do
@@ -89,7 +81,7 @@ run serverSecretKey send receive = do
                         clientEphemeralPublicKey -- check
                         serverEphemeralPublicKey -- check
                         dhSecret                 -- check (client pubkey + server seckey)
-  let sessionId    = SessionId (BS.pack $ BA.unpack hash)
+  let session      = SessionId (BS.pack $ BA.unpack hash)
   let signature    = Ed25519.sign serverSecretKey serverPublicKey hash
   let kexEcdhReply = KexEcdhReply {
         kexServerHostKey      = serverPublicKey
@@ -98,12 +90,12 @@ run serverSecretKey send receive = do
       }
   sendPut $ packetize $ B.put kexEcdhReply
   sendPut $ packetize $ B.put NewKeys
-  (NewKeys, rem4) <- runGetIncremental (unpacketize B.get) (receive 1) rem3
+  (NewKeys, _) <- runGetIncremental (unpacketize B.get) (receive 1) rem3
 
   -- Derive the required encryption/decryption keys.
   -- The integrity keys etc. are not needed with chacha20.
-  let mainKeyCS:headerKeyCS:_ = deriveKeys dhSecret hash "C" sessionId
-  let mainKeySC:headerKeySC:_ = deriveKeys dhSecret hash "D" sessionId
+  let mainKeyCS:headerKeyCS:_ = deriveKeys dhSecret hash "C" session
+  let mainKeySC:headerKeySC:_ = deriveKeys dhSecret hash "D" session
 
   -- Proceed serving the connection in encrypted mode.
   input  <- newTChanIO
@@ -116,7 +108,7 @@ run serverSecretKey send receive = do
         plain <- decrypt i headerKeyCS mainKeyCS receive
         atomically $ writeTChan input $! B.runGet B.get (LBS.fromStrict plain)
         runReceiver (i + 1)
-  serve sessionId (readTChan input) (writeTChan output)
+  serve session (readTChan input) (writeTChan output)
     `race_` runSender 3
     `race_` runReceiver 3
 

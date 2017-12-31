@@ -27,6 +27,7 @@ source-repository head
   location: https://github.com/lpeterse/haskell-ssh
 
 library
+  ghc-options: -Wall
   hs-source-dirs:
       src
   build-depends:
@@ -35,7 +36,6 @@ library
       bytestring,
       cryptonite,
       memory,
-      mtl,
       containers,
       async,
       stm
@@ -52,7 +52,7 @@ executable hssh
   main-is: Main.hs
   hs-source-dirs:
       app
-  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -Wall -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
     , ssh
@@ -61,7 +61,6 @@ executable hssh
     , bytestring
     , cryptonite
     , memory
-    , mtl
     , containers
     , async
     , stm
