@@ -71,18 +71,18 @@ run serverSecretKey send receive = do
   (KexEcdhInit clientEphemeralPublicKey, rem3) <- runGetIncremental (unpacketize B.get) (receive 4096) rem2
 
   -- Compute and perform the Diffie-Helman key exchange.
-  let dhSecret     = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
-  let hash         = exchangeHash
-                        clientVersion            -- check
-                        version                  -- check
-                        clientKexInit            -- check
-                        serverKexInit            -- check
-                        serverPublicKey          -- check
-                        clientEphemeralPublicKey -- check
-                        serverEphemeralPublicKey -- check
-                        dhSecret                 -- check (client pubkey + server seckey)
-  let session      = SessionId (BS.pack $ BA.unpack hash)
-  let signature    = Ed25519.sign serverSecretKey serverPublicKey hash
+  let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
+  let hash = exchangeHash
+        clientVersion            -- check
+        version                  -- check
+        clientKexInit            -- check
+        serverKexInit            -- check
+        serverPublicKey          -- check
+        clientEphemeralPublicKey -- check
+        serverEphemeralPublicKey -- check
+        dhSecret                 -- check (client pubkey + server seckey)
+  let session = SessionId (BS.pack $ BA.unpack hash)
+  let signature = Ed25519.sign serverSecretKey serverPublicKey hash
   let kexEcdhReply = KexEcdhReply {
         kexServerHostKey      = serverPublicKey
       , kexServerEphemeralKey = serverEphemeralPublicKey
@@ -102,12 +102,16 @@ run serverSecretKey send receive = do
   output <- newTChanIO
   let runSender i = do
         msg <- atomically $ readTChan output
-        send $ encrypt i headerKeySC mainKeySC (B.put msg)
+        let plain = LBS.toStrict $ B.runPut $ B.put msg
+        encryptAndSend i headerKeySC mainKeySC send plain
         runSender (i + 1)
   let runReceiver i = do
-        plain <- decrypt i headerKeyCS mainKeyCS receive
-        atomically $ writeTChan input $! B.runGet B.get (LBS.fromStrict plain)
-        runReceiver (i + 1)
+        plain <- receiveAndDecrypt i headerKeyCS mainKeyCS receive
+        case B.runGetOrFail B.get (LBS.fromStrict plain) of
+          Left (_,_,e) -> throwIO (SshSyntaxErrorException e)
+          Right (_,_,msg) -> do
+            atomically $ writeTChan input msg
+            runReceiver (i + 1)
   serve session (readTChan input) (writeTChan output)
     `race_` runSender 3
     `race_` runReceiver 3
@@ -115,73 +119,72 @@ run serverSecretKey send receive = do
 runGetIncremental :: B.Get a -> IO BS.ByteString -> BS.ByteString -> IO (a, BS.ByteString)
 runGetIncremental getter more initial = case B.runGetIncremental getter of
   B.Done _ _ a       -> pure (a, initial)
-  B.Fail _ _ e       -> fail e
+  B.Fail _ _ e       -> throwIO (SshSyntaxErrorException e)
   B.Partial continue -> f (continue $ Just initial)
   where
   f (B.Done remainder _ a) = pure (a, remainder)
-  f (B.Fail _ _ e        ) = fail e
+  f (B.Fail _ _ e        ) = throwIO (SshSyntaxErrorException e)
   f (B.Partial continue  ) = f =<< (continue . nothingIfEmpty <$> more)
   nothingIfEmpty bs
     | BS.null bs = Nothing
     | otherwise  = Just bs
 
-encrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> B.Put -> BS.ByteString
-encrypt seqnr headerKey mainKey dat = ciph3 <> mac
+encryptAndSend :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> (BS.ByteString -> IO ()) -> BS.ByteString -> IO ()
+encryptAndSend seqnr headerKey mainKey send datBS = send ciph3 >> send mac
   where
-    build         = LBS.toStrict . B.runPut
+  build         = LBS.toStrict . B.runPut
 
-    datlen        = BS.length datBS                :: Int
-    padlen        = let p = 8 - ((1 + datlen) `mod` 8)
-                    in  if p < 4 then p + 8 else p :: Int
-    paclen        = 1 + datlen + padlen            :: Int
+  datlen        = BS.length datBS                :: Int
+  padlen        = let p = 8 - ((1 + datlen) `mod` 8)
+                  in  if p < 4 then p + 8 else p :: Int
+  paclen        = 1 + datlen + padlen            :: Int
 
-    datBS         = build dat
-    padBS         = BS.replicate padlen 0
-    padlenBS      = build $ B.putWord8    (fromIntegral padlen)
-    paclenBS      = build $ B.putWord32be (fromIntegral paclen)
-    nonceBS       = build $ B.putWord64be (fromIntegral seqnr)
+  padBS         = BS.replicate padlen 0
+  padlenBS      = build $ B.putWord8    (fromIntegral padlen)
+  paclenBS      = build $ B.putWord32be (fromIntegral paclen)
+  nonceBS       = build $ B.putWord64be (fromIntegral seqnr)
 
-    st1           = ChaCha.initialize 20 mainKey nonceBS
-    st2           = ChaCha.initialize 20 headerKey nonceBS
-    (poly, st3)   = ChaCha.generate st1 64
-    ciph1         = fst $ ChaCha.combine st2 paclenBS
-    ciph2         = fst $ ChaCha.combine st3 $ padlenBS <> datBS <> padBS
-    ciph3         = ciph1 <> ciph2
-    mac           = let Poly1305.Auth auth = Poly1305.auth (BS.take 32 poly) ciph3
-                    in  BS.pack (BA.unpack auth)
+  st1           = ChaCha.initialize 20 mainKey nonceBS
+  st2           = ChaCha.initialize 20 headerKey nonceBS
+  (poly, st3)   = ChaCha.generate st1 64
+  ciph1         = fst $ ChaCha.combine st2 paclenBS
+  ciph2         = fst $ ChaCha.combine st3 $ padlenBS <> datBS <> padBS
+  ciph3         = ciph1 <> ciph2
+  mac           = let Poly1305.Auth auth = Poly1305.auth (BS.take 32 poly) ciph3
+                  in  BS.pack (BA.unpack auth)
 
-decrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> (Int -> IO BS.ByteString) -> IO BS.ByteString
-decrypt seqnr headerKey mainKey receive = do
-  ciph1            <- receiveExactly 4
-  let paclen        = sizeFromBS (fst $ ChaCha.combine st1 ciph1)
-  ciph2            <- receiveExactly paclen
-  ciph3            <- receiveExactly maclen
-  let actualMAC     = Poly1305.Auth (BA.pack $ BS.unpack ciph3)
-  let expectedMAC   = Poly1305.auth (BS.take 32 poly) (ciph1 <> ciph2)
+receiveAndDecrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> (Int -> IO BS.ByteString) -> IO BS.ByteString
+receiveAndDecrypt seqnr headerKey mainKey receive = do
+  ciph1          <- receiveExactly 4
+  let paclen      = sizeFromBS (fst $ ChaCha.combine st1 ciph1)
+  ciph2          <- receiveExactly paclen
+  ciph3          <- receiveExactly maclen
+  let actualMAC   = Poly1305.Auth (BA.pack $ BS.unpack ciph3)
+  let expectedMAC = Poly1305.auth (BS.take 32 poly) (ciph1 <> ciph2)
   if actualMAC /= expectedMAC
     then throwIO SshMacMismatchException
     else pure $ unpacket $ fst $ ChaCha.combine st3 ciph2
   where
-    build         = LBS.toStrict . B.runPut
-    sizeFromBS    = fromIntegral . B.runGet B.getWord32be. LBS.fromStrict
-    maclen        = 16
-    nonceBS       = build $ B.putWord64be (fromIntegral seqnr)
-    st1           = ChaCha.initialize 20 headerKey nonceBS
-    st2           = ChaCha.initialize 20 mainKey   nonceBS
-    (poly, st3)   = ChaCha.generate st2 64
+  build         = LBS.toStrict . B.runPut
+  sizeFromBS    = fromIntegral . B.runGet B.getWord32be. LBS.fromStrict
+  maclen        = 16
+  nonceBS       = build $ B.putWord64be (fromIntegral seqnr)
+  st1           = ChaCha.initialize 20 headerKey nonceBS
+  st2           = ChaCha.initialize 20 mainKey   nonceBS
+  (poly, st3)   = ChaCha.generate st2 64
 
-    unpacket :: BS.ByteString -> BS.ByteString
-    unpacket bs = case BS.uncons bs of
-      Nothing    -> bs
-      Just (h,t) -> BS.take (BS.length t - fromIntegral h) t
+  unpacket :: BS.ByteString -> BS.ByteString
+  unpacket bs = case BS.uncons bs of
+    Nothing    -> bs
+    Just (h,t) -> BS.take (BS.length t - fromIntegral h) t
 
-    receiveExactly :: Int -> IO BS.ByteString
-    receiveExactly i = f mempty
-      where
-        f acc
-          | BS.length acc >= i = pure acc
-          | otherwise = do
-              bs <- receive (i - BS.length acc)
-              if BS.null bs
-                then throwIO SshUnexpectedEndOfInputException
-                else f $! acc <> bs
+  receiveExactly :: Int -> IO BS.ByteString
+  receiveExactly i = f mempty
+    where
+    f acc
+      | BS.length acc >= i = pure acc
+      | otherwise = do
+          bs <- receive (i - BS.length acc)
+          if BS.null bs
+            then throwIO SshUnexpectedEndOfInputException
+            else f $! acc <> bs

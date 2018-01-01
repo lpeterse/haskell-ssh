@@ -27,6 +27,8 @@ import           Network.SSH.Message
 
 data SshException
   = SshMacMismatchException
+  | SshSyntaxErrorException String
+  | SshProtocolErrorException String
   | SshUnexpectedEndOfInputException
   deriving (Eq, Ord, Show, Typeable)
 
