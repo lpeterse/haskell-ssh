@@ -102,13 +102,13 @@ runShell readStdin writeStdout _writeStderr = forever $ do
 
 handleInput :: Connection -> STM () -> STM ()
 handleInput conn disconnect = receive conn >>= \case
-  Disconnect {} -> disconnect
-  Ignore        -> pure ()
-  Unimplemented -> pure ()
-  ServiceRequest x -> do
+  MsgDisconnect {} -> disconnect
+  MsgIgnore {} -> pure ()
+  MsgUnimplemented {} -> pure ()
+  MsgServiceRequest (ServiceRequest x) -> do
     println conn (show x)
-    send conn (ServiceAccept x)
-  ServiceAccept {} -> fail "FIXME"
+    send conn (MsgServiceAccept $ ServiceAccept x)
+  MsgServiceAccept {} -> fail "FIXME"
   UserAuthFailure {} -> fail "FIXME"
   UserAuthSuccess {} -> fail "FIXME"
   UserAuthBanner {} -> fail "FIXME"

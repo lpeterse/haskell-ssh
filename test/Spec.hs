@@ -17,10 +17,14 @@ import           Network.SSH.Message
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH.Message"
   [ testGroup "put . get == id"
-    [ QC.testProperty ":: Version"         (parserIdentity :: Version     -> Property)
-    , QC.testProperty ":: PublicKey"       (parserIdentity :: PublicKey   -> Property)
-    , QC.testProperty ":: Signature"       (parserIdentity :: Signature   -> Property)
-    , QC.testProperty ":: Message"         (parserIdentity :: Message     -> Property)
+    [ QC.testProperty ":: Disconnect"      (parserIdentity :: Disconnect    -> Property)
+    , QC.testProperty ":: Ignore"          (parserIdentity :: Ignore        -> Property)
+    , QC.testProperty ":: Unimplemented"   (parserIdentity :: Unimplemented -> Property)
+
+    , QC.testProperty ":: Version"         (parserIdentity :: Version       -> Property)
+    , QC.testProperty ":: PublicKey"       (parserIdentity :: PublicKey     -> Property)
+    , QC.testProperty ":: Signature"       (parserIdentity :: Signature     -> Property)
+    , QC.testProperty ":: Message"         (parserIdentity :: Message       -> Property)
     ]
   ]
   where
@@ -32,11 +36,11 @@ instance Arbitrary BS.ByteString where
 
 instance Arbitrary Message where
   arbitrary = oneof
-    [ Disconnect              <$> arbitrary <*> arbitrary <*> arbitrary
-    , pure Ignore
-    , pure Unimplemented
-    , ServiceRequest          <$> arbitrary
-    , ServiceAccept           <$> arbitrary
+    [ MsgDisconnect           <$> arbitrary
+    , MsgIgnore               <$> arbitrary
+    , MsgUnimplemented        <$> arbitrary
+    , MsgServiceRequest       <$> arbitrary
+    , MsgServiceAccept        <$> arbitrary
     , UserAuthRequest         <$> arbitrary <*> arbitrary <*> arbitrary
     , UserAuthFailure         <$> arbitrary <*> arbitrary
     , pure UserAuthSuccess
@@ -54,6 +58,21 @@ instance Arbitrary Message where
     , ChannelClose            <$> arbitrary
     ]
 
+instance Arbitrary Disconnect where
+  arbitrary = Disconnect <$> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary Ignore where
+  arbitrary = pure Ignore
+
+instance Arbitrary Unimplemented where
+  arbitrary = pure Unimplemented
+
+instance Arbitrary ServiceRequest where
+  arbitrary = ServiceRequest <$> arbitrary
+
+instance Arbitrary ServiceAccept where
+  arbitrary = ServiceAccept <$> arbitrary
+
 instance Arbitrary Version where
   arbitrary = elements
     [ Version "SSH-2.0-OpenSSH_4.3"
@@ -66,9 +85,6 @@ instance Arbitrary ChannelRequest where
     , ChannelRequestShell <$> arbitrary
     , ChannelRequestOther <$> arbitrary
     ]
-
-instance Arbitrary DisconnectReason where
-  arbitrary = DisconnectReason <$> arbitrary
 
 deriving instance Arbitrary MaxPacketSize
 deriving instance Arbitrary InitWindowSize

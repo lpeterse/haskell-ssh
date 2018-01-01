@@ -2,7 +2,13 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Message
-  ( Message (..)
+  ( Disconnect (..)
+  , Ignore (..)
+  , Unimplemented (..)
+  , ServiceRequest (..)
+  , ServiceAccept (..)
+
+  , Message (..)
   , Algorithm (..)
   , AuthMethod (..)
   , AuthMethodName (..)
@@ -11,7 +17,6 @@ module Network.SSH.Message
   , ChannelRequest (..)
   , ChannelType (..)
   , Cookie (), newCookie
-  , DisconnectReason (..)
   , InitWindowSize (..)
   , KexInit (..)
   , KexEcdhInit (..)
@@ -45,11 +50,11 @@ import           Data.Monoid              ((<>))
 import           Data.Word
 
 data Message
-  = Disconnect              DisconnectReason BS.ByteString BS.ByteString
-  | Ignore
-  | Unimplemented
-  | ServiceRequest          ServiceName
-  | ServiceAccept           ServiceName
+  = MsgDisconnect           Disconnect
+  | MsgIgnore               Ignore
+  | MsgUnimplemented        Unimplemented
+  | MsgServiceRequest       ServiceRequest
+  | MsgServiceAccept        ServiceAccept
   | UserAuthRequest         UserName ServiceName AuthMethod
   | UserAuthFailure         [AuthMethodName] Bool
   | UserAuthSuccess
@@ -75,7 +80,6 @@ newCookie = Cookie <$> getRandomBytes 16
 newtype Version          = Version          BS.ByteString deriving (Eq, Ord, Show)
 newtype Algorithm        = Algorithm        BS.ByteString deriving (Eq, Ord, Show)
 newtype Password         = Password         BS.ByteString deriving (Eq, Ord, Show)
-newtype DisconnectReason = DisconnectReason Word32        deriving (Eq, Ord, Show)
 newtype SessionId        = SessionId        BS.ByteString deriving (Eq, Ord, Show)
 newtype UserName         = UserName         BS.ByteString deriving (Eq, Ord, Show)
 newtype AuthMethodName   = AuthMethodName   BS.ByteString deriving (Eq, Ord, Show)
@@ -85,7 +89,32 @@ newtype ChannelId        = ChannelId        Word32        deriving (Eq, Ord, Sho
 newtype InitWindowSize   = InitWindowSize   Word32        deriving (Eq, Ord, Show)
 newtype MaxPacketSize    = MaxPacketSize    Word32        deriving (Eq, Ord, Show)
 
-data NewKeys = NewKeys deriving (Eq, Ord, Show)
+data Disconnect
+  = Disconnect
+  { disconnectReasonCode  :: Word32
+  , disconnectDescription :: BS.ByteString
+  , disconnectLanguagtTag :: BS.ByteString
+  } deriving (Eq, Ord, Show)
+
+data Ignore
+  = Ignore
+  deriving (Eq, Ord, Show)
+
+data Unimplemented
+  = Unimplemented
+  deriving (Eq, Ord, Show)
+
+data ServiceRequest
+  = ServiceRequest ServiceName
+  deriving (Eq, Ord, Show)
+
+data ServiceAccept
+  = ServiceAccept ServiceName
+  deriving (Eq, Ord, Show)
+
+data NewKeys
+  = NewKeys
+  deriving (Eq, Ord, Show)
 
 data KexInit
   = KexInit
@@ -166,16 +195,11 @@ data Signature
 
 instance B.Binary Message where
   put = \case
-    Disconnect r d l ->
-      putByte   1 <> B.put r <> B.put d <> B.put l
-    Ignore ->
-      putByte   2
-    Unimplemented ->
-      putByte   3
-    ServiceRequest sn ->
-      putByte   5 <> B.put sn
-    ServiceAccept sn ->
-      putByte   6 <> B.put sn
+    MsgDisconnect     x -> B.put x
+    MsgIgnore         x -> B.put x
+    MsgUnimplemented  x -> B.put x
+    MsgServiceRequest x -> B.put x
+    MsgServiceAccept  x -> B.put x
     UserAuthRequest un sn am ->
       putByte  50 <> B.put un <> B.put sn <> B.put am
     UserAuthFailure ms ps ->
@@ -207,34 +231,74 @@ instance B.Binary Message where
     ChannelRequestFailure (ChannelId lid) ->
       putByte 100 <> putUint32 lid
 
-  get = getByte >>= \case
-    1   -> Disconnect              <$> B.get <*> getString <*> getString
-    2   -> pure Ignore
-    3   -> pure Unimplemented
-    5   -> ServiceRequest          <$> B.get
-    6   -> ServiceAccept           <$> B.get
-    50  -> UserAuthRequest         <$> B.get <*> B.get <*> B.get
-    51  -> UserAuthFailure         <$> (fmap AuthMethodName <$> getNameList) <*> getBool
-    52  -> pure UserAuthSuccess
-    53  -> UserAuthBanner          <$> getString    <*> getString
-    60  -> UserAuthPublicKeyOk     <$> B.get <*> B.get
-    90  -> ChannelOpen             <$> B.get <*> B.get <*> B.get  <*> B.get
-    91  -> ChannelOpenConfirmation <$> B.get <*> B.get <*> B.get  <*> B.get
-    92  -> ChannelOpenFailure      <$> B.get <*> B.get
-    94  -> ChannelData             <$> B.get <*> getString
-    95  -> ChannelDataExtended     <$> B.get <*> getUint32 <*> getString
-    96  -> ChannelEof              <$> B.get
-    97  -> ChannelClose            <$> B.get
-    98  -> ChannelRequest          <$> B.get <*> B.get
-    99  -> ChannelRequestSuccess   <$> B.get
-    100 -> ChannelRequestFailure   <$> B.get
+  get = B.lookAhead getByte >>= \case
+    1   -> MsgDisconnect           <$> B.get
+    2   -> MsgIgnore               <$> B.get
+    3   -> MsgUnimplemented        <$> B.get
+    5   -> MsgServiceRequest       <$> B.get
+    6   -> MsgServiceAccept        <$> B.get
+    50  -> B.skip 1 >> UserAuthRequest         <$> B.get <*> B.get <*> B.get
+    51  -> B.skip 1 >> UserAuthFailure         <$> (fmap AuthMethodName <$> getNameList) <*> getBool
+    52  -> B.skip 1 >> pure UserAuthSuccess
+    53  -> B.skip 1 >> UserAuthBanner          <$> getString    <*> getString
+    60  -> B.skip 1 >> UserAuthPublicKeyOk     <$> B.get <*> B.get
+    90  -> B.skip 1 >> ChannelOpen             <$> B.get <*> B.get <*> B.get  <*> B.get
+    91  -> B.skip 1 >> ChannelOpenConfirmation <$> B.get <*> B.get <*> B.get  <*> B.get
+    92  -> B.skip 1 >> ChannelOpenFailure      <$> B.get <*> B.get
+    94  -> B.skip 1 >> ChannelData             <$> B.get <*> getString
+    95  -> B.skip 1 >> ChannelDataExtended     <$> B.get <*> getUint32 <*> getString
+    96  -> B.skip 1 >> ChannelEof              <$> B.get
+    97  -> B.skip 1 >> ChannelClose            <$> B.get
+    98  -> B.skip 1 >> ChannelRequest          <$> B.get <*> B.get
+    99  -> B.skip 1 >> ChannelRequestSuccess   <$> B.get
+    100 -> B.skip 1 >> ChannelRequestFailure   <$> B.get
     x   -> fail ("UNKNOWN MESSAGE TYPE " ++ show x)
+
+instance B.Binary Disconnect where
+  put (Disconnect c d l) = mconcat
+    [ putByte   1
+    , putUint32 c
+    , putString d
+    , putString l
+    ]
+  get = do
+    getMsgType 1
+    Disconnect
+      <$> getUint32
+      <*> getString
+      <*> getString
+
+instance B.Binary Ignore where
+  put Ignore = B.putWord8 2
+  get = do
+    getMsgType 2
+    pure Ignore
+
+instance B.Binary Unimplemented where
+  put Unimplemented = B.putWord8 3
+  get = do
+    getMsgType 3
+    pure Unimplemented
 
 instance B.Binary NewKeys where
   put NewKeys = B.putWord8 21
   get = do
     getMsgType 21
     pure NewKeys
+
+instance B.Binary ServiceRequest where
+  put (ServiceRequest s) =
+    putByte 5 <> B.put s
+  get = do
+    getMsgType 5
+    ServiceRequest <$> B.get
+
+instance B.Binary ServiceAccept where
+  put (ServiceAccept s) =
+    putByte 6 <> B.put s
+  get = do
+    getMsgType 6
+    ServiceAccept <$> B.get
 
 instance B.Binary Cookie where
   put (Cookie s) = B.putByteString s
@@ -243,10 +307,6 @@ instance B.Binary Cookie where
 instance B.Binary Algorithm where
   put (Algorithm s) = putString s
   get = Algorithm <$> getString
-
-instance B.Binary DisconnectReason where
-  put (DisconnectReason x) = B.putWord32be x
-  get = DisconnectReason <$> B.getWord32be
 
 instance B.Binary ChannelOpenFailureReason where
   put (ChannelOpenFailureReason c d l) = B.putWord32be c <> putString d <> putString l
@@ -514,8 +574,8 @@ putInteger x = B.putWord32be (fromIntegral $ BS.length bs) <> B.putByteString bs
     f i acc = let (q,r) = quotRem i 256
               in  f q (fromIntegral r : acc)
     g []        = []
-    g xxs@(x:_) | x > 128   = 0:xxs
-                | otherwise = xxs
+    g yys@(y:_) | y > 128   = 0:yys
+                | otherwise = yys
 
 putFramed :: B.Put -> B.Put
 putFramed b = B.putWord32be (fromIntegral $ LBS.length lbs) <> B.putLazyByteString lbs
@@ -535,5 +595,6 @@ getMsgType expected = do
     ", got "    ++ msgTypeName actual   ++ "."
 
 msgTypeName :: Word8 -> String
-msgTypeName 21 = "SSH_MSG_NEWKEYS"
-msgTypeName  x = "SSH_MSG_" ++ show x
+msgTypeName   1 = "SSH_MSG_DISCONNECT"
+msgTypeName  21 = "SSH_MSG_NEWKEYS"
+msgTypeName   x = "SSH_MSG_" ++ show x
