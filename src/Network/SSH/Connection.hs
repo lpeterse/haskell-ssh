@@ -109,59 +109,60 @@ handleInput conn disconnect = receive conn >>= \case
     println conn (show x)
     send conn (MsgServiceAccept $ ServiceAccept x)
   MsgServiceAccept {} -> fail "FIXME"
-  UserAuthFailure {} -> fail "FIXME"
-  UserAuthSuccess {} -> fail "FIXME"
-  UserAuthBanner {} -> fail "FIXME"
-  UserAuthPublicKeyOk {} -> fail "FIXME"
-  ChannelOpenConfirmation {} -> fail "FIXME"
-  ChannelOpenFailure {} -> fail "FIXME"
-  ChannelRequestFailure {} -> fail "FIXME"
-  ChannelRequestSuccess {} -> fail "FIXME"
-  x@(UserAuthRequest user service method) -> do
+  MsgUserAuthFailure {} -> fail "FIXME"
+  MsgUserAuthSuccess {} -> fail "FIXME"
+  MsgUserAuthBanner {} -> fail "FIXME"
+  MsgUserAuthPublicKeyOk {} -> fail "FIXME"
+  MsgChannelOpenConfirmation {} -> fail "FIXME"
+  MsgChannelOpenFailure {} -> fail "FIXME"
+  MsgChannelRequestFailure {} -> fail "FIXME"
+  MsgChannelRequestSuccess {} -> fail "FIXME"
+  x@(MsgUserAuthRequest (UserAuthRequest user service method)) -> do
     println conn (show x)
     case method of
-      AuthNone        -> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
-      AuthHostBased   -> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
-      AuthPassword {} -> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
+      AuthNone        -> send conn (MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False)
+      AuthHostBased   -> send conn (MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False)
+      AuthPassword {} -> send conn (MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False)
       AuthPublicKey algo pk msig -> case msig of
-        Nothing  -> send conn (UserAuthPublicKeyOk algo pk)
+        Nothing  -> send conn (MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk)
         Just sig -> if verifyAuthSignature (sessionId conn) user service algo pk sig
-          then println conn "AUTHSUCCESS" >> send conn UserAuthSuccess
-          else println conn "AUTHFAILURE" >> send conn (UserAuthFailure [AuthMethodName "publickey"] False)
-  ChannelOpen t rid ws ps ->
+          then println conn "AUTHSUCCESS" >> send conn (MsgUserAuthSuccess $ UserAuthSuccess)
+          else println conn "AUTHFAILURE" >> send conn (MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False)
+  MsgChannelOpen (ChannelOpen t rid ws ps) ->
     openChannel conn t rid ws ps >>= \case
-      Nothing  -> send conn $ ChannelOpenFailure rid (ChannelOpenFailureReason 4 "" "")
-      Just ch  -> send conn $ ChannelOpenConfirmation
+      Nothing  -> send conn $ MsgChannelOpenFailure $ ChannelOpenFailure rid (ChannelOpenFailureReason 4 "" "")
+      Just ch  -> send conn $ MsgChannelOpenConfirmation $ ChannelOpenConfirmation
         (chanRemoteId ch)
         (chanLocalId ch)
         (chanInitWindowSize ch)
         (chanMaxPacketSize ch)
-  ChannelData lid bs -> do
+  MsgChannelData (ChannelData lid bs) -> do
     ch <- getChannel conn lid
     writeTChan (chanWriteFd ch) bs
-  ChannelDataExtended lid _ bs -> do
+  MsgChannelDataExtended (ChannelDataExtended lid _ bs) -> do
     ch <- getChannel conn lid
     writeTChan (chanExtendedFd ch) bs
-  ChannelEof _ ->
+  MsgChannelEof (ChannelEof _) ->
     pure ()
-  ChannelClose lid ->
+  MsgChannelClose (ChannelClose lid) ->
     closeChannel conn lid >>= \case
       Nothing  -> pure () -- channel finally closed
-      Just rid -> send conn (ChannelClose rid) -- channel semi-closed
-  ChannelRequest lid x -> do
-    ch <- getChannel conn lid
-    case x of
-      ChannelRequestPTY {} ->
-        send conn (ChannelRequestSuccess $ chanRemoteId ch)
-      ChannelRequestShell {} -> do
+      Just rid -> send conn (MsgChannelClose $ ChannelClose rid) -- channel semi-closed
+  MsgChannelRequest x -> case x of
+      ChannelRequestPty lid _ _ _ _ _ _ _ -> do
+        ch <- getChannel conn lid
+        send conn (MsgChannelRequestSuccess $ ChannelRequestSuccess $ chanRemoteId ch)
+      ChannelRequestShell lid wantReply -> do
+        ch <- getChannel conn lid
         exec conn
           (readTChan  $ chanReadFd ch)
           (writeTChan $ chanWriteFd ch)
           (writeTChan $ chanExtendedFd ch)
           (chanWaitClosed ch)
-        send conn (ChannelRequestSuccess $ chanRemoteId ch)
-      ChannelRequestOther {} ->
-        send conn (ChannelRequestFailure $ chanRemoteId ch)
+        send conn (MsgChannelRequestSuccess $ ChannelRequestSuccess $ chanRemoteId ch)
+      ChannelRequestOther lid _ -> do
+        ch <- getChannel conn lid
+        send conn (MsgChannelRequestFailure $ ChannelRequestFailure $ chanRemoteId ch)
 
 handleChannelFds :: Connection -> STM ()
 handleChannelFds conn =
@@ -170,11 +171,11 @@ handleChannelFds conn =
     h1 Nothing = retry
     h1 (Just ch) = do
       bs <- readTChan (chanWriteFd ch)
-      send conn (ChannelData (chanRemoteId ch) bs)
+      send conn (MsgChannelData $ ChannelData (chanRemoteId ch) bs)
     h2 Nothing = retry
     h2 (Just ch) = do
       bs <- readTChan (chanExtendedFd ch)
-      send conn (ChannelDataExtended (chanRemoteId ch) 0 bs)
+      send conn (MsgChannelDataExtended $ ChannelDataExtended (chanRemoteId ch) 0 bs)
 
     tryAny :: (Maybe Channel -> STM ()) -> M.Map ChannelId (Maybe Channel) -> STM ()
     tryAny f m = M.foldr orElse retry (M.map f m)

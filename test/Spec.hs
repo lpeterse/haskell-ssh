@@ -17,14 +17,31 @@ import           Network.SSH.Message
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH.Message"
   [ testGroup "put . get == id"
-    [ QC.testProperty ":: Disconnect"      (parserIdentity :: Disconnect    -> Property)
-    , QC.testProperty ":: Ignore"          (parserIdentity :: Ignore        -> Property)
-    , QC.testProperty ":: Unimplemented"   (parserIdentity :: Unimplemented -> Property)
+    [ QC.testProperty ":: Disconnect"              (parserIdentity :: Disconnect              -> Property)
+    , QC.testProperty ":: Ignore"                  (parserIdentity :: Ignore                  -> Property)
+    , QC.testProperty ":: Unimplemented"           (parserIdentity :: Unimplemented           -> Property)
+    , QC.testProperty ":: ServiceRequest"          (parserIdentity :: ServiceRequest          -> Property)
+    , QC.testProperty ":: ServiceAccept"           (parserIdentity :: ServiceAccept           -> Property)
+    , QC.testProperty ":: UserAuthRequest"         (parserIdentity :: UserAuthRequest         -> Property)
+    , QC.testProperty ":: UserAuthFailure"         (parserIdentity :: UserAuthFailure         -> Property)
+    , QC.testProperty ":: UserAuthSuccess"         (parserIdentity :: UserAuthSuccess         -> Property)
+    , QC.testProperty ":: UserAuthBanner"          (parserIdentity :: UserAuthBanner          -> Property)
+    , QC.testProperty ":: UserAuthPublicKeyOk"     (parserIdentity :: UserAuthPublicKeyOk     -> Property)
+    , QC.testProperty ":: ChannelOpen"             (parserIdentity :: ChannelOpen             -> Property)
+    , QC.testProperty ":: ChannelOpenConfirmation" (parserIdentity :: ChannelOpenConfirmation -> Property)
+    , QC.testProperty ":: ChannelOpenFailure"      (parserIdentity :: ChannelOpenFailure      -> Property)
+    , QC.testProperty ":: ChannelData"             (parserIdentity :: ChannelData             -> Property)
+    , QC.testProperty ":: ChannelDataExtended"     (parserIdentity :: ChannelDataExtended     -> Property)
+    , QC.testProperty ":: ChannelEof"              (parserIdentity :: ChannelEof              -> Property)
+    , QC.testProperty ":: ChannelClose"            (parserIdentity :: ChannelClose            -> Property)
+    , QC.testProperty ":: ChannelRequest"          (parserIdentity :: ChannelRequest          -> Property)
+    , QC.testProperty ":: ChannelRequestSuccess"   (parserIdentity :: ChannelRequestSuccess   -> Property)
+    , QC.testProperty ":: ChannelRequestFailure"   (parserIdentity :: ChannelRequestFailure   -> Property)
 
-    , QC.testProperty ":: Version"         (parserIdentity :: Version       -> Property)
-    , QC.testProperty ":: PublicKey"       (parserIdentity :: PublicKey     -> Property)
-    , QC.testProperty ":: Signature"       (parserIdentity :: Signature     -> Property)
-    , QC.testProperty ":: Message"         (parserIdentity :: Message       -> Property)
+    , QC.testProperty ":: Version"                 (parserIdentity :: Version                 -> Property)
+    , QC.testProperty ":: PublicKey"               (parserIdentity :: PublicKey               -> Property)
+    , QC.testProperty ":: Signature"               (parserIdentity :: Signature               -> Property)
+    , QC.testProperty ":: Message"                 (parserIdentity :: Message                 -> Property)
     ]
   ]
   where
@@ -36,26 +53,26 @@ instance Arbitrary BS.ByteString where
 
 instance Arbitrary Message where
   arbitrary = oneof
-    [ MsgDisconnect           <$> arbitrary
-    , MsgIgnore               <$> arbitrary
-    , MsgUnimplemented        <$> arbitrary
-    , MsgServiceRequest       <$> arbitrary
-    , MsgServiceAccept        <$> arbitrary
-    , UserAuthRequest         <$> arbitrary <*> arbitrary <*> arbitrary
-    , UserAuthFailure         <$> arbitrary <*> arbitrary
-    , pure UserAuthSuccess
-    , UserAuthBanner          <$> arbitrary <*> arbitrary
-    , UserAuthPublicKeyOk     <$> arbitrary <*> arbitrary
-    , ChannelOpen             <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-    , ChannelOpenConfirmation <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-    , ChannelOpenFailure      <$> arbitrary <*> arbitrary
-    , ChannelRequest          <$> arbitrary <*> arbitrary
-    , ChannelRequestSuccess   <$> arbitrary
-    , ChannelRequestFailure   <$> arbitrary
-    , ChannelData             <$> arbitrary <*> arbitrary
-    , ChannelDataExtended     <$> arbitrary <*> arbitrary <*> arbitrary
-    , ChannelEof              <$> arbitrary
-    , ChannelClose            <$> arbitrary
+    [ MsgDisconnect              <$> arbitrary
+    , MsgIgnore                  <$> arbitrary
+    , MsgUnimplemented           <$> arbitrary
+    , MsgServiceRequest          <$> arbitrary
+    , MsgServiceAccept           <$> arbitrary
+    , MsgUserAuthRequest         <$> arbitrary
+    , MsgUserAuthFailure         <$> arbitrary
+    , MsgUserAuthSuccess         <$> arbitrary
+    , MsgUserAuthBanner          <$> arbitrary
+    , MsgUserAuthPublicKeyOk     <$> arbitrary
+    , MsgChannelOpen             <$> arbitrary
+    , MsgChannelOpenConfirmation <$> arbitrary
+    , MsgChannelOpenFailure      <$> arbitrary
+    , MsgChannelData             <$> arbitrary
+    , MsgChannelDataExtended     <$> arbitrary
+    , MsgChannelEof              <$> arbitrary
+    , MsgChannelClose            <$> arbitrary
+    , MsgChannelRequest          <$> arbitrary
+    , MsgChannelRequestSuccess   <$> arbitrary
+    , MsgChannelRequestFailure   <$> arbitrary
     ]
 
 instance Arbitrary Disconnect where
@@ -73,17 +90,59 @@ instance Arbitrary ServiceRequest where
 instance Arbitrary ServiceAccept where
   arbitrary = ServiceAccept <$> arbitrary
 
+instance Arbitrary UserAuthRequest where
+  arbitrary = UserAuthRequest <$> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary UserAuthFailure where
+  arbitrary = UserAuthFailure <$> arbitrary <*> arbitrary
+
+instance Arbitrary UserAuthSuccess where
+  arbitrary = pure UserAuthSuccess
+
+instance Arbitrary UserAuthBanner where
+  arbitrary = UserAuthBanner <$> arbitrary <*> arbitrary
+
+instance Arbitrary UserAuthPublicKeyOk where
+  arbitrary = UserAuthPublicKeyOk <$> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelOpen where
+  arbitrary = ChannelOpen <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelOpenConfirmation where
+  arbitrary = ChannelOpenConfirmation <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelOpenFailure where
+  arbitrary = ChannelOpenFailure <$> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelData where
+  arbitrary = ChannelData <$> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelDataExtended where
+  arbitrary = ChannelDataExtended <$> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelEof where
+  arbitrary = ChannelEof <$> arbitrary
+
+instance Arbitrary ChannelClose where
+  arbitrary = ChannelClose <$> arbitrary
+
+instance Arbitrary ChannelRequest where
+  arbitrary = oneof
+    [ ChannelRequestPty   <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+    , ChannelRequestShell <$> arbitrary <*> arbitrary
+    , ChannelRequestOther <$> arbitrary <*> arbitrary
+    ]
+
+instance Arbitrary ChannelRequestSuccess where
+  arbitrary = ChannelRequestSuccess <$> arbitrary
+
+instance Arbitrary ChannelRequestFailure where
+  arbitrary = ChannelRequestFailure <$> arbitrary
+
 instance Arbitrary Version where
   arbitrary = elements
     [ Version "SSH-2.0-OpenSSH_4.3"
     , Version "SSH-2.0-hssh_0.1"
-    ]
-
-instance Arbitrary ChannelRequest where
-  arbitrary = oneof
-    [ ChannelRequestPTY   <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-    , ChannelRequestShell <$> arbitrary
-    , ChannelRequestOther <$> arbitrary
     ]
 
 deriving instance Arbitrary MaxPacketSize

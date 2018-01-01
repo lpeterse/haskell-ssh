@@ -7,6 +7,21 @@ module Network.SSH.Message
   , Unimplemented (..)
   , ServiceRequest (..)
   , ServiceAccept (..)
+  , UserAuthRequest (..)
+  , UserAuthFailure (..)
+  , UserAuthSuccess (..)
+  , UserAuthBanner (..)
+  , UserAuthPublicKeyOk (..)
+  , ChannelOpen (..)
+  , ChannelOpenConfirmation (..)
+  , ChannelOpenFailure (..)
+  , ChannelData (..)
+  , ChannelDataExtended (..)
+  , ChannelEof (..)
+  , ChannelClose (..)
+  , ChannelRequest (..)
+  , ChannelRequestSuccess (..)
+  , ChannelRequestFailure (..)
 
   , Message (..)
   , Algorithm (..)
@@ -14,7 +29,6 @@ module Network.SSH.Message
   , AuthMethodName (..)
   , ChannelId (..)
   , ChannelOpenFailureReason (..)
-  , ChannelRequest (..)
   , ChannelType (..)
   , Cookie (), newCookie
   , InitWindowSize (..)
@@ -50,26 +64,26 @@ import           Data.Monoid              ((<>))
 import           Data.Word
 
 data Message
-  = MsgDisconnect           Disconnect
-  | MsgIgnore               Ignore
-  | MsgUnimplemented        Unimplemented
-  | MsgServiceRequest       ServiceRequest
-  | MsgServiceAccept        ServiceAccept
-  | UserAuthRequest         UserName ServiceName AuthMethod
-  | UserAuthFailure         [AuthMethodName] Bool
-  | UserAuthSuccess
-  | UserAuthBanner          BS.ByteString BS.ByteString
-  | UserAuthPublicKeyOk     Algorithm PublicKey
-  | ChannelOpen             ChannelType ChannelId InitWindowSize MaxPacketSize
-  | ChannelOpenConfirmation ChannelId ChannelId InitWindowSize MaxPacketSize
-  | ChannelOpenFailure      ChannelId ChannelOpenFailureReason
-  | ChannelRequest          ChannelId ChannelRequest
-  | ChannelRequestSuccess   ChannelId
-  | ChannelRequestFailure   ChannelId
-  | ChannelData             ChannelId BS.ByteString
-  | ChannelDataExtended     ChannelId Word32 BS.ByteString
-  | ChannelEof              ChannelId
-  | ChannelClose            ChannelId
+  = MsgDisconnect              Disconnect
+  | MsgIgnore                  Ignore
+  | MsgUnimplemented           Unimplemented
+  | MsgServiceRequest          ServiceRequest
+  | MsgServiceAccept           ServiceAccept
+  | MsgUserAuthRequest         UserAuthRequest
+  | MsgUserAuthFailure         UserAuthFailure
+  | MsgUserAuthSuccess         UserAuthSuccess
+  | MsgUserAuthBanner          UserAuthBanner
+  | MsgUserAuthPublicKeyOk     UserAuthPublicKeyOk
+  | MsgChannelOpen             ChannelOpen
+  | MsgChannelOpenConfirmation ChannelOpenConfirmation
+  | MsgChannelOpenFailure      ChannelOpenFailure
+  | MsgChannelData             ChannelData
+  | MsgChannelDataExtended     ChannelDataExtended
+  | MsgChannelEof              ChannelEof
+  | MsgChannelClose            ChannelClose
+  | MsgChannelRequest          ChannelRequest
+  | MsgChannelRequestSuccess   ChannelRequestSuccess
+  | MsgChannelRequestFailure   ChannelRequestFailure
   deriving (Eq, Show)
 
 newtype Cookie           = Cookie           BS.ByteString deriving (Eq, Ord, Show)
@@ -94,27 +108,104 @@ data Disconnect
   { disconnectReasonCode  :: Word32
   , disconnectDescription :: BS.ByteString
   , disconnectLanguagtTag :: BS.ByteString
-  } deriving (Eq, Ord, Show)
+  } deriving (Eq, Show)
 
 data Ignore
   = Ignore
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Show)
 
 data Unimplemented
   = Unimplemented
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Show)
 
 data ServiceRequest
   = ServiceRequest ServiceName
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Show)
 
 data ServiceAccept
   = ServiceAccept ServiceName
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Show)
+
+data UserAuthRequest
+  = UserAuthRequest UserName ServiceName AuthMethod
+  deriving (Eq, Show)
+
+data UserAuthFailure
+  = UserAuthFailure [AuthMethodName] Bool
+  deriving (Eq, Show)
+
+data UserAuthSuccess
+  = UserAuthSuccess
+  deriving (Eq, Show)
+
+data UserAuthBanner
+  = UserAuthBanner BS.ByteString BS.ByteString
+  deriving (Eq, Show)
+
+data UserAuthPublicKeyOk
+  = UserAuthPublicKeyOk Algorithm PublicKey
+  deriving (Eq, Show)
+
+data ChannelOpen
+  = ChannelOpen ChannelType ChannelId InitWindowSize MaxPacketSize
+  deriving (Eq, Show)
+
+data ChannelOpenConfirmation
+  = ChannelOpenConfirmation ChannelId ChannelId InitWindowSize MaxPacketSize
+  deriving (Eq, Show)
+
+data ChannelOpenFailure
+  = ChannelOpenFailure ChannelId ChannelOpenFailureReason
+  deriving (Eq, Show)
+
+data ChannelData
+  = ChannelData ChannelId BS.ByteString
+  deriving (Eq, Show)
+
+data ChannelDataExtended
+  = ChannelDataExtended ChannelId Word32 BS.ByteString
+  deriving (Eq, Show)
+
+data ChannelEof
+  = ChannelEof ChannelId
+  deriving (Eq, Show)
+
+data ChannelClose
+  = ChannelClose ChannelId
+  deriving (Eq, Show)
+
+data ChannelRequest
+  = ChannelRequestPty
+    { crChannelId     :: ChannelId
+    , crWantReply     :: Bool
+    , crTerminal      :: BS.ByteString
+    , crWidthCols     :: Word32
+    , crHeightRows    :: Word32
+    , crWidthPixels   :: Word32
+    , crHeightPixels  :: Word32
+    , crTerminalModes :: BS.ByteString
+    }
+  | ChannelRequestShell
+    { crChannelId :: ChannelId
+    , crWantReply :: Bool
+    }
+  | ChannelRequestOther
+    { crChannelId :: ChannelId
+    , crOther     :: BS.ByteString
+    }
+  deriving (Eq, Show)
+
+data ChannelRequestSuccess
+  = ChannelRequestSuccess ChannelId
+  deriving (Eq, Show)
+
+data ChannelRequestFailure
+  = ChannelRequestFailure ChannelId
+  deriving (Eq, Show)
 
 data NewKeys
   = NewKeys
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Show)
 
 data KexInit
   = KexInit
@@ -143,24 +234,6 @@ data KexEcdhReply
   , kexServerEphemeralKey :: Curve25519.PublicKey
   , kexHashSignature      :: Ed25519.Signature
   } deriving (Eq, Show)
-
-data ChannelRequest
-  = ChannelRequestPTY
-    { crptyWantReply     :: Bool
-    , crptyTerminal      :: BS.ByteString
-    , crptyWidthCols     :: Word32
-    , crptyHeightRows    :: Word32
-    , crptyWidthPixels   :: Word32
-    , crptyHeightPixels  :: Word32
-    , crptyTerminalModes :: BS.ByteString
-    }
-  | ChannelRequestShell
-    { crshlWantReply     :: Bool
-    }
-  | ChannelRequestOther
-    { crother           :: BS.ByteString
-    }
-  deriving (Eq, Show)
 
 data ChannelOpenFailureReason
   = ChannelOpenFailureReason
@@ -195,63 +268,48 @@ data Signature
 
 instance B.Binary Message where
   put = \case
-    MsgDisconnect     x -> B.put x
-    MsgIgnore         x -> B.put x
-    MsgUnimplemented  x -> B.put x
-    MsgServiceRequest x -> B.put x
-    MsgServiceAccept  x -> B.put x
-    UserAuthRequest un sn am ->
-      putByte  50 <> B.put un <> B.put sn <> B.put am
-    UserAuthFailure ms ps ->
-      putByte  51 <> putNameList ((\(AuthMethodName x)->x) <$> ms) <> putBool ps
-    UserAuthSuccess ->
-      putByte  52
-    UserAuthBanner b l ->
-      putByte  53 <> putString b <> putString l
-    UserAuthPublicKeyOk alg pk ->
-      putByte  60 <> B.put alg <> B.put pk
-    ChannelOpen ct rid ws ps ->
-      putByte  90 <> B.put ct <> B.put rid <> B.put ws <> B.put ps
-    ChannelOpenConfirmation (ChannelId a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d) ->
-      putByte  91 <> putUint32 a <> putUint32 b <> putUint32 c <> putUint32 d
-    ChannelOpenFailure (ChannelId rid) (ChannelOpenFailureReason reason descr lang) ->
-      putByte  92 <> putUint32 rid <> putUint32 reason <> putString descr <> putString lang
-    ChannelData (ChannelId lid) bs ->
-      putByte  94 <> putUint32 lid <> putString bs
-    ChannelDataExtended (ChannelId lid) x bs ->
-      putByte  95 <> putUint32 lid <> putUint32 x <> putString bs
-    ChannelEof   (ChannelId lid) ->
-      putByte  96 <> putUint32 lid
-    ChannelClose (ChannelId lid) ->
-      putByte  97 <> putUint32 lid
-    ChannelRequest (ChannelId lid) req ->
-      putByte  98 <> putUint32 lid <> B.put req
-    ChannelRequestSuccess (ChannelId lid) ->
-      putByte  99 <> putUint32 lid
-    ChannelRequestFailure (ChannelId lid) ->
-      putByte 100 <> putUint32 lid
+    MsgDisconnect               x -> B.put x
+    MsgIgnore                   x -> B.put x
+    MsgUnimplemented            x -> B.put x
+    MsgServiceRequest           x -> B.put x
+    MsgServiceAccept            x -> B.put x
+    MsgUserAuthRequest          x -> B.put x
+    MsgUserAuthFailure          x -> B.put x
+    MsgUserAuthSuccess          x -> B.put x
+    MsgUserAuthBanner           x -> B.put x
+    MsgUserAuthPublicKeyOk      x -> B.put x
+    MsgChannelOpen              x -> B.put x
+    MsgChannelOpenConfirmation  x -> B.put x
+    MsgChannelOpenFailure       x -> B.put x
+    MsgChannelData              x -> B.put x
+    MsgChannelDataExtended      x -> B.put x
+    MsgChannelEof               x -> B.put x
+    MsgChannelClose             x -> B.put x
+    MsgChannelRequest           x -> B.put x
+    MsgChannelRequestSuccess    x -> B.put x
+    MsgChannelRequestFailure    x -> B.put x
 
   get = B.lookAhead getByte >>= \case
-    1   -> MsgDisconnect           <$> B.get
-    2   -> MsgIgnore               <$> B.get
-    3   -> MsgUnimplemented        <$> B.get
-    5   -> MsgServiceRequest       <$> B.get
-    6   -> MsgServiceAccept        <$> B.get
-    50  -> B.skip 1 >> UserAuthRequest         <$> B.get <*> B.get <*> B.get
-    51  -> B.skip 1 >> UserAuthFailure         <$> (fmap AuthMethodName <$> getNameList) <*> getBool
-    52  -> B.skip 1 >> pure UserAuthSuccess
-    53  -> B.skip 1 >> UserAuthBanner          <$> getString    <*> getString
-    60  -> B.skip 1 >> UserAuthPublicKeyOk     <$> B.get <*> B.get
-    90  -> B.skip 1 >> ChannelOpen             <$> B.get <*> B.get <*> B.get  <*> B.get
-    91  -> B.skip 1 >> ChannelOpenConfirmation <$> B.get <*> B.get <*> B.get  <*> B.get
-    92  -> B.skip 1 >> ChannelOpenFailure      <$> B.get <*> B.get
-    94  -> B.skip 1 >> ChannelData             <$> B.get <*> getString
-    95  -> B.skip 1 >> ChannelDataExtended     <$> B.get <*> getUint32 <*> getString
-    96  -> B.skip 1 >> ChannelEof              <$> B.get
-    97  -> B.skip 1 >> ChannelClose            <$> B.get
-    98  -> B.skip 1 >> ChannelRequest          <$> B.get <*> B.get
-    99  -> B.skip 1 >> ChannelRequestSuccess   <$> B.get
-    100 -> B.skip 1 >> ChannelRequestFailure   <$> B.get
+    1   -> MsgDisconnect              <$> B.get
+    2   -> MsgIgnore                  <$> B.get
+    3   -> MsgUnimplemented           <$> B.get
+    5   -> MsgServiceRequest          <$> B.get
+    6   -> MsgServiceAccept           <$> B.get
+    50  -> MsgUserAuthRequest         <$> B.get
+    51  -> MsgUserAuthFailure         <$> B.get
+    52  -> MsgUserAuthSuccess         <$> B.get
+    53  -> MsgUserAuthBanner          <$> B.get
+    60  -> MsgUserAuthPublicKeyOk     <$> B.get
+    90  -> MsgChannelOpen             <$> B.get
+    91  -> MsgChannelOpenConfirmation <$> B.get
+    92  -> MsgChannelOpenFailure      <$> B.get
+    94  -> MsgChannelData             <$> B.get
+    95  -> MsgChannelDataExtended     <$> B.get
+    96  -> MsgChannelEof              <$> B.get
+    97  -> MsgChannelClose            <$> B.get
+    98  -> MsgChannelRequest          <$> B.get
+    99  -> MsgChannelRequestSuccess   <$> B.get
+    100 -> MsgChannelRequestFailure   <$> B.get
     x   -> fail ("UNKNOWN MESSAGE TYPE " ++ show x)
 
 instance B.Binary Disconnect where
@@ -299,6 +357,105 @@ instance B.Binary ServiceAccept where
   get = do
     getMsgType 6
     ServiceAccept <$> B.get
+
+instance B.Binary UserAuthRequest where
+  put (UserAuthRequest un sn am) = mconcat
+    [ putByte  50, B.put un, B.put sn, B.put am ]
+  get = do
+    getMsgType 50
+    UserAuthRequest <$> B.get <*> B.get <*> B.get
+
+instance B.Binary UserAuthFailure where
+  put (UserAuthFailure ms ps) = mconcat
+    [ putByte 51, putNameList ((\(AuthMethodName x)->x) <$> ms), putBool ps ]
+  get =  do
+    getMsgType 51
+    UserAuthFailure <$> (fmap AuthMethodName <$> getNameList) <*> getBool
+
+instance B.Binary UserAuthSuccess where
+  put UserAuthSuccess =
+    putByte 52
+  get = do
+    getMsgType 52
+    pure UserAuthSuccess
+
+instance B.Binary UserAuthBanner where
+  put (UserAuthBanner x y) = mconcat
+    [ putByte 53, putString x, putString y ]
+  get = do
+    getMsgType 53
+    UserAuthBanner <$> getString <*> getString
+
+instance B.Binary UserAuthPublicKeyOk where
+  put (UserAuthPublicKeyOk alg pk) =
+    putByte  60 <> B.put alg <> B.put pk
+  get = getMsgType 60 >> UserAuthPublicKeyOk <$> B.get <*> B.get
+
+instance B.Binary ChannelOpen where
+  put (ChannelOpen ct rid ws ps) =
+    putByte 90 <> B.put ct <> B.put rid <> B.put ws <> B.put ps
+  get = getMsgType 90 >> ChannelOpen <$> B.get <*> B.get <*> B.get  <*> B.get
+
+instance B.Binary ChannelOpenConfirmation where
+  put (ChannelOpenConfirmation (ChannelId a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d)) =
+    putByte 91 <> putUint32 a <> putUint32 b <> putUint32 c <> putUint32 d
+  get = getMsgType 91 >> ChannelOpenConfirmation <$> B.get <*> B.get <*> B.get  <*> B.get
+
+instance B.Binary ChannelOpenFailure where
+  put (ChannelOpenFailure (ChannelId rid) (ChannelOpenFailureReason reason descr lang)) =
+    putByte  92 <> putUint32 rid <> putUint32 reason <> putString descr <> putString lang
+  get = getMsgType 92 >> ChannelOpenFailure  <$> B.get <*> B.get
+
+instance B.Binary ChannelData where
+  put (ChannelData (ChannelId lid) bs) =
+    putByte  94 <> putUint32 lid <> putString bs
+  get = getMsgType 94 >> ChannelData <$> B.get <*> getString
+
+instance B.Binary ChannelDataExtended where
+  put (ChannelDataExtended (ChannelId lid) x bs) =
+    putByte  95 <> putUint32 lid <> putUint32 x <> putString bs
+  get = getMsgType 95 >> ChannelDataExtended <$> B.get <*> getUint32 <*> getString
+
+instance B.Binary ChannelEof where
+  put (ChannelEof (ChannelId lid)) =
+    putByte  96 <> putUint32 lid
+  get = getMsgType 96 >> ChannelEof <$> B.get
+
+instance B.Binary ChannelClose where
+  put (ChannelClose (ChannelId lid)) =
+    putByte  97 <> putUint32 lid
+  get = getMsgType 97 >> ChannelClose <$> B.get
+
+instance B.Binary ChannelRequest where
+  put = \case
+    ChannelRequestPty cid a b c d e f g -> mconcat
+      [ putByte 98, B.put cid, putString "pty-req", putBool a, putString b, putUint32 c, putUint32 d, putUint32 e, putUint32 f, putString g]
+    ChannelRequestShell cid wantReply -> mconcat
+      [ putByte 98, B.put cid, putString "shell", putBool wantReply ]
+    ChannelRequestOther cid other -> mconcat
+      [ putByte 98, B.put cid, putString other ]
+  get = getMsgType 98 >> B.get >>= \cid-> getString >>= \case
+    "pty-req" -> ChannelRequestPty cid
+      <$> getBool
+      <*> getString
+      <*> getUint32
+      <*> getUint32
+      <*> getUint32
+      <*> getUint32
+      <*> getString
+    "shell" -> ChannelRequestShell cid <$> getBool
+    other   -> ChannelRequestOther cid <$> pure other
+
+instance B.Binary ChannelRequestSuccess where
+  put (ChannelRequestSuccess (ChannelId lid)) =
+    putByte 99 <> putUint32 lid
+  get = getMsgType 99 >> ChannelRequestSuccess <$> B.get
+
+instance B.Binary ChannelRequestFailure where
+  put (ChannelRequestFailure (ChannelId lid)) =
+    putByte 100 <> putUint32 lid
+  get = getMsgType 100 >> ChannelRequestFailure   <$> B.get
+
 
 instance B.Binary Cookie where
   put (Cookie s) = B.putByteString s
@@ -358,26 +515,7 @@ instance B.Binary Version where
               _    -> stop
             x -> untilCRLF (i+1) (x:xs)
 
-instance B.Binary ChannelRequest where
-  put = \case
-    ChannelRequestPTY a b c d e f g -> mconcat
-      [ putString "pty-req", putBool a, putString b, putUint32 c, putUint32 d, putUint32 e, putUint32 f, putString g]
-    ChannelRequestShell wantReply -> mconcat
-      [ putString "shell", putBool wantReply ]
-    ChannelRequestOther other -> mconcat
-      [ putString other ]
 
-  get = getString >>= \case
-    "pty-req" -> ChannelRequestPTY
-      <$> getBool
-      <*> getString
-      <*> getUint32
-      <*> getUint32
-      <*> getUint32
-      <*> getUint32
-      <*> getString
-    "shell" -> ChannelRequestShell <$> getBool
-    other -> pure (ChannelRequestOther other)
 
 instance B.Binary AuthMethod where
   put = \case
