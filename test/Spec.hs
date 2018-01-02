@@ -85,6 +85,8 @@ instance Arbitrary Message where
     , MsgChannelRequest          <$> arbitrary
     , MsgChannelRequestSuccess   <$> arbitrary
     , MsgChannelRequestFailure   <$> arbitrary
+    , MsgUnknown                 <$> elements [ 128, 255 ]
+                                 <*> elements [ "", "unknown message payload" ]
     ]
 
 instance Arbitrary Disconnect where

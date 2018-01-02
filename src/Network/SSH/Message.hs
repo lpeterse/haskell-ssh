@@ -117,6 +117,7 @@ data Message
   | MsgChannelRequest          ChannelRequest
   | MsgChannelRequestSuccess   ChannelRequestSuccess
   | MsgChannelRequestFailure   ChannelRequestFailure
+  | MsgUnknown                 Word8 BS.ByteString
   deriving (Eq, Show)
 
 data Disconnect
@@ -340,6 +341,7 @@ instance B.Binary Message where
     MsgChannelRequest           x -> B.put x
     MsgChannelRequestSuccess    x -> B.put x
     MsgChannelRequestFailure    x -> B.put x
+    MsgUnknown              mt bs -> putByte mt <> B.putByteString bs
 
   get = B.lookAhead getByte >>= \case
     1   -> MsgDisconnect              <$> B.get
@@ -367,7 +369,7 @@ instance B.Binary Message where
     98  -> MsgChannelRequest          <$> B.get
     99  -> MsgChannelRequestSuccess   <$> B.get
     100 -> MsgChannelRequestFailure   <$> B.get
-    x   -> fail ("UNKNOWN MESSAGE TYPE " ++ show x)
+    _   -> MsgUnknown                 <$> B.getWord8 <*> (LBS.toStrict <$> B.getRemainingLazyByteString)
 
 instance B.Binary Disconnect where
   put (Disconnect c d l) = mconcat
