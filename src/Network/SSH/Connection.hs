@@ -1,6 +1,8 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Network.SSH.Connection where
+module Network.SSH.Connection
+  ( serveConnection
+   ) where
 
 import           Control.Concurrent
 import           Control.Concurrent.Async
@@ -14,7 +16,7 @@ import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
 import           Data.Typeable
 
-import           Network.SSH
+import           Network.SSH.Constants
 import           Network.SSH.Message
 
 data Connection
@@ -48,8 +50,8 @@ data ProtocolException
 
 instance Exception ProtocolException
 
-serve :: SessionId -> STM Message -> (Message -> STM ()) ->  IO ()
-serve sid input output = do
+serveConnection :: SessionId -> STM Message -> (Message -> STM ()) ->  IO ()
+serveConnection sid input output = do
   debug  <- newTChanIO
   chans  <- newTVarIO mempty
   (reqExec, runExec) <- setupExec
@@ -130,7 +132,7 @@ handleInput conn disconnect = receive conn >>= \case
           else println conn "AUTHFAILURE" >> send conn (MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False)
   MsgChannelOpen (ChannelOpen t rid ws ps) ->
     openChannel conn t rid ws ps >>= \case
-      Nothing  -> send conn $ MsgChannelOpenFailure $ ChannelOpenFailure rid (ChannelOpenFailureReason 4 "" "")
+      Nothing  -> send conn $ MsgChannelOpenFailure $ ChannelOpenFailure rid 4 "" ""
       Just ch  -> send conn $ MsgChannelOpenConfirmation $ ChannelOpenConfirmation
         (chanRemoteId ch)
         (chanLocalId ch)
@@ -222,3 +224,4 @@ closeChannel conn lid = do
       -- TODO: free all resources!
       writeTVar (channels conn) (M.insert lid Nothing cs)
       pure (Just $ chanRemoteId ch)
+

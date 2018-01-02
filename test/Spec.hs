@@ -148,7 +148,7 @@ instance Arbitrary ChannelOpenConfirmation where
   arbitrary = ChannelOpenConfirmation <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary ChannelOpenFailure where
-  arbitrary = ChannelOpenFailure <$> arbitrary <*> arbitrary
+  arbitrary = ChannelOpenFailure <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary ChannelData where
   arbitrary = ChannelData <$> arbitrary <*> arbitrary
@@ -185,9 +185,6 @@ deriving instance Arbitrary MaxPacketSize
 deriving instance Arbitrary InitWindowSize
 deriving instance Arbitrary ChannelId
 deriving instance Arbitrary ChannelType
-
-instance Arbitrary ChannelOpenFailureReason where
-  arbitrary = ChannelOpenFailureReason <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary Cookie where
   arbitrary = pure nilCookie

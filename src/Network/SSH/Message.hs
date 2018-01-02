@@ -55,12 +55,14 @@ module Network.SSH.Message
     -- ** ChannelRequestFailure (100)
   , ChannelRequestFailure (..)
 
+    -- * verifyAuthSignature
+  , verifyAuthSignature
+
     -- * Misc
   , Algorithm (..)
   , AuthMethod (..)
   , AuthMethodName (..)
   , ChannelId (..)
-  , ChannelOpenFailureReason (..)
   , ChannelType (..)
   , Cookie (), newCookie, nilCookie
   , InitWindowSize (..)
@@ -74,11 +76,13 @@ module Network.SSH.Message
   , Version (..)
   ) where
 
-import           Control.Monad            (unless, void, when)
+import           Control.Monad            (unless, void)
 import           Crypto.Error
+import qualified Crypto.Hash.Algorithms   as Hash
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
+import qualified Crypto.PubKey.RSA.PKCS15 as RSA.PKCS15
 import           Crypto.Random
 import qualified Data.Binary              as B
 import qualified Data.Binary.Get          as B
@@ -215,7 +219,7 @@ data ChannelOpenConfirmation
   deriving (Eq, Show)
 
 data ChannelOpenFailure
-  = ChannelOpenFailure ChannelId ChannelOpenFailureReason
+  = ChannelOpenFailure ChannelId Word32 BS.ByteString BS.ByteString
   deriving (Eq, Show)
 
 data ChannelData
@@ -261,14 +265,6 @@ data ChannelRequestSuccess
 
 data ChannelRequestFailure
   = ChannelRequestFailure ChannelId
-  deriving (Eq, Show)
-
-data ChannelOpenFailureReason
-  = ChannelOpenFailureReason
-  { reasonCode        :: Word32
-  , reasonDescription :: BS.ByteString
-  , reasonLanguageTag :: BS.ByteString
-  }
   deriving (Eq, Show)
 
 data AuthMethod
@@ -519,9 +515,9 @@ instance B.Binary ChannelOpenConfirmation where
   get = getMsgType 91 >> ChannelOpenConfirmation <$> B.get <*> B.get <*> B.get  <*> B.get
 
 instance B.Binary ChannelOpenFailure where
-  put (ChannelOpenFailure (ChannelId rid) (ChannelOpenFailureReason reason descr lang)) =
-    putByte  92 <> putUint32 rid <> putUint32 reason <> putString descr <> putString lang
-  get = getMsgType 92 >> ChannelOpenFailure  <$> B.get <*> B.get
+  put (ChannelOpenFailure rid reason descr lang) =
+    putByte  92 <> B.put rid <> putUint32 reason <> putString descr <> putString lang
+  get = getMsgType 92 >> ChannelOpenFailure  <$> B.get <*> getUint32 <*> getString <*> getString
 
 instance B.Binary ChannelData where
   put (ChannelData (ChannelId lid) bs) =
@@ -580,10 +576,6 @@ instance B.Binary Cookie where
 instance B.Binary Algorithm where
   put (Algorithm s) = putString s
   get = Algorithm <$> getString
-
-instance B.Binary ChannelOpenFailureReason where
-  put (ChannelOpenFailureReason c d l) = B.putWord32be c <> putString d <> putString l
-  get = ChannelOpenFailureReason <$> B.getWord32be <*> getString <*> getString
 
 instance B.Binary ChannelId where
   put (ChannelId x) = B.putWord32be x
@@ -803,3 +795,24 @@ msgTypeName :: Word8 -> String
 msgTypeName   1 = "SSH_MSG_DISCONNECT"
 msgTypeName  21 = "SSH_MSG_NEWKEYS"
 msgTypeName   x = "SSH_MSG_" ++ show x
+
+verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
+verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =
+  case (publicKey,signature) of
+    (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
+    (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
+    _                                        -> False
+  where
+    signedData :: BS.ByteString
+    signedData = LBS.toStrict $ B.runPut $ mconcat
+      [ B.put           sessionIdentifier
+      , B.putWord8      50
+      , B.put           userName
+      , B.put           serviceName
+      , B.putWord32be   9
+      , B.putByteString "publickey"
+      , B.putWord8      1
+      , B.put           algorithm
+      , B.put           publicKey
+      ]
+
