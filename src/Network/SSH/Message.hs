@@ -10,6 +10,8 @@ module Network.SSH.Message
   , Ignore (..)
     -- ** Unimplemented (3)
   , Unimplemented (..)
+    -- ** Debug (4)
+  , Debug (..)
     -- ** ServiceRequest (5)
   , ServiceRequest (..)
     -- ** ServiceAccept (6)
@@ -93,6 +95,7 @@ data Message
   = MsgDisconnect              Disconnect
   | MsgIgnore                  Ignore
   | MsgUnimplemented           Unimplemented
+  | MsgDebug                   Debug
   | MsgServiceRequest          ServiceRequest
   | MsgServiceAccept           ServiceAccept
   | MsgKexInit                 KexInit
@@ -130,6 +133,14 @@ data Ignore
 
 data Unimplemented
   = Unimplemented
+  deriving (Eq, Show)
+
+data Debug
+  = Debug
+  { debugAlwaysDisplay :: Bool
+  , debugMessage       :: BS.ByteString
+  , debugLanguageTag   :: BS.ByteString
+  }
   deriving (Eq, Show)
 
 data ServiceRequest
@@ -307,6 +318,7 @@ instance B.Binary Message where
     MsgDisconnect               x -> B.put x
     MsgIgnore                   x -> B.put x
     MsgUnimplemented            x -> B.put x
+    MsgDebug                    x -> B.put x
     MsgServiceRequest           x -> B.put x
     MsgServiceAccept            x -> B.put x
     MsgKexInit                  x -> B.put x
@@ -333,6 +345,7 @@ instance B.Binary Message where
     1   -> MsgDisconnect              <$> B.get
     2   -> MsgIgnore                  <$> B.get
     3   -> MsgUnimplemented           <$> B.get
+    4   -> MsgDebug                   <$> B.get
     5   -> MsgServiceRequest          <$> B.get
     6   -> MsgServiceAccept           <$> B.get
     20  -> MsgKexInit                 <$> B.get
@@ -381,6 +394,13 @@ instance B.Binary Unimplemented where
   get = do
     getMsgType 3
     pure Unimplemented
+
+instance B.Binary Debug where
+  put (Debug ad msg lang) = mconcat
+    [ putByte 4, putBool ad, putString msg, putString lang ]
+  get = do
+    getMsgType 4
+    Debug <$> getBool <*> getString <*> getString
 
 instance B.Binary ServiceRequest where
   put (ServiceRequest s) =

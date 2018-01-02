@@ -22,6 +22,7 @@ main = defaultMain $ testGroup "Network.SSH.Message"
     [ QC.testProperty ":: Disconnect"              (parserIdentity :: Disconnect              -> Property)
     , QC.testProperty ":: Ignore"                  (parserIdentity :: Ignore                  -> Property)
     , QC.testProperty ":: Unimplemented"           (parserIdentity :: Unimplemented           -> Property)
+    , QC.testProperty ":: Debug"                   (parserIdentity :: Debug                   -> Property)
     , QC.testProperty ":: ServiceRequest"          (parserIdentity :: ServiceRequest          -> Property)
     , QC.testProperty ":: ServiceAccept"           (parserIdentity :: ServiceAccept           -> Property)
     , QC.testProperty ":: KexInit"                 (parserIdentity :: KexInit                 -> Property)
@@ -62,6 +63,7 @@ instance Arbitrary Message where
     [ MsgDisconnect              <$> arbitrary
     , MsgIgnore                  <$> arbitrary
     , MsgUnimplemented           <$> arbitrary
+    , MsgDebug                   <$> arbitrary
     , MsgServiceRequest          <$> arbitrary
     , MsgServiceAccept           <$> arbitrary
     , MsgKexInit                 <$> arbitrary
@@ -93,6 +95,12 @@ instance Arbitrary Ignore where
 
 instance Arbitrary Unimplemented where
   arbitrary = pure Unimplemented
+
+instance Arbitrary Debug where
+  arbitrary = Debug
+    <$> arbitrary
+    <*> elements [ "", "debug message", "debug message containing\n linefeeds\n\r" ]
+    <*> elements [ "", "de_DE", "en_US" ]
 
 instance Arbitrary ServiceRequest where
   arbitrary = ServiceRequest <$> arbitrary
