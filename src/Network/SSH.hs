@@ -61,7 +61,7 @@ exchangeHash ::
   Version ->               -- server version string
   KexInit ->               -- client kex init msg
   KexInit ->               -- server kex init msg
-  Ed25519.PublicKey ->     -- server host key
+  PublicKey ->             -- server host key
   Curve25519.PublicKey ->  -- client ephemeral key
   Curve25519.PublicKey ->  -- server ephemeral key
   Curve25519.DhSecret ->   -- dh secret
@@ -73,12 +73,10 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
   , B.putWord32be              vsLen
   , B.putByteString            vs
   , B.putWord32be              icLen
-  , B.putWord8                 20 -- SSH2_MSG_KEXINIT
   , B.put                      ic
   , B.putWord32be              isLen
-  , B.putWord8                 20 -- SSH2_MSG_KEXINIT
   , B.put                      is
-  , ed25519PublicKeyBuilder    ks
+  , B.put                      ks
   , curve25519BlobBuilder      qc
   , curve25519BlobBuilder      qs
   , putMpint (BA.unpack k)
@@ -86,17 +84,8 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
   where
     vcLen = fromIntegral $     BS.length vc
     vsLen = fromIntegral $     BS.length vs
-    icLen = fromIntegral $ 1 + LBS.length (B.runPut $ B.put ic)
-    isLen = fromIntegral $ 1 + LBS.length (B.runPut $ B.put is)
-
-    ed25519PublicKeyBuilder :: Ed25519.PublicKey -> B.Put
-    ed25519PublicKeyBuilder key = mconcat
-      [ B.putWord32be     51 -- host key len
-      , B.putWord32be     11 -- host key algorithm name len
-      , B.putByteString   "ssh-ed25519"
-      , B.putWord32be     32 -- host key data len
-      , B.putByteString $ BS.pack $ BA.unpack key
-      ]
+    icLen = fromIntegral $ LBS.length (B.runPut $ B.put ic)
+    isLen = fromIntegral $ LBS.length (B.runPut $ B.put is)
 
     curve25519BlobBuilder :: Curve25519.PublicKey -> B.Put
     curve25519BlobBuilder key =

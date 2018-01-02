@@ -1,16 +1,18 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE StandaloneDeriving         #-}
+
 import           Crypto.Error
-import qualified Crypto.PubKey.Ed25519 as Ed25519
-import qualified Crypto.PubKey.RSA     as RSA
-import qualified Data.Binary           as B
-import qualified Data.Binary.Get       as B
-import qualified Data.Binary.Put       as B
-import qualified Data.ByteString       as BS
+import qualified Crypto.PubKey.Curve25519 as Curve25519
+import qualified Crypto.PubKey.Ed25519    as Ed25519
+import qualified Crypto.PubKey.RSA        as RSA
+import qualified Data.Binary              as B
+import qualified Data.Binary.Get          as B
+import qualified Data.Binary.Put          as B
+import qualified Data.ByteString          as BS
 
 import           Test.Tasty
-import           Test.Tasty.QuickCheck as QC
+import           Test.Tasty.QuickCheck    as QC
 
 import           Network.SSH.Message
 
@@ -22,6 +24,10 @@ main = defaultMain $ testGroup "Network.SSH.Message"
     , QC.testProperty ":: Unimplemented"           (parserIdentity :: Unimplemented           -> Property)
     , QC.testProperty ":: ServiceRequest"          (parserIdentity :: ServiceRequest          -> Property)
     , QC.testProperty ":: ServiceAccept"           (parserIdentity :: ServiceAccept           -> Property)
+    , QC.testProperty ":: KexInit"                 (parserIdentity :: KexInit                 -> Property)
+    , QC.testProperty ":: NewKeys"                 (parserIdentity :: NewKeys                 -> Property)
+    , QC.testProperty ":: KexEcdhInit"             (parserIdentity :: KexEcdhInit             -> Property)
+    , QC.testProperty ":: KexEcdhReply"            (parserIdentity :: KexEcdhReply            -> Property)
     , QC.testProperty ":: UserAuthRequest"         (parserIdentity :: UserAuthRequest         -> Property)
     , QC.testProperty ":: UserAuthFailure"         (parserIdentity :: UserAuthFailure         -> Property)
     , QC.testProperty ":: UserAuthSuccess"         (parserIdentity :: UserAuthSuccess         -> Property)
@@ -58,6 +64,10 @@ instance Arbitrary Message where
     , MsgUnimplemented           <$> arbitrary
     , MsgServiceRequest          <$> arbitrary
     , MsgServiceAccept           <$> arbitrary
+    , MsgKexInit                 <$> arbitrary
+    , MsgNewKeys                 <$> arbitrary
+    , MsgKexEcdhInit             <$> arbitrary
+    , MsgKexEcdhReply            <$> arbitrary
     , MsgUserAuthRequest         <$> arbitrary
     , MsgUserAuthFailure         <$> arbitrary
     , MsgUserAuthSuccess         <$> arbitrary
@@ -89,6 +99,22 @@ instance Arbitrary ServiceRequest where
 
 instance Arbitrary ServiceAccept where
   arbitrary = ServiceAccept <$> arbitrary
+
+instance Arbitrary KexInit where
+  arbitrary = KexInit <$> arbitrary <*> nameList  <*> nameList  <*> nameList
+                      <*> nameList  <*> nameList  <*> nameList  <*> nameList
+                      <*> nameList  <*> nameList  <*> nameList  <*> arbitrary
+    where
+      nameList = elements [ [], ["abc"], ["abc","def"] ]
+
+instance Arbitrary NewKeys where
+  arbitrary = pure NewKeys
+
+instance Arbitrary KexEcdhInit where
+  arbitrary = KexEcdhInit <$> arbitrary
+
+instance Arbitrary KexEcdhReply where
+  arbitrary = KexEcdhReply <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary UserAuthRequest where
   arbitrary = UserAuthRequest <$> arbitrary <*> arbitrary <*> arbitrary
@@ -153,6 +179,9 @@ deriving instance Arbitrary ChannelType
 instance Arbitrary ChannelOpenFailureReason where
   arbitrary = ChannelOpenFailureReason <$> arbitrary <*> arbitrary <*> arbitrary
 
+instance Arbitrary Cookie where
+  arbitrary = pure nilCookie
+
 instance Arbitrary Password where
   arbitrary = elements $ fmap Password
     [ "1234567890"
@@ -216,3 +245,8 @@ instance Arbitrary Signature where
         CryptoFailed _   -> undefined
       x2 = pure "SIGNATURE_RSA"
       x3 = pure "SIGNATURE_OTHER"
+
+instance Arbitrary Curve25519.PublicKey where
+  arbitrary = pure $ case Curve25519.publicKey ("\179g~\181\170\169\154\205\211\ft\162\&0@0dO\FS\DLEA\166@[r\150t~W\221cOF" :: BS.ByteString) of
+    CryptoPassed pk -> pk
+    CryptoFailed _  -> undefined

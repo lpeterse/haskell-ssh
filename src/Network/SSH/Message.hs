@@ -2,41 +2,67 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Message
-  ( Disconnect (..)
+  ( -- * Message
+    Message (..)
+    -- ** Disconnect (1)
+  , Disconnect (..)
+    -- ** Ignore (2)
   , Ignore (..)
+    -- ** Unimplemented (3)
   , Unimplemented (..)
+    -- ** ServiceRequest (5)
   , ServiceRequest (..)
+    -- ** ServiceAccept (6)
   , ServiceAccept (..)
+    -- ** KexInit (20)
+  , KexInit (..)
+    -- ** NewKeys (21)
+  , NewKeys (..)
+    -- ** KexEcdhInit (30)
+  , KexEcdhInit (..)
+    -- ** KexEcdhReply (31)
+  , KexEcdhReply (..)
+    -- ** UserAuthRequest (50)
   , UserAuthRequest (..)
+    -- ** UserAuthFailure (51)
   , UserAuthFailure (..)
+    -- ** UserAuthSuccess (52)
   , UserAuthSuccess (..)
+    -- ** UserAuthBanner (53)
   , UserAuthBanner (..)
+    -- ** UserAuthPublicKeyOk (60)
   , UserAuthPublicKeyOk (..)
+    -- ** ChannelOpen (90)
   , ChannelOpen (..)
+    -- ** ChannelOpenConfirmation (91)
   , ChannelOpenConfirmation (..)
+    -- ** ChannelOpenFailure (92)
   , ChannelOpenFailure (..)
+    -- ** ChannelData (94)
   , ChannelData (..)
+    -- ** ChannelDataExtended (95)
   , ChannelDataExtended (..)
+    -- ** ChannelEof (96)
   , ChannelEof (..)
+    -- ** ChannelClose (97)
   , ChannelClose (..)
+    -- ** ChannelRequest (98)
   , ChannelRequest (..)
+    -- ** ChannelRequestSuccess (99)
   , ChannelRequestSuccess (..)
+    -- ** ChannelRequestFailure (100)
   , ChannelRequestFailure (..)
 
-  , Message (..)
+    -- * Misc
   , Algorithm (..)
   , AuthMethod (..)
   , AuthMethodName (..)
   , ChannelId (..)
   , ChannelOpenFailureReason (..)
   , ChannelType (..)
-  , Cookie (), newCookie
+  , Cookie (), newCookie, nilCookie
   , InitWindowSize (..)
-  , KexInit (..)
-  , KexEcdhInit (..)
-  , KexEcdhReply (..)
   , MaxPacketSize (..)
-  , NewKeys (..)
   , Password (..)
   , PublicKey (..)
   , ServiceName (..)
@@ -69,6 +95,10 @@ data Message
   | MsgUnimplemented           Unimplemented
   | MsgServiceRequest          ServiceRequest
   | MsgServiceAccept           ServiceAccept
+  | MsgKexInit                 KexInit
+  | MsgNewKeys                 NewKeys
+  | MsgKexEcdhInit             KexEcdhInit
+  | MsgKexEcdhReply            KexEcdhReply
   | MsgUserAuthRequest         UserAuthRequest
   | MsgUserAuthFailure         UserAuthFailure
   | MsgUserAuthSuccess         UserAuthSuccess
@@ -86,29 +116,13 @@ data Message
   | MsgChannelRequestFailure   ChannelRequestFailure
   deriving (Eq, Show)
 
-newtype Cookie           = Cookie           BS.ByteString deriving (Eq, Ord, Show)
-
-newCookie :: MonadRandom m => m Cookie
-newCookie = Cookie <$> getRandomBytes 16
-
-newtype Version          = Version          BS.ByteString deriving (Eq, Ord, Show)
-newtype Algorithm        = Algorithm        BS.ByteString deriving (Eq, Ord, Show)
-newtype Password         = Password         BS.ByteString deriving (Eq, Ord, Show)
-newtype SessionId        = SessionId        BS.ByteString deriving (Eq, Ord, Show)
-newtype UserName         = UserName         BS.ByteString deriving (Eq, Ord, Show)
-newtype AuthMethodName   = AuthMethodName   BS.ByteString deriving (Eq, Ord, Show)
-newtype ServiceName      = ServiceName      BS.ByteString deriving (Eq, Ord, Show)
-newtype ChannelType      = ChannelType      BS.ByteString deriving (Eq, Ord, Show)
-newtype ChannelId        = ChannelId        Word32        deriving (Eq, Ord, Show)
-newtype InitWindowSize   = InitWindowSize   Word32        deriving (Eq, Ord, Show)
-newtype MaxPacketSize    = MaxPacketSize    Word32        deriving (Eq, Ord, Show)
-
 data Disconnect
   = Disconnect
   { disconnectReasonCode  :: Word32
   , disconnectDescription :: BS.ByteString
   , disconnectLanguagtTag :: BS.ByteString
-  } deriving (Eq, Show)
+  }
+  deriving (Eq, Show)
 
 data Ignore
   = Ignore
@@ -124,6 +138,40 @@ data ServiceRequest
 
 data ServiceAccept
   = ServiceAccept ServiceName
+  deriving (Eq, Show)
+
+data KexInit
+  = KexInit
+  { kexCookie                              :: Cookie
+  , kexAlgorithms                          :: [BS.ByteString]
+  , kexServerHostKeyAlgorithms             :: [BS.ByteString]
+  , kexEncryptionAlgorithmsClientToServer  :: [BS.ByteString]
+  , kexEncryptionAlgorithmsServerToClient  :: [BS.ByteString]
+  , kexMacAlgorithmsClientToServer         :: [BS.ByteString]
+  , kexMacAlgorithmsServerToClient         :: [BS.ByteString]
+  , kexCompressionAlgorithmsClientToServer :: [BS.ByteString]
+  , kexCompressionAlgorithmsServerToClient :: [BS.ByteString]
+  , kexLanguagesClientToServer             :: [BS.ByteString]
+  , kexLanguagesServerToClient             :: [BS.ByteString]
+  , kexFirstPacketFollows                  :: Bool
+  } deriving (Eq, Show)
+
+data NewKeys
+  = NewKeys
+  deriving (Eq, Show)
+
+data KexEcdhInit
+  = KexEcdhInit
+  { kexClientEphemeralKey :: Curve25519.PublicKey
+  }
+  deriving (Eq, Show)
+
+data KexEcdhReply
+  = KexEcdhReply
+  { kexServerHostKey      :: PublicKey
+  , kexServerEphemeralKey :: Curve25519.PublicKey
+  , kexHashSignature      :: Signature
+  }
   deriving (Eq, Show)
 
 data UserAuthRequest
@@ -203,38 +251,6 @@ data ChannelRequestFailure
   = ChannelRequestFailure ChannelId
   deriving (Eq, Show)
 
-data NewKeys
-  = NewKeys
-  deriving (Eq, Show)
-
-data KexInit
-  = KexInit
-  { kexCookie                              :: Cookie
-  , kexAlgorithms                          :: [BS.ByteString]
-  , kexServerHostKeyAlgorithms             :: [BS.ByteString]
-  , kexEncryptionAlgorithmsClientToServer  :: [BS.ByteString]
-  , kexEncryptionAlgorithmsServerToClient  :: [BS.ByteString]
-  , kexMacAlgorithmsClientToServer         :: [BS.ByteString]
-  , kexMacAlgorithmsServerToClient         :: [BS.ByteString]
-  , kexCompressionAlgorithmsClientToServer :: [BS.ByteString]
-  , kexCompressionAlgorithmsServerToClient :: [BS.ByteString]
-  , kexLanguagesClientToServer             :: [BS.ByteString]
-  , kexLanguagesServerToClient             :: [BS.ByteString]
-  , kexFirstPacketFollows                  :: Bool
-  } deriving (Eq, Ord, Show)
-
-data KexEcdhInit
-  = KexEcdhInit
-  { kexClientEphemeralKey :: Curve25519.PublicKey
-  } deriving (Eq, Show)
-
-data KexEcdhReply
-  = KexEcdhReply
-  { kexServerHostKey      :: Ed25519.PublicKey
-  , kexServerEphemeralKey :: Curve25519.PublicKey
-  , kexHashSignature      :: Ed25519.Signature
-  } deriving (Eq, Show)
-
 data ChannelOpenFailureReason
   = ChannelOpenFailureReason
   { reasonCode        :: Word32
@@ -262,6 +278,26 @@ data Signature
   | SignatureOther   BS.ByteString BS.ByteString
   deriving (Eq, Show)
 
+newtype Cookie           = Cookie           BS.ByteString deriving (Eq, Ord, Show)
+
+newCookie :: MonadRandom m => m Cookie
+newCookie  = Cookie <$> getRandomBytes 16
+
+nilCookie :: Cookie
+nilCookie  = Cookie  $  BS.replicate 16 0
+
+newtype Version          = Version          BS.ByteString deriving (Eq, Ord, Show)
+newtype Algorithm        = Algorithm        BS.ByteString deriving (Eq, Ord, Show)
+newtype Password         = Password         BS.ByteString deriving (Eq, Ord, Show)
+newtype SessionId        = SessionId        BS.ByteString deriving (Eq, Ord, Show)
+newtype UserName         = UserName         BS.ByteString deriving (Eq, Ord, Show)
+newtype AuthMethodName   = AuthMethodName   BS.ByteString deriving (Eq, Ord, Show)
+newtype ServiceName      = ServiceName      BS.ByteString deriving (Eq, Ord, Show)
+newtype ChannelType      = ChannelType      BS.ByteString deriving (Eq, Ord, Show)
+newtype ChannelId        = ChannelId        Word32        deriving (Eq, Ord, Show)
+newtype InitWindowSize   = InitWindowSize   Word32        deriving (Eq, Ord, Show)
+newtype MaxPacketSize    = MaxPacketSize    Word32        deriving (Eq, Ord, Show)
+
 -------------------------------------------------------------------------------
 -- Binary instances
 -------------------------------------------------------------------------------
@@ -273,6 +309,10 @@ instance B.Binary Message where
     MsgUnimplemented            x -> B.put x
     MsgServiceRequest           x -> B.put x
     MsgServiceAccept            x -> B.put x
+    MsgKexInit                  x -> B.put x
+    MsgNewKeys                  x -> B.put x
+    MsgKexEcdhInit              x -> B.put x
+    MsgKexEcdhReply             x -> B.put x
     MsgUserAuthRequest          x -> B.put x
     MsgUserAuthFailure          x -> B.put x
     MsgUserAuthSuccess          x -> B.put x
@@ -295,6 +335,10 @@ instance B.Binary Message where
     3   -> MsgUnimplemented           <$> B.get
     5   -> MsgServiceRequest          <$> B.get
     6   -> MsgServiceAccept           <$> B.get
+    20  -> MsgKexInit                 <$> B.get
+    21  -> MsgNewKeys                 <$> B.get
+    30  -> MsgKexEcdhInit             <$> B.get
+    31  -> MsgKexEcdhReply            <$> B.get
     50  -> MsgUserAuthRequest         <$> B.get
     51  -> MsgUserAuthFailure         <$> B.get
     52  -> MsgUserAuthSuccess         <$> B.get
@@ -338,12 +382,6 @@ instance B.Binary Unimplemented where
     getMsgType 3
     pure Unimplemented
 
-instance B.Binary NewKeys where
-  put NewKeys = B.putWord8 21
-  get = do
-    getMsgType 21
-    pure NewKeys
-
 instance B.Binary ServiceRequest where
   put (ServiceRequest s) =
     putByte 5 <> B.put s
@@ -357,6 +395,63 @@ instance B.Binary ServiceAccept where
   get = do
     getMsgType 6
     ServiceAccept <$> B.get
+
+instance B.Binary KexInit where
+  put kex = mconcat
+    [ putByte     20
+    , B.put       (kexCookie                              kex)
+    , putNameList (kexAlgorithms                          kex)
+    , putNameList (kexServerHostKeyAlgorithms             kex)
+    , putNameList (kexEncryptionAlgorithmsClientToServer  kex)
+    , putNameList (kexEncryptionAlgorithmsServerToClient  kex)
+    , putNameList (kexMacAlgorithmsClientToServer         kex)
+    , putNameList (kexMacAlgorithmsServerToClient         kex)
+    , putNameList (kexCompressionAlgorithmsClientToServer kex)
+    , putNameList (kexCompressionAlgorithmsServerToClient kex)
+    , putNameList (kexLanguagesClientToServer             kex)
+    , putNameList (kexLanguagesServerToClient             kex)
+    , putBool     (kexFirstPacketFollows                  kex)
+    , putUint32   0 -- reserved for future extensions
+    ]
+  get = do
+    getMsgType 20
+    kex <- KexInit
+      <$> B.get
+      <*> getNameList <*> getNameList <*> getNameList <*> getNameList
+      <*> getNameList <*> getNameList <*> getNameList <*> getNameList
+      <*> getNameList <*> getNameList <*> getBool
+    void getUint32 -- reserved for future extensions
+    pure kex
+
+instance B.Binary NewKeys where
+  put NewKeys = B.putWord8 21
+  get = do
+    getMsgType 21
+    pure NewKeys
+
+instance B.Binary KexEcdhInit where
+  put (KexEcdhInit ephemeralKey) = mconcat
+    [ putByte 30
+    , putCurve25519PK ephemeralKey
+    ]
+  get = do
+    getMsgType 30
+    KexEcdhInit
+      <$> getCurve25519PK
+
+instance B.Binary KexEcdhReply where
+  put (KexEcdhReply hostKey ephemeralKey signature) = mconcat
+    [ B.putWord8 31
+    , B.put hostKey
+    , putCurve25519PK ephemeralKey
+    , B.put signature
+    ]
+  get = do
+    getMsgType 31
+    KexEcdhReply
+      <$> B.get
+      <*> getCurve25519PK
+      <*> B.get
 
 instance B.Binary UserAuthRequest where
   put (UserAuthRequest un sn am) = mconcat
@@ -456,7 +551,6 @@ instance B.Binary ChannelRequestFailure where
     putByte 100 <> putUint32 lid
   get = getMsgType 100 >> ChannelRequestFailure   <$> B.get
 
-
 instance B.Binary Cookie where
   put (Cookie s) = B.putByteString s
   get = Cookie <$> B.getByteString 16
@@ -514,8 +608,6 @@ instance B.Binary Version where
               0x0a -> pure $ Version $ BS.pack (reverse xs)
               _    -> stop
             x -> untilCRLF (i+1) (x:xs)
-
-
 
 instance B.Binary AuthMethod where
   put = \case
@@ -595,64 +687,6 @@ instance B.Binary Signature where
     other ->
       SignatureOther other <$> getString
 
-instance B.Binary KexInit where
-  put kex = mconcat
-    [ B.put       (kexCookie                              kex)
-    , putNameList (kexAlgorithms                          kex)
-    , putNameList (kexServerHostKeyAlgorithms             kex)
-    , putNameList (kexEncryptionAlgorithmsClientToServer  kex)
-    , putNameList (kexEncryptionAlgorithmsServerToClient  kex)
-    , putNameList (kexMacAlgorithmsClientToServer         kex)
-    , putNameList (kexMacAlgorithmsServerToClient         kex)
-    , putNameList (kexCompressionAlgorithmsClientToServer kex)
-    , putNameList (kexCompressionAlgorithmsServerToClient kex)
-    , putNameList (kexLanguagesClientToServer             kex)
-    , putNameList (kexLanguagesServerToClient             kex)
-    , putBool     (kexFirstPacketFollows                  kex)
-    , putUint32   0 -- reserved for future extensions
-    ]
-  get = do
-    kex <- KexInit
-      <$> B.get
-      <*> getNameList <*> getNameList <*> getNameList <*> getNameList
-      <*> getNameList <*> getNameList <*> getNameList <*> getNameList
-      <*> getNameList <*> getNameList <*> getBool
-    void getUint32 -- reserved for future extensions
-    pure kex
-
-instance B.Binary KexEcdhInit where
-  put = undefined
-  get = do
-    msg <- B.getWord8
-    when (msg /= 30) (fail "expected SSH_MSG_KEX_ECDH_INIT")
-    keySize <- B.getWord32be
-    when (keySize /= 32) (fail "expected key size to be 32 bytes")
-    bs <- B.getByteString 32
-    case Curve25519.publicKey bs of
-      CryptoPassed a -> pure (KexEcdhInit a)
-      CryptoFailed e -> fail (show e)
-
-instance B.Binary KexEcdhReply where
-  put x = mconcat
-    [ B.putWord8        31 -- message type
-    , B.putWord32be     51 -- host key len
-    , B.putWord32be     11 -- host key algorithm name len
-    , B.putByteString   "ssh-ed25519"
-    , B.putWord32be     32 -- host key data len
-    , B.putByteString $ BS.pack $ BA.unpack (kexServerHostKey x)
-    , B.putWord32be     32 -- ephemeral key len
-    , B.putByteString $ BS.pack $ BA.unpack (kexServerEphemeralKey x)
-    , B.putWord32be   $ 4 + 11 + 4 + fromIntegral signatureLen
-    , B.putWord32be     11 -- algorithm name len
-    , B.putByteString   "ssh-ed25519"
-    , B.putWord32be   $ fromIntegral signatureLen
-    , B.putByteString   signature
-    ]
-    where
-      signature    = BS.pack $ BA.unpack (kexHashSignature x)
-      signatureLen = BS.length signature
-  get = undefined
-
 -------------------------------------------------------------------------------
 -- Util functions
 -------------------------------------------------------------------------------
@@ -672,6 +706,9 @@ putNameList xs =
 
 getSize    :: B.Get Int
 getSize     = fromIntegral <$> getUint32
+
+--putSize    :: Int -> B.Put
+--putSize     = putUint32 . fromIntegral
 
 getBool    :: B.Get Bool
 getBool     = getByte >>= \case { 0 -> pure False; _ -> pure True; }
@@ -696,6 +733,14 @@ getString   = B.getByteString =<< getSize
 
 putString  :: BS.ByteString -> B.Put
 putString x = B.putWord32be (fromIntegral $ BS.length x) <> B.putByteString x
+
+getCurve25519PK :: B.Get Curve25519.PublicKey
+getCurve25519PK = getString >>= \s-> case Curve25519.publicKey s of
+  CryptoPassed pk -> pure pk
+  CryptoFailed e  -> fail (show e)
+
+putCurve25519PK :: Curve25519.PublicKey -> B.Put
+putCurve25519PK = putString . BS.pack . BA.unpack
 
 -- Observing the encoded length is far cheaper than calculating the
 -- log2 of the resulting integer.
