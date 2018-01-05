@@ -10,6 +10,7 @@ import qualified Data.Binary              as B
 import qualified Data.Binary.Get          as B
 import qualified Data.Binary.Put          as B
 import qualified Data.ByteString          as BS
+import           System.Exit
 
 import           Test.Tasty
 import           Test.Tasty.QuickCheck    as QC
@@ -164,9 +165,11 @@ instance Arbitrary ChannelClose where
 
 instance Arbitrary ChannelRequest where
   arbitrary = oneof
-    [ ChannelRequestPty   <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-    , ChannelRequestShell <$> arbitrary <*> arbitrary
-    , ChannelRequestOther <$> arbitrary <*> arbitrary
+    [ ChannelRequestPty        <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+    , ChannelRequestShell      <$> arbitrary <*> arbitrary
+    , ChannelRequestExitStatus <$> arbitrary <*> arbitrary
+    , ChannelRequestExitSignal <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+    , ChannelRequestOther      <$> arbitrary <*> arbitrary
     ]
 
 instance Arbitrary ChannelRequestSuccess where
@@ -257,3 +260,10 @@ instance Arbitrary Curve25519.PublicKey where
   arbitrary = pure $ case Curve25519.publicKey ("\179g~\181\170\169\154\205\211\ft\162\&0@0dO\FS\DLEA\166@[r\150t~W\221cOF" :: BS.ByteString) of
     CryptoPassed pk -> pk
     CryptoFailed _  -> undefined
+
+instance Arbitrary ExitCode where
+  arbitrary = elements
+    [ ExitSuccess
+    , ExitFailure 1
+    , ExitFailure 255
+    ]

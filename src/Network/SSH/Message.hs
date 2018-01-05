@@ -94,6 +94,7 @@ import           Data.Foldable
 import qualified Data.List                as L
 import           Data.Monoid              ((<>))
 import           Data.Word
+import           System.Exit
 
 data Message
   = MsgDisconnect              Disconnect
@@ -252,6 +253,17 @@ data ChannelRequest
   | ChannelRequestShell
     { crChannelId :: ChannelId
     , crWantReply :: Bool
+    }
+  | ChannelRequestExitStatus
+    { crChannelId  :: ChannelId
+    , crExitStatus :: ExitCode
+    }
+  | ChannelRequestExitSignal
+    { crChannelId    :: ChannelId
+    , crSignalName   :: BS.ByteString
+    , crCodeDumped   :: Bool
+    , crErrorMessage :: BS.ByteString
+    , crLanguageTag  :: BS.ByteString
     }
   | ChannelRequestOther
     { crChannelId :: ChannelId
@@ -541,10 +553,17 @@ instance B.Binary ChannelClose where
 
 instance B.Binary ChannelRequest where
   put = \case
-    ChannelRequestPty cid a b c d e f g -> mconcat
-      [ putByte 98, B.put cid, putString "pty-req", putBool a, putString b, putUint32 c, putUint32 d, putUint32 e, putUint32 f, putString g]
+    ChannelRequestPty cid wantReply b c d e f g -> mconcat
+      [ putByte 98, B.put cid, putString "pty-req", putBool wantReply
+                  , putString b, putUint32 c, putUint32 d, putUint32 e, putUint32 f, putString g]
     ChannelRequestShell cid wantReply -> mconcat
       [ putByte 98, B.put cid, putString "shell", putBool wantReply ]
+    ChannelRequestExitStatus cid status -> mconcat
+      [ putByte 98, B.put cid, putString "exit-status", putBool False
+                  , putUint32 $ case status of { ExitSuccess -> 0; ExitFailure x -> fromIntegral x; } ]
+    ChannelRequestExitSignal cid signame coredump errmsg lang -> mconcat
+      [ putByte 98, B.put cid, putString "exit-signal", putBool False
+                  , putString signame, putBool coredump, putString errmsg, putString lang ]
     ChannelRequestOther cid other -> mconcat
       [ putByte 98, B.put cid, putString other ]
   get = getMsgType 98 >> B.get >>= \cid-> getString >>= \case
@@ -556,7 +575,21 @@ instance B.Binary ChannelRequest where
       <*> getUint32
       <*> getUint32
       <*> getString
-    "shell" -> ChannelRequestShell cid <$> getBool
+    "shell" -> ChannelRequestShell cid
+      <$> getBool
+    "exit-status" -> do
+      getFalse
+      status <- getUint32
+      pure $ ChannelRequestExitStatus cid $ case status `mod` 256 of
+        0 -> ExitSuccess
+        x -> ExitFailure (fromIntegral x)
+    "exit-signal" -> do
+      getFalse
+      ChannelRequestExitSignal cid
+        <$> getString
+        <*> getBool
+        <*> getString
+        <*> getString
     other   -> ChannelRequestOther cid <$> pure other
 
 instance B.Binary ChannelRequestSuccess where
@@ -726,6 +759,12 @@ getSize     = fromIntegral <$> getUint32
 
 getBool    :: B.Get Bool
 getBool     = getByte >>= \case { 0 -> pure False; _ -> pure True; }
+
+getTrue    :: B.Get ()
+getTrue     = getByte >>= \case { 1 -> pure (); _ -> fail "expected TRUE"; }
+
+getFalse   :: B.Get ()
+getFalse    = getByte >>= \case { 0 -> pure (); _ -> fail "expected FALSE"; }
 
 putBool    :: Bool -> B.Put
 putBool   x = B.putWord8 (if x then 0x01 else 0x00)

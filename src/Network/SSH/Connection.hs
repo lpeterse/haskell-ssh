@@ -84,7 +84,7 @@ serveConnection config sid input output = do
       (disconnect, isDisconnected) <- newTVarIO False >>= \d-> pure (writeTVar d True, readTVarIO d)
       fix $ \continue-> do
         atomically $ handleInput config conn disconnect
-          `orElse` handleChannelFds conn
+            `orElse` handleChannels conn
         isDisconnected >>= \case
           True  -> pure ()  -- this is the only thread that may return
           False -> continue
@@ -184,18 +184,24 @@ handleInput config conn disconnect = receive conn >>= \case
         ch <- getChannel conn lid
         send conn (MsgChannelRequestFailure $ ChannelRequestFailure $ chanRemoteId ch)
 
-handleChannelFds :: Connection -> STM ()
-handleChannelFds conn =
-  tryAny (\ch-> h1 ch `orElse` h2 ch) =<< readTVar (channels conn)
+handleChannels :: Connection -> STM ()
+handleChannels conn =
+  tryAny (\ch-> h1 ch `orElse` h2 ch `orElse` h3 ch) =<< readTVar (channels conn)
   where
     h1 Nothing = retry
     h1 (Just ch) = do
       bs <- readTChan (chanWriteFd ch)
       send conn (MsgChannelData $ ChannelData (chanRemoteId ch) bs)
+
     h2 Nothing = retry
     h2 (Just ch) = do
       bs <- readTChan (chanExtendedFd ch)
       send conn (MsgChannelDataExtended $ ChannelDataExtended (chanRemoteId ch) 0 bs)
+
+    h3 Nothing = retry
+    h3 (Just ch) = readTVar (chanProc ch) >>= \case
+      Just (ProcTerminated ec) -> pure ()
+      _ -> retry
 
     tryAny :: (Maybe Channel -> STM ()) -> M.Map ChannelId (Maybe Channel) -> STM ()
     tryAny f m = M.foldr orElse retry (M.map f m)
