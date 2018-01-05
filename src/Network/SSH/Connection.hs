@@ -9,13 +9,16 @@ import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Exception
-import           Control.Monad                (forever)
+import           Control.Monad                (forever, unless, when)
 import           Control.Monad.STM
 import qualified Data.ByteString              as BS
 import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
+import           Data.Maybe
 import           Data.Typeable
+import           System.Exit
 
+import           Network.SSH.Config
 import           Network.SSH.Constants
 import           Network.SSH.Message
 
@@ -25,7 +28,7 @@ data Connection
   , receive   :: STM Message
   , send      :: Message -> STM ()
   , println   :: String -> STM ()
-  , exec      :: STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> STM () -> STM ()
+  , exec      :: IO () -> STM ()
   , channels  :: TVar (M.Map ChannelId (Maybe Channel))
   }
 
@@ -39,9 +42,13 @@ data Channel
   , chanReadFd         :: TChan BS.ByteString
   , chanWriteFd        :: TChan BS.ByteString
   , chanExtendedFd     :: TChan BS.ByteString
-  , chanClose          :: STM ()
-  , chanWaitClosed     :: STM ()
+  , chanProc           :: TVar (Maybe ProcStatus)
+  , chanClosed         :: TVar Bool
   }
+
+data ProcStatus
+  = ProcRunning (Async ExitCode)
+  | ProcTerminated ExitCode
 
 data ProtocolException
   = ChannelDoesNotExist ChannelId
@@ -50,8 +57,8 @@ data ProtocolException
 
 instance Exception ProtocolException
 
-serveConnection :: SessionId -> STM Message -> (Message -> STM ()) ->  IO ()
-serveConnection sid input output = do
+serveConnection :: ServerConfig -> SessionId -> STM Message -> (Message -> STM ()) ->  IO ()
+serveConnection config sid input output = do
   debug  <- newTChanIO
   chans  <- newTVarIO mempty
   (reqExec, runExec) <- setupExec
@@ -76,34 +83,23 @@ serveConnection sid input output = do
     runConnection conn = do
       (disconnect, isDisconnected) <- newTVarIO False >>= \d-> pure (writeTVar d True, readTVarIO d)
       fix $ \continue-> do
-        atomically $ handleInput conn disconnect
+        atomically $ handleInput config conn disconnect
           `orElse` handleChannelFds conn
         isDisconnected >>= \case
           True  -> pure ()  -- this is the only thread that may return
           False -> continue
 
-    setupExec :: IO (STM BS.ByteString
-              -> (BS.ByteString -> STM ())
-              -> (BS.ByteString -> STM ())
-              -> STM a0
-              -> STM (), IO ())
+    setupExec :: IO (IO () -> STM (), IO ())
     setupExec = do
       ch <- newTChanIO
-      let reqExec rin wout werr wait' =
-            writeTChan ch (rin, wout, werr, wait')
+      let reqExec = writeTChan ch
       let runExec = forever $ do
-            (rin,wout,werr,wait') <- atomically (readTChan ch)
-            forkIO $ atomically wait' `race_` runShell rin wout werr
+            action <- atomically (readTChan ch)
+            forkIO action
       pure (reqExec, runExec)
 
-runShell :: STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> IO ()
-runShell readStdin writeStdout _writeStderr = forever $ do
-  bs <- atomically $ readStdin `orElse` pure "X"
-  threadDelay 1000000
-  atomically $ writeStdout bs
-
-handleInput :: Connection -> STM () -> STM ()
-handleInput conn disconnect = receive conn >>= \case
+handleInput :: ServerConfig -> Connection -> STM () -> STM ()
+handleInput config conn disconnect = receive conn >>= \case
   MsgDisconnect {} -> disconnect
   MsgIgnore {} -> pure ()
   MsgUnimplemented {} -> pure ()
@@ -156,12 +152,34 @@ handleInput conn disconnect = receive conn >>= \case
         send conn (MsgChannelRequestSuccess $ ChannelRequestSuccess $ chanRemoteId ch)
       ChannelRequestShell lid wantReply -> do
         ch <- getChannel conn lid
-        exec conn
-          (readTChan  $ chanReadFd ch)
-          (writeTChan $ chanWriteFd ch)
-          (writeTChan $ chanExtendedFd ch)
-          (chanWaitClosed ch)
-        send conn (MsgChannelRequestSuccess $ ChannelRequestSuccess $ chanRemoteId ch)
+        case scRunShell config of
+          Nothing ->
+            when wantReply $
+              send conn (MsgChannelRequestFailure $ ChannelRequestFailure $ chanRemoteId ch)
+          Just runShell -> do
+            when wantReply $
+              send conn (MsgChannelRequestSuccess $ ChannelRequestSuccess $ chanRemoteId ch)
+            exec conn $ do
+              let run = runShell
+                    (readTChan  $ chanReadFd ch)
+                    (writeTChan $ chanWriteFd ch)
+                    (writeTChan $ chanExtendedFd ch)
+              withAsync run $ \asnc-> do
+                closed <- atomically $ do
+                  closed <- readTVar (chanClosed ch)
+                  unless closed $ writeTVar (chanProc ch) (Just $ ProcRunning asnc)
+                  pure closed
+                -- `asnc` will be terminated as soon as the folowing block returns
+                if closed
+                  then pure ()
+                  else let waitProcessTerm = waitCatchSTM asnc >>= \case
+                             Left {} -> writeTVar (chanProc ch) (Just $ ProcTerminated $ ExitFailure 1)
+                             Right c -> writeTVar (chanProc ch) (Just $ ProcTerminated c)
+                           waitChannelTerm = readTVar (chanClosed ch) >>= \case
+                             True    -> pure ()
+                             False   -> retry
+                       in  atomically (waitProcessTerm `orElse` waitChannelTerm)
+
       ChannelRequestOther lid _ -> do
         ch <- getChannel conn lid
         send conn (MsgChannelRequestFailure $ ChannelRequestFailure $ chanRemoteId ch)
@@ -188,13 +206,12 @@ openChannel conn t rid ws ps = do
   case freeLocalId cs of
     Nothing -> pure Nothing
     Just lid -> do
-      isClosed <- newTVar False
       ch <- Channel t lid rid ws ps
         <$> newTChan
         <*> newTChan
         <*> newTChan
-        <*> pure (writeTVar isClosed True)
-        <*> pure (readTVar isClosed >>= \x-> if x then pure () else retry)
+        <*> newTVar Nothing
+        <*> newTVar False
       writeTVar (channels conn) (M.insert lid (Just ch) cs)
       pure (Just ch)
   where
@@ -218,10 +235,10 @@ closeChannel :: Connection -> ChannelId -> STM (Maybe ChannelId)
 closeChannel conn lid = do
   cs <- readTVar (channels conn)
   case M.lookup lid cs of
-    Nothing           -> throwSTM (ChannelDoesNotExist lid)
-    Just Nothing      -> writeTVar (channels conn) (M.delete lid cs) >> pure Nothing
+    Nothing        -> throwSTM (ChannelDoesNotExist lid)
+    Just Nothing   -> writeTVar (channels conn) (M.delete lid cs) >> pure Nothing
     Just (Just ch) -> do
-      -- TODO: free all resources!
+      writeTVar (chanClosed ch) True
       writeTVar (channels conn) (M.insert lid Nothing cs)
       pure (Just $ chanRemoteId ch)
 

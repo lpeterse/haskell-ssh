@@ -2,13 +2,24 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import           Control.Exception              (bracket)
-import qualified System.Socket                  as S
-import qualified System.Socket.Family.Inet6     as S
-import qualified System.Socket.Protocol.Default as S
-import qualified System.Socket.Type.Stream      as S
+import           Control.Concurrent                          (threadDelay)
+import           Control.Exception                           (bracket)
+import           Control.Monad                               (forever)
+import           Control.Monad.STM
+import           Control.Monad.Trans
+import qualified Data.ByteString                             as BS
+import qualified Data.ByteString.Char8                       as BS8
+import           Data.Char
+import qualified System.Console.Haskeline                    as H
+import qualified System.Console.Haskeline.Backend.PseudoTerm as H
+import           System.Exit
+import qualified System.Socket                               as S
+import qualified System.Socket.Family.Inet6                  as S
+import qualified System.Socket.Protocol.Default              as S
+import qualified System.Socket.Type.Stream                   as S
 
 import           Network.SSH
+import           Network.SSH.Config
 import           Network.SSH.Constants
 
 main :: IO ()
@@ -23,5 +34,23 @@ main = bracket open close accept
       S.setSocketOption s (S.V6Only False)
       S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
       S.listen s 5
-      bracket (S.accept s) (S.close . fst) (\(x,_)-> serve exampleHostKey (send x) (receive x))
+      bracket (S.accept s) (S.close . fst) (\(x,_)-> serve config (send x) (receive x))
 
+    config = ServerConfig {
+        scHostKey  = exampleHostKey
+      , scRunShell = Just runShell
+      }
+
+runShell :: STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> IO ExitCode
+runShell readStdin writeStdout _writeStderr = do
+  let rd = BS8.unpack <$> atomically readStdin
+  let wt = atomically . writeStdout . BS8.pack
+  H.runInputTBehavior (H.usePseudoTerm rd wt) H.defaultSettings cli
+  where
+    cli = do
+      H.outputStrLn "PSEUDO SHELL RUNNING!"
+      H.getInputLine "fnord $ " >>= \case
+        Nothing -> pure (ExitFailure 2)
+        Just s  -> do
+          H.outputStrLn (fmap toUpper s)
+          pure ExitSuccess

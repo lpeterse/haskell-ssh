@@ -1,5 +1,6 @@
 resolver: lts-9.18
 packages:
 - .
+- ../haskell-haskeline
 extra-deps:
   - cryptonite-0.24

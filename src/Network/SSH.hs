@@ -23,14 +23,16 @@ import           Data.Monoid                  ((<>))
 import           Data.Typeable
 import           Data.Word
 
+import           Network.SSH.Config
 import           Network.SSH.Connection
 import           Network.SSH.Constants
 import           Network.SSH.Exception
 import           Network.SSH.Message
 
-serve :: Ed25519.SecretKey -> (BS.ByteString -> IO ()) -> (Int -> IO BS.ByteString) -> IO ()
-serve serverSecretKey send receive = do
+serve :: ServerConfig -> (BS.ByteString -> IO ()) -> (Int -> IO BS.ByteString) -> IO ()
+serve config send receive = do
   let sendPut         = send . LBS.toStrict . B.runPut
+  let serverSecretKey = scHostKey config
   let serverPublicKey = PublicKeyEd25519 $ Ed25519.toPublic serverSecretKey
 
   -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
@@ -101,7 +103,7 @@ serve serverSecretKey send receive = do
           Right (_,_,msg) -> do
             atomically $ writeTChan input msg
             runReceiver (i + 1)
-  serveConnection session (readTChan input) (writeTChan output)
+  serveConnection config session (readTChan input) (writeTChan output)
     `race_` runSender 3
     `race_` runReceiver 3
 
