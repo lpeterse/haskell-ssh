@@ -69,6 +69,7 @@ executable hssh
     , stm
     , mtl
     , haskeline
+    , text
   other-modules:
       Paths_ssh
   default-language: Haskell2010

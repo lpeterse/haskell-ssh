@@ -5,13 +5,17 @@ module Main where
 import           Control.Concurrent                          (forkIO,
                                                               threadDelay)
 import           Control.Concurrent.MVar
-import           Control.Exception                           (bracket, finally)
+import           Control.Exception                           (SomeException (),
+                                                              bracket, catch,
+                                                              finally)
 import           Control.Monad                               (forever)
 import           Control.Monad.STM
 import           Control.Monad.Trans
 import qualified Data.ByteString                             as BS
 import qualified Data.ByteString.Char8                       as BS8
 import           Data.Char
+import qualified Data.Text                                   as T
+import qualified Data.Text.Encoding                          as T
 import qualified System.Console.Haskeline                    as H
 import qualified System.Console.Haskeline.Backend.PseudoTerm as H
 import           System.Exit
@@ -50,10 +54,13 @@ main = bracket open close accept
       }
 
 runShell :: STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> IO ExitCode
-runShell readStdin writeStdout _writeStderr = do
+runShell readStdin writeStdout writeStderr = do
   let rd = BS8.unpack <$> atomically readStdin
   let wt = atomically . writeStdout . BS8.pack
   H.runInputTBehavior (H.usePseudoTerm rd wt) H.defaultSettings cli
+    `catch` \e-> do
+      atomically $ writeStderr $ T.encodeUtf8 $ T.pack $ "\r\n" ++ show (e :: SomeException) ++ "\r\n"
+      pure (ExitFailure 1)
   where
     cli = do
       H.outputStrLn "PSEUDO SHELL RUNNING!"

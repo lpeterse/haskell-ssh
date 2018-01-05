@@ -200,7 +200,7 @@ handleChannels conn =
     h2 Nothing = retry
     h2 (Just ch) = do
       bs <- readTChan (chanExtendedFd ch)
-      send conn (MsgChannelDataExtended $ ChannelDataExtended (chanRemoteId ch) 0 bs)
+      send conn (MsgChannelDataExtended $ ChannelDataExtended (chanRemoteId ch) 1 bs)
 
     h3 Nothing = retry
     h3 (Just ch) = readTVar (chanProc ch) >>= \case
@@ -208,8 +208,6 @@ handleChannels conn =
         send conn (MsgChannelRequest $ ChannelRequestExitStatus (chanRemoteId ch) s)
         closeChannel conn (chanLocalId ch)
       Just x@(ProcExitSignal s d m l) -> do
-        -- The following line does not conform to standard but is somehow helpful for debugging.
-        send conn (MsgChannelDataExtended $ ChannelDataExtended (chanRemoteId ch) 1 m)
         send conn (MsgChannelRequest $ ChannelRequestExitSignal (chanRemoteId ch) s d m l)
         closeChannel conn (chanLocalId ch)
       _ -> retry
