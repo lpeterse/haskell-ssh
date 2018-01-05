@@ -2,8 +2,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import           Control.Concurrent                          (threadDelay)
-import           Control.Exception                           (bracket)
+import           Control.Concurrent                          (forkIO,
+                                                              threadDelay)
+import           Control.Concurrent.MVar
+import           Control.Exception                           (bracket, finally)
 import           Control.Monad                               (forever)
 import           Control.Monad.STM
 import           Control.Monad.Trans
@@ -34,7 +36,13 @@ main = bracket open close accept
       S.setSocketOption s (S.V6Only False)
       S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
       S.listen s 5
-      bracket (S.accept s) (S.close . fst) (\(x,_)-> serve config (send x) (receive x))
+      token <- newEmptyMVar
+      forever $ do
+        forkIO $ bracket
+          (S.accept s `finally` putMVar token ())
+          (S.close . fst)
+          (\(x,_)-> serve config (send x) (receive x))
+        takeMVar token
 
     config = ServerConfig {
         scHostKey  = exampleHostKey

@@ -15,6 +15,8 @@ import qualified Data.ByteString              as BS
 import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
 import           Data.Maybe
+import           Data.Text                    as T
+import           Data.Text.Encoding           as T
 import           Data.Typeable
 import           System.Exit
 
@@ -47,8 +49,10 @@ data Channel
   }
 
 data ProcStatus
-  = ProcRunning (Async ExitCode)
-  | ProcTerminated ExitCode
+  = ProcRunning
+  | ProcExitStatus ExitCode
+  | ProcExitSignal BS.ByteString Bool BS.ByteString BS.ByteString
+  deriving (Eq, Ord, Show)
 
 data ProtocolException
   = ChannelDoesNotExist ChannelId
@@ -143,9 +147,7 @@ handleInput config conn disconnect = receive conn >>= \case
   MsgChannelEof (ChannelEof _) ->
     pure ()
   MsgChannelClose (ChannelClose lid) ->
-    closeChannel conn lid >>= \case
-      Nothing  -> pure () -- channel finally closed
-      Just rid -> send conn (MsgChannelClose $ ChannelClose rid) -- channel semi-closed
+    closeChannel conn lid
   MsgChannelRequest x -> case x of
       ChannelRequestPty lid _ _ _ _ _ _ _ -> do
         ch <- getChannel conn lid
@@ -167,14 +169,16 @@ handleInput config conn disconnect = receive conn >>= \case
               withAsync run $ \asnc-> do
                 closed <- atomically $ do
                   closed <- readTVar (chanClosed ch)
-                  unless closed $ writeTVar (chanProc ch) (Just $ ProcRunning asnc)
+                  unless closed $ writeTVar (chanProc ch) (Just ProcRunning)
                   pure closed
-                -- `asnc` will be terminated as soon as the folowing block returns
+                -- `asnc` will be terminated as soon as the following block returns
                 if closed
                   then pure ()
                   else let waitProcessTerm = waitCatchSTM asnc >>= \case
-                             Left {} -> writeTVar (chanProc ch) (Just $ ProcTerminated $ ExitFailure 1)
-                             Right c -> writeTVar (chanProc ch) (Just $ ProcTerminated c)
+                             Left  e -> writeTVar (chanProc ch) $ Just $
+                                        ProcExitSignal "ABRT" False (T.encodeUtf8 $ T.pack $ show e) ""
+                             Right c -> writeTVar (chanProc ch) $ Just $
+                                        ProcExitStatus c
                            waitChannelTerm = readTVar (chanClosed ch) >>= \case
                              True    -> pure ()
                              False   -> retry
@@ -200,7 +204,14 @@ handleChannels conn =
 
     h3 Nothing = retry
     h3 (Just ch) = readTVar (chanProc ch) >>= \case
-      Just (ProcTerminated ec) -> pure ()
+      Just (ProcExitStatus s) -> do
+        send conn (MsgChannelRequest $ ChannelRequestExitStatus (chanRemoteId ch) s)
+        closeChannel conn (chanLocalId ch)
+      Just x@(ProcExitSignal s d m l) -> do
+        -- The following line does not conform to standard but is somehow helpful for debugging.
+        send conn (MsgChannelDataExtended $ ChannelDataExtended (chanRemoteId ch) 1 m)
+        send conn (MsgChannelRequest $ ChannelRequestExitSignal (chanRemoteId ch) s d m l)
+        closeChannel conn (chanLocalId ch)
       _ -> retry
 
     tryAny :: (Maybe Channel -> STM ()) -> M.Map ChannelId (Maybe Channel) -> STM ()
@@ -237,14 +248,14 @@ getChannel conn l = do
     Just Nothing   -> throwSTM (ChannelIsClosing l)
     Just (Just ch) -> pure ch
 
-closeChannel :: Connection -> ChannelId -> STM (Maybe ChannelId)
+closeChannel :: Connection -> ChannelId -> STM ()
 closeChannel conn lid = do
   cs <- readTVar (channels conn)
   case M.lookup lid cs of
     Nothing        -> throwSTM (ChannelDoesNotExist lid)
-    Just Nothing   -> writeTVar (channels conn) (M.delete lid cs) >> pure Nothing
+    Just Nothing   -> writeTVar (channels conn) $! M.delete lid cs -- finaly closed
     Just (Just ch) -> do
       writeTVar (chanClosed ch) True
-      writeTVar (channels conn) (M.insert lid Nothing cs)
-      pure (Just $ chanRemoteId ch)
+      writeTVar (channels conn) $! M.insert lid Nothing cs -- semi-closed
+      send conn (MsgChannelClose $ ChannelClose $ chanRemoteId ch)
 

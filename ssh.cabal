@@ -34,6 +34,7 @@ library
       base >=4.7 && <5,
       binary,
       bytestring,
+      text,
       cryptonite,
       memory,
       containers,
