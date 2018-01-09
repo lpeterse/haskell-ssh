@@ -8,6 +8,7 @@ import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TMVar
+import           Control.Concurrent.STM.TVar
 import           Control.Exception            (AsyncException (..),
                                                SomeException (), bracket, catch,
                                                finally, throwIO)
@@ -18,17 +19,19 @@ import           Control.Monad.Trans
 import qualified Data.ByteString              as BS
 import qualified Data.ByteString.Char8        as BS8
 import           Data.Function                (fix)
+import           GHC.Conc.Signal
 import           System.Console.ANSI
 import           System.IO
+import           System.Posix.Signals
 import qualified Text.PrettyPrint.ANSI.Leijen as P
 
 newtype InputT m a
   = InputT (ReaderT (InputState m) m a)
-  deriving (Functor, Applicative, Monad)
+  deriving (Functor, Applicative, Monad, MonadIO)
 
 data InputState m
   = InputState
-  { isGetChar   :: m Char
+  { isGetChar   :: IO Char
   , isGetLine   :: m String
   , isPutStr    :: String -> m ()
   , isFlush     :: m ()
@@ -36,30 +39,40 @@ data InputState m
   }
 
 main :: IO ()
-main = runInputT $ forever $ do
+main = runInputT $ fix $ \proceed->
   getInputLine "foobar $ " >>= \case
-    Nothing -> putDocLine "Nothing"
-    Just ss -> putDocLine $ show [1..]
+    Nothing -> pure ()
+    Just ['a'] -> putDocLine (show [1..]) >> putDocLine "HERE" >> proceed
+    Just ss -> putDocLine (show ss) >> proceed
 
 runInputT :: InputT IO a -> IO a
-runInputT (InputT r) = withRawMode $ do
+runInputT (InputT r) = do
   interrupt <- newEmptyTMVarIO
-  withAsync (action interrupt) $ \actionT-> fix $ \proceed-> do
-    x <- (Right <$> wait actionT) `catch` \case
-      UserInterrupt -> atomically (Left <$> tryPutTMVar interrupt '\ETX')
-      e             -> throwIO e
-    case x of
-      Right a    -> pure a
-      Left True  -> proceed
-      Left False -> throwIO UserInterrupt
+  withRawMode $
+    withHookedSignals $ \waitSignal->
+      withAsync (action interrupt) $ \actionT-> fix $ \proceed-> do
+        let waitAction = Just <$> waitSTM actionT
+        let waitInterrupt = waitSignal >> tryPutTMVar interrupt '\ETX' >>= \case
+              True -> pure Nothing
+              False -> throwSTM UserInterrupt
+        atomically (waitAction `orElse` waitInterrupt) >>= \case
+          Just a  -> pure a
+          Nothing -> proceed
   where
+    withHookedSignals :: (STM () -> IO a) -> IO a
+    withHookedSignals action = do
+      sig <- newTVarIO False
+      bracket
+        (flip (installHandler sigINT) Nothing  $ Catch $ atomically $ writeTVar sig True)
+        (flip (installHandler sigINT) Nothing) $ const $ action (readTVar sig >>= check >> writeTVar sig False)
+
     withRawMode :: IO a -> IO a
     withRawMode = bracket
       (hGetBuffering stdin >>= \b-> hSetBuffering stdin NoBuffering >> pure b)
       (hSetBuffering stdin) . const
 
     action interrupt = runReaderT r InputState {
-          isGetChar  = liftIO $ hGetChar stdin
+          isGetChar  = hGetChar stdin
         , isGetLine  = liftIO $ hGetLine stdin
         , isPutStr   = liftIO . hPutStr stdout
         , isFlush    = liftIO $ hFlush stdout
@@ -69,9 +82,14 @@ runInputT (InputT r) = withRawMode $ do
 getInputLine :: MonadIO m => P.Doc -> InputT m (Maybe String)
 getInputLine prompt = do
   putDoc $ show prompt
-  InputT $ do
+  c <- InputT $ do
     st <- ask
-    lift $ Just . pure <$> isGetChar st
+    liftIO $ withAsync (isGetChar st) $ \t->
+      atomically $ waitSTM t `orElse` takeTMVar (isInterrupt st)
+  case c of
+    '\ETX' -> putDoc "\r\n" >> getInputLine prompt
+    '\EOT' -> pure Nothing
+    _      -> pure (Just [c])
 
 putDoc :: MonadIO m => String -> InputT m ()
 putDoc doc = InputT $ do

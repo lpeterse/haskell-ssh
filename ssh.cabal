@@ -71,6 +71,7 @@ executable foobar
     , text
     , ansi-terminal
     , ansi-wl-pprint
+    , unix
   other-modules:
       Paths_ssh
   default-language: Haskell2010
