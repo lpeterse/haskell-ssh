@@ -42,18 +42,18 @@ module Network.SSH.Message
   , ChannelOpenFailure (..)
     -- ** ChannelData (94)
   , ChannelData (..)
-    -- ** ChannelDataExtended (95)
-  , ChannelDataExtended (..)
+    -- ** ChannelExtendedData (95)
+  , ChannelExtendedData (..)
     -- ** ChannelEof (96)
   , ChannelEof (..)
     -- ** ChannelClose (97)
   , ChannelClose (..)
     -- ** ChannelRequest (98)
   , ChannelRequest (..)
-    -- ** ChannelRequestSuccess (99)
-  , ChannelRequestSuccess (..)
-    -- ** ChannelRequestFailure (100)
-  , ChannelRequestFailure (..)
+    -- ** ChannelSuccess (99)
+  , ChannelSuccess (..)
+    -- ** ChannelFailure (100)
+  , ChannelFailure (..)
 
     -- * verifyAuthSignature
   , verifyAuthSignature
@@ -72,6 +72,7 @@ module Network.SSH.Message
   , ServiceName (..)
   , SessionId (..)
   , Signature (..)
+  , PtySettings (..)
   , UserName (..)
   , Version (..)
   ) where
@@ -116,12 +117,12 @@ data Message
   | MsgChannelOpenConfirmation ChannelOpenConfirmation
   | MsgChannelOpenFailure      ChannelOpenFailure
   | MsgChannelData             ChannelData
-  | MsgChannelDataExtended     ChannelDataExtended
+  | MsgChannelExtendedData     ChannelExtendedData
   | MsgChannelEof              ChannelEof
   | MsgChannelClose            ChannelClose
   | MsgChannelRequest          ChannelRequest
-  | MsgChannelRequestSuccess   ChannelRequestSuccess
-  | MsgChannelRequestFailure   ChannelRequestFailure
+  | MsgChannelSuccess          ChannelSuccess
+  | MsgChannelFailure          ChannelFailure
   | MsgUnknown                 Word8 BS.ByteString
   deriving (Eq, Show)
 
@@ -227,8 +228,8 @@ data ChannelData
   = ChannelData ChannelId BS.ByteString
   deriving (Eq, Show)
 
-data ChannelDataExtended
-  = ChannelDataExtended ChannelId Word32 BS.ByteString
+data ChannelExtendedData
+  = ChannelExtendedData ChannelId Word32 BS.ByteString
   deriving (Eq, Show)
 
 data ChannelEof
@@ -243,12 +244,7 @@ data ChannelRequest
   = ChannelRequestPty
     { crChannelId     :: ChannelId
     , crWantReply     :: Bool
-    , crTerminal      :: BS.ByteString
-    , crWidthCols     :: Word32
-    , crHeightRows    :: Word32
-    , crWidthPixels   :: Word32
-    , crHeightPixels  :: Word32
-    , crTerminalModes :: BS.ByteString
+    , crPtySettings   :: PtySettings
     }
   | ChannelRequestShell
     { crChannelId :: ChannelId
@@ -271,12 +267,12 @@ data ChannelRequest
     }
   deriving (Eq, Show)
 
-data ChannelRequestSuccess
-  = ChannelRequestSuccess ChannelId
+data ChannelSuccess
+  = ChannelSuccess ChannelId
   deriving (Eq, Show)
 
-data ChannelRequestFailure
-  = ChannelRequestFailure ChannelId
+data ChannelFailure
+  = ChannelFailure ChannelId
   deriving (Eq, Show)
 
 data AuthMethod
@@ -297,6 +293,16 @@ data Signature
   | SignatureRSA     BS.ByteString
   | SignatureOther   BS.ByteString BS.ByteString
   deriving (Eq, Show)
+
+data PtySettings
+  = PtySettings
+  { ptyEnv           :: BS.ByteString
+  , ptyWidthCols     :: Word32
+  , ptyHeightRows    :: Word32
+  , ptyWidthPixels   :: Word32
+  , ptyHeightPixels  :: Word32
+  , ptyModes         :: BS.ByteString
+  } deriving (Eq, Show)
 
 newtype Cookie           = Cookie           BS.ByteString deriving (Eq, Ord, Show)
 
@@ -343,12 +349,12 @@ instance B.Binary Message where
     MsgChannelOpenConfirmation  x -> B.put x
     MsgChannelOpenFailure       x -> B.put x
     MsgChannelData              x -> B.put x
-    MsgChannelDataExtended      x -> B.put x
+    MsgChannelExtendedData      x -> B.put x
     MsgChannelEof               x -> B.put x
     MsgChannelClose             x -> B.put x
     MsgChannelRequest           x -> B.put x
-    MsgChannelRequestSuccess    x -> B.put x
-    MsgChannelRequestFailure    x -> B.put x
+    MsgChannelSuccess           x -> B.put x
+    MsgChannelFailure           x -> B.put x
     MsgUnknown              mt bs -> putByte mt <> B.putByteString bs
 
   get = B.lookAhead getByte >>= \case
@@ -371,12 +377,12 @@ instance B.Binary Message where
     91  -> MsgChannelOpenConfirmation <$> B.get
     92  -> MsgChannelOpenFailure      <$> B.get
     94  -> MsgChannelData             <$> B.get
-    95  -> MsgChannelDataExtended     <$> B.get
+    95  -> MsgChannelExtendedData     <$> B.get
     96  -> MsgChannelEof              <$> B.get
     97  -> MsgChannelClose            <$> B.get
     98  -> MsgChannelRequest          <$> B.get
-    99  -> MsgChannelRequestSuccess   <$> B.get
-    100 -> MsgChannelRequestFailure   <$> B.get
+    99  -> MsgChannelSuccess          <$> B.get
+    100 -> MsgChannelFailure          <$> B.get
     _   -> MsgUnknown                 <$> B.getWord8 <*> (LBS.toStrict <$> B.getRemainingLazyByteString)
 
 instance B.Binary Disconnect where
@@ -536,10 +542,10 @@ instance B.Binary ChannelData where
     putByte  94 <> putUint32 lid <> putString bs
   get = getMsgType 94 >> ChannelData <$> B.get <*> getString
 
-instance B.Binary ChannelDataExtended where
-  put (ChannelDataExtended (ChannelId lid) x bs) =
+instance B.Binary ChannelExtendedData where
+  put (ChannelExtendedData (ChannelId lid) x bs) =
     putByte  95 <> putUint32 lid <> putUint32 x <> putString bs
-  get = getMsgType 95 >> ChannelDataExtended <$> B.get <*> getUint32 <*> getString
+  get = getMsgType 95 >> ChannelExtendedData <$> B.get <*> getUint32 <*> getString
 
 instance B.Binary ChannelEof where
   put (ChannelEof (ChannelId lid)) =
@@ -553,9 +559,8 @@ instance B.Binary ChannelClose where
 
 instance B.Binary ChannelRequest where
   put = \case
-    ChannelRequestPty cid wantReply b c d e f g -> mconcat
-      [ putByte 98, B.put cid, putString "pty-req", putBool wantReply
-                  , putString b, putUint32 c, putUint32 d, putUint32 e, putUint32 f, putString g]
+    ChannelRequestPty cid wantReply ts -> mconcat
+      [ putByte 98, B.put cid, putString "pty-req", putBool wantReply, B.put ts ]
     ChannelRequestShell cid wantReply -> mconcat
       [ putByte 98, B.put cid, putString "shell", putBool wantReply ]
     ChannelRequestExitStatus cid status -> mconcat
@@ -569,12 +574,7 @@ instance B.Binary ChannelRequest where
   get = getMsgType 98 >> B.get >>= \cid-> getString >>= \case
     "pty-req" -> ChannelRequestPty cid
       <$> getBool
-      <*> getString
-      <*> getUint32
-      <*> getUint32
-      <*> getUint32
-      <*> getUint32
-      <*> getString
+      <*> B.get
     "shell" -> ChannelRequestShell cid
       <$> getBool
     "exit-status" -> do
@@ -592,15 +592,15 @@ instance B.Binary ChannelRequest where
         <*> getString
     other   -> ChannelRequestOther cid <$> pure other
 
-instance B.Binary ChannelRequestSuccess where
-  put (ChannelRequestSuccess (ChannelId lid)) =
+instance B.Binary ChannelSuccess where
+  put (ChannelSuccess (ChannelId lid)) =
     putByte 99 <> putUint32 lid
-  get = getMsgType 99 >> ChannelRequestSuccess <$> B.get
+  get = getMsgType 99 >> ChannelSuccess <$> B.get
 
-instance B.Binary ChannelRequestFailure where
-  put (ChannelRequestFailure (ChannelId lid)) =
+instance B.Binary ChannelFailure where
+  put (ChannelFailure (ChannelId lid)) =
     putByte 100 <> putUint32 lid
-  get = getMsgType 100 >> ChannelRequestFailure   <$> B.get
+  get = getMsgType 100 >> ChannelFailure   <$> B.get
 
 instance B.Binary Cookie where
   put (Cookie s) = B.putByteString s
@@ -734,6 +734,12 @@ instance B.Binary Signature where
     other ->
       SignatureOther other <$> getString
 
+instance B.Binary PtySettings where
+  put (PtySettings env wc hc wp hp modes) = mconcat
+    [ putString env, putUint32 wc, putUint32 hc, putUint32 wp, putUint32 hp, putString modes ]
+  get = PtySettings
+    <$> getString <*> getUint32 <*> getUint32 <*> getUint32 <*> getUint32 <*> getString
+
 -------------------------------------------------------------------------------
 -- Util functions
 -------------------------------------------------------------------------------
@@ -831,9 +837,7 @@ getMsgType expected = do
     ", got "    ++ msgTypeName actual   ++ "."
 
 msgTypeName :: Word8 -> String
-msgTypeName   1 = "SSH_MSG_DISCONNECT"
-msgTypeName  21 = "SSH_MSG_NEWKEYS"
-msgTypeName   x = "SSH_MSG_" ++ show x
+msgTypeName  x = "SSH_MSG_" ++ show x
 
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
 verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =

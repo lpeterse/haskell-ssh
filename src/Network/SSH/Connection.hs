@@ -44,6 +44,7 @@ data Channel
   , chanReadFd         :: TChan BS.ByteString
   , chanWriteFd        :: TChan BS.ByteString
   , chanExtendedFd     :: TChan BS.ByteString
+  , chanPty            :: TVar (Maybe PtySettings)
   , chanProc           :: TVar (Maybe ProcStatus)
   , chanClosed         :: TVar Bool
   }
@@ -117,8 +118,8 @@ handleInput config conn disconnect = receive conn >>= \case
   MsgUserAuthPublicKeyOk {} -> fail "FIXME"
   MsgChannelOpenConfirmation {} -> fail "FIXME"
   MsgChannelOpenFailure {} -> fail "FIXME"
-  MsgChannelRequestFailure {} -> fail "FIXME"
-  MsgChannelRequestSuccess {} -> fail "FIXME"
+  MsgChannelFailure {} -> fail "FIXME"
+  MsgChannelSuccess {} -> fail "FIXME"
   x@(MsgUserAuthRequest (UserAuthRequest user service method)) -> do
     println conn (show x)
     case method of
@@ -140,8 +141,8 @@ handleInput config conn disconnect = receive conn >>= \case
         (chanMaxPacketSize ch)
   MsgChannelData (ChannelData lid bs) -> do
     ch <- getChannel conn lid
-    writeTChan (chanWriteFd ch) bs
-  MsgChannelDataExtended (ChannelDataExtended lid _ bs) -> do
+    writeTChan (chanReadFd ch) bs
+  MsgChannelExtendedData (ChannelExtendedData lid _ bs) -> do
     ch <- getChannel conn lid
     writeTChan (chanExtendedFd ch) bs
   MsgChannelEof (ChannelEof _) ->
@@ -149,20 +150,24 @@ handleInput config conn disconnect = receive conn >>= \case
   MsgChannelClose (ChannelClose lid) ->
     closeChannel conn lid
   MsgChannelRequest x -> case x of
-      ChannelRequestPty lid _ _ _ _ _ _ _ -> do
+      ChannelRequestPty lid wantReply ts -> do
+        println conn $ show x
         ch <- getChannel conn lid
-        send conn (MsgChannelRequestSuccess $ ChannelRequestSuccess $ chanRemoteId ch)
+        writeTVar (chanPty ch) (Just ts)
+        when wantReply $
+          send conn (MsgChannelSuccess $ ChannelSuccess $ chanRemoteId ch)
       ChannelRequestShell lid wantReply -> do
         ch <- getChannel conn lid
         case scRunShell config of
           Nothing ->
             when wantReply $
-              send conn (MsgChannelRequestFailure $ ChannelRequestFailure $ chanRemoteId ch)
+              send conn (MsgChannelFailure $ ChannelFailure $ chanRemoteId ch)
           Just runShell -> do
             when wantReply $
-              send conn (MsgChannelRequestSuccess $ ChannelRequestSuccess $ chanRemoteId ch)
+              send conn (MsgChannelSuccess $ ChannelSuccess $ chanRemoteId ch)
+            mpty <- readTVar (chanPty ch)
             exec conn $ do
-              let run = runShell
+              let run = runShell mpty
                     (readTChan  $ chanReadFd ch)
                     (writeTChan $ chanWriteFd ch)
                     (writeTChan $ chanExtendedFd ch)
@@ -186,7 +191,7 @@ handleInput config conn disconnect = receive conn >>= \case
 
       ChannelRequestOther lid _ -> do
         ch <- getChannel conn lid
-        send conn (MsgChannelRequestFailure $ ChannelRequestFailure $ chanRemoteId ch)
+        send conn (MsgChannelFailure $ ChannelFailure $ chanRemoteId ch)
 
 handleChannels :: Connection -> STM ()
 handleChannels conn =
@@ -200,7 +205,7 @@ handleChannels conn =
     h2 Nothing = retry
     h2 (Just ch) = do
       bs <- readTChan (chanExtendedFd ch)
-      send conn (MsgChannelDataExtended $ ChannelDataExtended (chanRemoteId ch) 1 bs)
+      send conn (MsgChannelExtendedData $ ChannelExtendedData (chanRemoteId ch) 1 bs)
 
     h3 Nothing = retry
     h3 (Just ch) = readTVar (chanProc ch) >>= \case
@@ -225,6 +230,7 @@ openChannel conn t rid ws ps = do
         <$> newTChan
         <*> newTChan
         <*> newTChan
+        <*> newTVar Nothing
         <*> newTVar Nothing
         <*> newTVar False
       writeTVar (channels conn) (M.insert lid (Just ch) cs)

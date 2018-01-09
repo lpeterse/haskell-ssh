@@ -39,12 +39,12 @@ main = defaultMain $ testGroup "Network.SSH.Message"
     , QC.testProperty ":: ChannelOpenConfirmation" (parserIdentity :: ChannelOpenConfirmation -> Property)
     , QC.testProperty ":: ChannelOpenFailure"      (parserIdentity :: ChannelOpenFailure      -> Property)
     , QC.testProperty ":: ChannelData"             (parserIdentity :: ChannelData             -> Property)
-    , QC.testProperty ":: ChannelDataExtended"     (parserIdentity :: ChannelDataExtended     -> Property)
+    , QC.testProperty ":: ChannelExtendedData"     (parserIdentity :: ChannelExtendedData     -> Property)
     , QC.testProperty ":: ChannelEof"              (parserIdentity :: ChannelEof              -> Property)
     , QC.testProperty ":: ChannelClose"            (parserIdentity :: ChannelClose            -> Property)
     , QC.testProperty ":: ChannelRequest"          (parserIdentity :: ChannelRequest          -> Property)
-    , QC.testProperty ":: ChannelRequestSuccess"   (parserIdentity :: ChannelRequestSuccess   -> Property)
-    , QC.testProperty ":: ChannelRequestFailure"   (parserIdentity :: ChannelRequestFailure   -> Property)
+    , QC.testProperty ":: ChannelSuccess"          (parserIdentity :: ChannelSuccess          -> Property)
+    , QC.testProperty ":: ChannelFailure"          (parserIdentity :: ChannelFailure          -> Property)
 
     , QC.testProperty ":: Version"                 (parserIdentity :: Version                 -> Property)
     , QC.testProperty ":: PublicKey"               (parserIdentity :: PublicKey               -> Property)
@@ -80,12 +80,12 @@ instance Arbitrary Message where
     , MsgChannelOpenConfirmation <$> arbitrary
     , MsgChannelOpenFailure      <$> arbitrary
     , MsgChannelData             <$> arbitrary
-    , MsgChannelDataExtended     <$> arbitrary
+    , MsgChannelExtendedData     <$> arbitrary
     , MsgChannelEof              <$> arbitrary
     , MsgChannelClose            <$> arbitrary
     , MsgChannelRequest          <$> arbitrary
-    , MsgChannelRequestSuccess   <$> arbitrary
-    , MsgChannelRequestFailure   <$> arbitrary
+    , MsgChannelSuccess          <$> arbitrary
+    , MsgChannelFailure          <$> arbitrary
     , MsgUnknown                 <$> elements [ 128, 255 ]
                                  <*> elements [ "", "unknown message payload" ]
     ]
@@ -154,8 +154,8 @@ instance Arbitrary ChannelOpenFailure where
 instance Arbitrary ChannelData where
   arbitrary = ChannelData <$> arbitrary <*> arbitrary
 
-instance Arbitrary ChannelDataExtended where
-  arbitrary = ChannelDataExtended <$> arbitrary <*> arbitrary <*> arbitrary
+instance Arbitrary ChannelExtendedData where
+  arbitrary = ChannelExtendedData <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary ChannelEof where
   arbitrary = ChannelEof <$> arbitrary
@@ -165,24 +165,33 @@ instance Arbitrary ChannelClose where
 
 instance Arbitrary ChannelRequest where
   arbitrary = oneof
-    [ ChannelRequestPty        <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+    [ ChannelRequestPty        <$> arbitrary <*> arbitrary <*> arbitrary
     , ChannelRequestShell      <$> arbitrary <*> arbitrary
     , ChannelRequestExitStatus <$> arbitrary <*> arbitrary
     , ChannelRequestExitSignal <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
     , ChannelRequestOther      <$> arbitrary <*> arbitrary
     ]
 
-instance Arbitrary ChannelRequestSuccess where
-  arbitrary = ChannelRequestSuccess <$> arbitrary
+instance Arbitrary ChannelSuccess where
+  arbitrary = ChannelSuccess <$> arbitrary
 
-instance Arbitrary ChannelRequestFailure where
-  arbitrary = ChannelRequestFailure <$> arbitrary
+instance Arbitrary ChannelFailure where
+  arbitrary = ChannelFailure <$> arbitrary
 
 instance Arbitrary Version where
   arbitrary = elements
     [ Version "SSH-2.0-OpenSSH_4.3"
     , Version "SSH-2.0-hssh_0.1"
     ]
+
+instance Arbitrary PtySettings where
+  arbitrary = PtySettings
+    <$> elements [ "xterm", "urxvt-unicode", "urxvt-unicode-color256" ]
+    <*> elements [ 80 ]
+    <*> elements [ 24 ]
+    <*> elements [ 640 ]
+    <*> elements [ 480 ]
+    <*> elements [ "\129\NUL\NUL\150\NUL\128\NUL\NUL\150\NUL\SOH\NUL\NUL\NUL\ETX\STX\NUL\NUL\NUL\FS\ETX\NUL\NUL\NUL\DEL\EOT\NUL\NUL\NUL\NAK\ENQ\NUL\NUL\NUL\EOT\ACK\NUL\NUL\NUL\NUL\a\NUL\NUL\NUL\NUL\b\NUL\NUL\NUL\DC1\t\NUL\NUL\NUL\DC3\n\NUL\NUL\NUL\SUB\f\NUL\NUL\NUL\DC2\r\NUL\NUL\NUL\ETB\SO\NUL\NUL\NUL\SYN\DC2\NUL\NUL\NUL\SI\RS\NUL\NUL\NUL\SOH\US\NUL\NUL\NUL\NUL \NUL\NUL\NUL\NUL!\NUL\NUL\NUL\NUL\"\NUL\NUL\NUL\NUL#\NUL\NUL\NUL\NUL$\NUL\NUL\NUL\SOH%\NUL\NUL\NUL\NUL&\NUL\NUL\NUL\SOH'\NUL\NUL\NUL\NUL(\NUL\NUL\NUL\NUL)\NUL\NUL\NUL\SOH*\NUL\NUL\NUL\SOH2\NUL\NUL\NUL\SOH3\NUL\NUL\NUL\SOH4\NUL\NUL\NUL\NUL5\NUL\NUL\NUL\SOH6\NUL\NUL\NUL\SOH7\NUL\NUL\NUL\SOH8\NUL\NUL\NUL\NUL9\NUL\NUL\NUL\NUL:\NUL\NUL\NUL\NUL;\NUL\NUL\NUL\SOH<\NUL\NUL\NUL\SOH=\NUL\NUL\NUL\SOH>\NUL\NUL\NUL\NULF\NUL\NUL\NUL\SOHG\NUL\NUL\NUL\NULH\NUL\NUL\NUL\SOHI\NUL\NUL\NUL\NULJ\NUL\NUL\NUL\NULK\NUL\NUL\NUL\NULZ\NUL\NUL\NUL\SOH[\NUL\NUL\NUL\SOH\\\NUL\NUL\NUL\NUL]\NUL\NUL\NUL\NUL\NUL" ]
 
 deriving instance Arbitrary MaxPacketSize
 deriving instance Arbitrary InitWindowSize
