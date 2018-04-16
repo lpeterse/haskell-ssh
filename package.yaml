@@ -19,6 +19,14 @@ dependencies:
 - bytestring
 - mtl
 - containers
+- cryptonite
+- terminal
+- memory
+- replique
+- stm
+- text
+- async
+- megaparsec
 
 library:
   source-dirs: src
@@ -49,3 +57,6 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - ssh
+    - tasty
+    - tasty-hunit
+    - tasty-quickcheck

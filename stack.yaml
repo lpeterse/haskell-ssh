@@ -1,6 +1,5 @@
-resolver: lts-9.18
+resolver: lts-11.3
 packages:
 - .
-#- ../haskell-haskeline
-extra-deps:
-  - cryptonite-0.24
+- ../haskell-terminal
+- ../haskell-replique

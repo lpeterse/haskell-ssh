@@ -17,8 +17,16 @@ import           Test.Tasty.QuickCheck    as QC
 
 import           Network.SSH.Message
 
+import           Spec.Key
+
 main :: IO ()
-main = defaultMain $ testGroup "Network.SSH.Message"
+main = defaultMain $ testGroup "Network.SSH"
+  [ testKey
+  --, testMessage
+  ]
+
+testMessage :: TestTree
+testMessage = testGroup "Network.SSH.Message"
   [ testGroup "put . get == id"
     [ QC.testProperty ":: Disconnect"              (parserIdentity :: Disconnect              -> Property)
     , QC.testProperty ":: Ignore"                  (parserIdentity :: Ignore                  -> Property)
@@ -269,10 +277,3 @@ instance Arbitrary Curve25519.PublicKey where
   arbitrary = pure $ case Curve25519.publicKey ("\179g~\181\170\169\154\205\211\ft\162\&0@0dO\FS\DLEA\166@[r\150t~W\221cOF" :: BS.ByteString) of
     CryptoPassed pk -> pk
     CryptoFailed _  -> undefined
-
-instance Arbitrary ExitCode where
-  arbitrary = elements
-    [ ExitSuccess
-    , ExitFailure 1
-    , ExitFailure 255
-    ]
