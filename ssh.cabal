@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: d9800797e196790ac49fcc5afdfdd3a8b8f4e6150c5343cae9866faa53057eac
+-- hash: cb0f6f7bff359bec7afc382732ec0fd9db7223537609f8490378109566c3e801
 
 name:           ssh
 version:        0.1.0.0
@@ -77,6 +77,32 @@ executable hssh
     , terminal
     , text
   other-modules:
+      Paths_ssh
+  default-language: Haskell2010
+
+executable hssh-parser
+  main-is: parser/Main.hs
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      async
+    , base >=4.7 && <5
+    , binary
+    , bytestring
+    , containers
+    , cryptonite
+    , megaparsec
+    , memory
+    , mtl
+    , replique
+    , socket
+    , ssh
+    , stm
+    , terminal
+    , text
+  other-modules:
+      Main
       Paths_ssh
   default-language: Haskell2010
 

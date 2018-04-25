@@ -32,8 +32,22 @@ library:
   source-dirs: src
 
 executables:
- hssh:
+  hssh:
     main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - ssh
+    - socket
+    - binary
+    - bytestring
+    - mtl
+    - containers
+  hssh-parser:
+    main:                parser/Main.hs
     source-dirs:         app
     ghc-options:
     - -threaded
