@@ -5,9 +5,7 @@ import qualified Data.ByteString as BS
 import           Network.SSH.Key
 
 main :: IO ()
-main = do
-  let key = decodePrivateKey bs :: Maybe (PrivateKey Ed25519)
-  print key
+main = print $ decodePrivateKeyFile bs
 
 bs :: BS.ByteString
 bs  = mconcat
