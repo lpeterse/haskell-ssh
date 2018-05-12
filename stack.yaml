@@ -3,3 +3,6 @@ packages:
 - .
 - ../haskell-terminal
 - ../haskell-replique
+extra-deps:
+  - git: https://github.com/lpeterse/cryptonite
+    commit: c616a6762ed30a726c2659072bfbe839c1b70dda

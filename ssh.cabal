@@ -1,8 +1,8 @@
--- This file has been generated from package.yaml by hpack version 0.20.0.
+-- This file has been generated from package.yaml by hpack version 0.28.2.
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: cb0f6f7bff359bec7afc382732ec0fd9db7223537609f8490378109566c3e801
+-- hash: 3c05f7454687bc6dc25cc3758c8089b29e082c851ee6c7de78ff319da438e692
 
 name:           ssh
 version:        0.1.0.0
@@ -17,7 +17,6 @@ license:        MIT
 license-file:   LICENSE
 build-type:     Simple
 cabal-version:  >= 1.10
-
 extra-source-files:
     CHANGELOG.md
     README.md
