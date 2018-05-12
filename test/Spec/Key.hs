@@ -3,6 +3,8 @@ module Spec.Key where
 
 import           Crypto.Error
 import qualified Crypto.PubKey.Ed25519 as Ed25519
+import qualified Data.ByteArray        as BA
+import qualified Data.ByteArray.Parse  as BP
 import qualified Data.ByteString       as BS
 
 import           Network.SSH.Key
@@ -10,6 +12,9 @@ import           Network.SSH.Key
 import           Test.Tasty
 import           Test.Tasty.HUnit
 import           Test.Tasty.QuickCheck as QC
+
+passphrase :: BA.ScrubbedBytes
+passphrase = "foobar"
 
 testKey :: TestTree
 testKey = testGroup "Network.SSH.Key"
@@ -19,11 +24,19 @@ testKey = testGroup "Network.SSH.Key"
 testEd25519Keys :: TestTree
 testEd25519Keys = testGroup "Ed25519"
   [ testCase "decode private key file #1" $
-      decodePrivateKeyFile ed25519PrivateKeyFile1' @=? Right ed25519PrivateKeyFile1
+      parseEither (parsePrivateKeyFile passphrase) ed25519PrivateKeyFile1' @=? Right ([] :: [(PrivateKey, BA.Bytes)])
   , testCase "decode private key file #2" $
-      decodePrivateKeyFile ed25519PrivateKeyFile2' @=? Right ed25519PrivateKeyFile1
+      parseEither (parsePrivateKeyFile passphrase) ed25519PrivateKeyFile2' @=? Right ([] :: [(PrivateKey, BA.Bytes)])
   ]
 
+parseEither :: (BA.ByteArray ba) => BP.Parser ba a -> ba -> Either String a
+parseEither parser = f . BP.parse parser
+    where
+        f (BP.ParseOK _ a) = Right a
+        f (BP.ParseFail e) = Left e
+        f (BP.ParseMore c) = f (c Nothing)
+
+{-
 ed25519PrivateKeyFile1 :: PrivateKeyFile
 ed25519PrivateKeyFile1 = PrivateKeyFile
   { cipher     = "none"
@@ -37,6 +50,7 @@ ed25519PrivateKeyFile1 = PrivateKeyFile
   where
     k :: BS.ByteString
     k = "jri.\246\NAK\248\172\243\187\200-\247\246\225\218\206\250\145\SI\246\140\131(\234\255\135\177\b\161\128O"
+-}
 
 ed25519PrivateKeyFile1' :: BS.ByteString
 ed25519PrivateKeyFile1'  = mconcat
