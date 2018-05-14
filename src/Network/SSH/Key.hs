@@ -28,7 +28,7 @@ data PublicKey
   deriving (Eq, Show)
 
 data PrivateKey
-  = Ed25519PrivateKey Ed25519.SecretKey
+  = Ed25519PrivateKey Ed25519.PublicKey Ed25519.SecretKey
   | RsaPrivateKey     RSA.PrivateKey
   deriving (Eq, Show)
 
@@ -83,8 +83,8 @@ parsePrivateKeyFile passphrase = do
             | c >= fe 'A' && c <= fe 'Z' -> pure (c - fe 'A')
             | c >= fe 'a' && c <= fe 'z' -> pure (c - fe 'a' + 26)
             | c >= fe '0' && c <= fe '9' -> pure (c - fe '0' + 52)
-            | c == fe '+'                -> pure 43
-            | c >= fe '/'                -> pure 47
+            | c == fe '+'                -> pure 62
+            | c == fe '/'                -> pure 63
             | otherwise                  -> fail ""
 
         padding :: (BA.ByteArray ba) => BP.Parser ba ()
@@ -135,27 +135,38 @@ parsePrivateKeyFile passphrase = do
 
         numberOfKeys <- fromIntegral <$> getWord32be
         publicKeysRaw <- getString -- not used
-        -- error (show publicKeysRaw)
         privateKeysRawEncrypted <- getString
         privateKeysRawDecrypted <- BA.convert <$> case cipherAlgo of
-          "none"       -> pure privateKeysRawEncrypted
-          "aes256-cbc" -> do
-            let result = do
-                  let Cipher.KeySizeFixed keySize = Cipher.cipherKeySize (undefined :: Cipher.AES256)
-                  let ivSize = Cipher.blockSize (undefined :: Cipher.AES256)
-                  keyIV <- deriveKey $ Cipher.KeySizeFixed (keySize + ivSize)
-                  let key = BA.take keySize keyIV :: BA.ScrubbedBytes
-                  case Cipher.makeIV (BA.drop keySize keyIV) of
-                    Nothing -> CryptoFailed CryptoError_IvSizeInvalid
-                    Just iv -> do
-                      cipher <- Cipher.cipherInit key :: CryptoFailable Cipher.AES256
-                      pure $ Cipher.cbcDecrypt cipher iv privateKeysRawEncrypted
-            case result of
-              CryptoPassed a -> pure a
-              CryptoFailed e -> fail (show e)
-          _ -> fail $ "Unsupported cipher " ++ show cipherAlgo
-        -- error (show (BA.length (BA.convert privateKeysRawDecrypted :: BA.Bytes)))
-        error (show (BA.convert privateKeysRawDecrypted :: BA.Bytes))
+            "none"       -> pure privateKeysRawEncrypted
+            "aes256-cbc" -> do
+                let result = do
+                      let Cipher.KeySizeFixed keySize = Cipher.cipherKeySize (undefined :: Cipher.AES256)
+                      let ivSize = Cipher.blockSize (undefined :: Cipher.AES256)
+                      keyIV <- deriveKey $ Cipher.KeySizeFixed (keySize + ivSize)
+                      let key = BA.take keySize keyIV :: BA.ScrubbedBytes
+                      case Cipher.makeIV (BA.drop keySize keyIV) of
+                          Nothing -> CryptoFailed CryptoError_IvSizeInvalid
+                          Just iv -> do
+                              cipher <- Cipher.cipherInit key :: CryptoFailable Cipher.AES256
+                              pure $ Cipher.cbcDecrypt cipher iv privateKeysRawEncrypted
+                case result of
+                  CryptoPassed a -> pure a
+                  CryptoFailed e -> fail (show e)
+            "aes256-ctr" -> do
+                let result = do
+                      let Cipher.KeySizeFixed keySize = Cipher.cipherKeySize (undefined :: Cipher.AES256)
+                      let ivSize = Cipher.blockSize (undefined :: Cipher.AES256)
+                      keyIV <- deriveKey $ Cipher.KeySizeFixed (keySize + ivSize)
+                      let key = BA.take keySize keyIV :: BA.ScrubbedBytes
+                      case Cipher.makeIV (BA.drop keySize keyIV) of
+                          Nothing -> CryptoFailed CryptoError_IvSizeInvalid
+                          Just iv -> do
+                              cipher <- Cipher.cipherInit key :: CryptoFailable Cipher.AES256
+                              pure $ Cipher.ctrCombine cipher iv privateKeysRawEncrypted
+                case result of
+                  CryptoPassed a -> pure a
+                  CryptoFailed e -> fail (show e)
+            _ -> fail $ "Unsupported cipher " ++ show cipherAlgo
         case BP.parse (parsePrivateKeys numberOfKeys) privateKeysRawDecrypted of
           BP.ParseOK _ keys -> pure keys
           BP.ParseFail e    -> fail e
@@ -167,20 +178,22 @@ parsePrivateKeyFile passphrase = do
         check2 <- getWord32be
         when (check1 /= check2) (fail "Unsuccessful decryption")
         replicateM count $ do
-            key <- do
-              algo <- getString
-              case algo of
+            key <- getString >>= \algo-> case algo of
                 "ssh-ed25519" -> do
-                    secret <- getString
-                    error (show  (BA.length (BA.convert secret :: BA.Bytes)))
-                    error (show (BA.convert secret :: BA.Bytes))
-                    case Ed25519.secretKey secret of
-                        CryptoPassed a -> pure (Ed25519PrivateKey a)
+                    BP.skip 4 -- length field (is always 32 for ssh-ed25519)
+                    BP.skip Ed25519.publicKeySize
+                    BP.skip 4 -- length field (is always 64 for ssh-ed25519)
+                    secretKeyRaw <- BP.take 32
+                    publicKeyRaw <- BP.take 32
+                    let key = Ed25519PrivateKey
+                          <$> Ed25519.publicKey publicKeyRaw
+                          <*> Ed25519.secretKey secretKeyRaw
+                    case key of
+                        CryptoPassed a -> pure a
                         CryptoFailed _ -> fail $ "Invalid " ++ show (convert algo :: BA.Bytes) ++ " private key"
                 _ -> fail $ "Unsupported algorithm " ++ show (convert algo :: BA.Bytes)
-            BP.take 101 >>= error . show . (convert :: BA.ScrubbedBytes -> BA.Bytes)
-            comment <- getString
-            pure (key, BA.convert comment)
+            comment <- BA.convert <$> getString
+            pure (key, comment)
 
 instance IsString BA.Bytes where
     fromString = BA.pack . map (fromIntegral . fromEnum)
