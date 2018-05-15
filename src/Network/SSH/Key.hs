@@ -149,7 +149,7 @@ parsePrivateKeyFile passphrase = do
             "aes256-cbc" -> do
                 let result = do
                       let Cipher.KeySizeFixed keySize = Cipher.cipherKeySize (undefined :: Cipher.AES256)
-                      let ivSize = Cipher.blockSize (undefined :: Cipher.AES256)
+                          ivSize = Cipher.blockSize (undefined :: Cipher.AES256)
                       keyIV <- deriveKey $ Cipher.KeySizeFixed (keySize + ivSize)
                       let key = BA.take keySize keyIV :: BA.ScrubbedBytes
                       case Cipher.makeIV (BA.drop keySize keyIV) of

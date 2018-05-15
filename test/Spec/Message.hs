@@ -18,8 +18,6 @@ import           Test.Tasty.QuickCheck    as QC
 
 import           Network.SSH.Message
 
-import qualified Spec.Key
-
 tests :: TestTree
 tests = testGroup "Network.SSH.Message"
   [ testGroup "put . get == id"

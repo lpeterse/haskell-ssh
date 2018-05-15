@@ -1,4 +1,4 @@
-name:                ssh
+name:                hssh
 version:             0.1.0.0
 github:              lpeterse/haskell-ssh
 license:             MIT
@@ -13,53 +13,27 @@ extra-source-files:
 synopsis:            SSH protocol implementation
 description:         Please see the README on Github at <https://github.com/lpeterse/haskell-ssh#readme>
 
+flags:
+  demo:
+    description: Build server demo executable hssh-demo
+    manual:      true
+    default:     false
+
 dependencies:
+- async
 - base >= 4.7 && < 5
 - binary
 - bytestring
-- mtl
 - containers
 - cryptonite
-- terminal
 - memory
-- replique
+- mtl
 - stm
+- terminal
 - text
-- async
-- megaparsec
 
 library:
   source-dirs: src
-
-executables:
-  hssh:
-    main:                Main.hs
-    source-dirs:         app
-    ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
-    dependencies:
-    - ssh
-    - socket
-    - binary
-    - bytestring
-    - mtl
-    - containers
-  hssh-parser:
-    main:                parser/Main.hs
-    source-dirs:         app
-    ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
-    dependencies:
-    - ssh
-    - socket
-    - binary
-    - bytestring
-    - mtl
-    - containers
 
 tests:
   hssh-test:
@@ -70,7 +44,25 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - ssh
+    - hssh
     - tasty
     - tasty-hunit
     - tasty-quickcheck
+
+executables:
+  hssh-demo:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - hssh
+    - socket
+    when:
+      - condition: flag(demo)
+        then:
+          buildable: true
+        else:
+          buildable: false

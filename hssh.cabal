@@ -2,9 +2,9 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: ce705c19d06529dd6116f8c078d9568d0507567610f2dfffe7cc6b9d05be4160
+-- hash: 01c2171c2aa56abc370f6038a7660465d2acd5767c1714693a5de873648e82db
 
-name:           ssh
+name:           hssh
 version:        0.1.0.0
 synopsis:       SSH protocol implementation
 description:    Please see the README on Github at <https://github.com/lpeterse/haskell-ssh#readme>
@@ -25,23 +25,12 @@ source-repository head
   type: git
   location: https://github.com/lpeterse/haskell-ssh
 
+flag demo
+  description: Build server demo executable hssh-demo
+  manual: True
+  default: False
+
 library
-  hs-source-dirs:
-      src
-  build-depends:
-      async
-    , base >=4.7 && <5
-    , binary
-    , bytestring
-    , containers
-    , cryptonite
-    , megaparsec
-    , memory
-    , mtl
-    , replique
-    , stm
-    , terminal
-    , text
   exposed-modules:
       Network.SSH
       Network.SSH.Config
@@ -51,11 +40,27 @@ library
       Network.SSH.Key
       Network.SSH.Message
   other-modules:
-      Paths_ssh
+      Paths_hssh
+  hs-source-dirs:
+      src
+  build-depends:
+      async
+    , base >=4.7 && <5
+    , binary
+    , bytestring
+    , containers
+    , cryptonite
+    , memory
+    , mtl
+    , stm
+    , terminal
+    , text
   default-language: Haskell2010
 
-executable hssh
+executable hssh-demo
   main-is: Main.hs
+  other-modules:
+      Paths_hssh
   hs-source-dirs:
       app
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
@@ -66,48 +71,26 @@ executable hssh
     , bytestring
     , containers
     , cryptonite
-    , megaparsec
+    , hssh
     , memory
     , mtl
-    , replique
     , socket
-    , ssh
     , stm
     , terminal
     , text
-  other-modules:
-      Paths_ssh
-  default-language: Haskell2010
-
-executable hssh-parser
-  main-is: parser/Main.hs
-  hs-source-dirs:
-      app
-  ghc-options: -threaded -rtsopts -with-rtsopts=-N
-  build-depends:
-      async
-    , base >=4.7 && <5
-    , binary
-    , bytestring
-    , containers
-    , cryptonite
-    , megaparsec
-    , memory
-    , mtl
-    , replique
-    , socket
-    , ssh
-    , stm
-    , terminal
-    , text
-  other-modules:
-      Main
-      Paths_ssh
+  if flag(demo)
+    buildable: True
+  else
+    buildable: False
   default-language: Haskell2010
 
 test-suite hssh-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
+  other-modules:
+      Spec.Key
+      Spec.Message
+      Paths_hssh
   hs-source-dirs:
       test
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
@@ -118,19 +101,13 @@ test-suite hssh-test
     , bytestring
     , containers
     , cryptonite
-    , megaparsec
+    , hssh
     , memory
     , mtl
-    , replique
-    , ssh
     , stm
     , tasty
     , tasty-hunit
     , tasty-quickcheck
     , terminal
     , text
-  other-modules:
-      Spec.Key
-      Spec.Message
-      Paths_ssh
   default-language: Haskell2010
