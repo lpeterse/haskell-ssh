@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 3c05f7454687bc6dc25cc3758c8089b29e082c851ee6c7de78ff319da438e692
+-- hash: ce705c19d06529dd6116f8c078d9568d0507567610f2dfffe7cc6b9d05be4160
 
 name:           ssh
 version:        0.1.0.0
@@ -131,5 +131,6 @@ test-suite hssh-test
     , text
   other-modules:
       Spec.Key
+      Spec.Message
       Paths_ssh
   default-language: Haskell2010

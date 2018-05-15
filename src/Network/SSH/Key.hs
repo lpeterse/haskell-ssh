@@ -2,10 +2,14 @@
 {-# LANGUAGE MultiWayIf        #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies      #-}
-module Network.SSH.Key where
+module Network.SSH.Key
+    (   Key (..)
+    ,   decodePrivateKeyFile
+    ) where
 
 import           Control.Applicative    (many, (<|>))
 import           Control.Monad          (forM, replicateM, when)
+import           Control.Monad.Fail     (MonadFail)
 import qualified Crypto.Cipher.AES      as Cipher
 import qualified Crypto.Cipher.Blowfish as Cipher
 import qualified Crypto.Cipher.Types    as Cipher
@@ -22,18 +26,22 @@ import qualified Data.ByteArray.Parse   as BP
 import           Data.String
 import           Data.Word
 
-data PublicKey
-  = Ed25519PublicKey Ed25519.PublicKey
-  | RsaPublicKey     RSA.PublicKey
-  deriving (Eq, Show)
+data Key
+    = Ed25519Key Ed25519.PublicKey Ed25519.SecretKey
+    deriving (Eq, Show)
 
-data PrivateKey
-  = Ed25519PrivateKey Ed25519.PublicKey Ed25519.SecretKey
-  | RsaPrivateKey     RSA.PrivateKey
-  deriving (Eq, Show)
+decodePrivateKeyFile :: ( MonadFail m, BA.ByteArray input, IsString input, Show input
+                        , BA.ByteArray passphrase, BA.ByteArray comment )
+                     => passphrase -> input -> m [(Key, comment)]
+decodePrivateKeyFile passphrase = f . BP.parse (parsePrivateKeyFile passphrase)
+    where
+        f (BP.ParseOK _ a) = pure a
+        f (BP.ParseFail e) = fail e
+        f (BP.ParseMore c) = f (c Nothing)
 
-parsePrivateKeyFile :: (BA.ByteArray input, IsString input, Show input, BA.ByteArray passphrase, BA.ByteArray comment)
-                    => passphrase -> BP.Parser input [(PrivateKey, comment)]
+parsePrivateKeyFile :: ( BA.ByteArray input, IsString input, Show input
+                       , BA.ByteArray passphrase, BA.ByteArray comment )
+                    => passphrase -> BP.Parser input [(Key, comment)]
 parsePrivateKeyFile passphrase = do
     BP.bytes "-----BEGIN OPENSSH PRIVATE KEY-----"
     many space
@@ -116,7 +124,7 @@ parsePrivateKeyFile passphrase = do
     getString = BP.take =<< (fromIntegral <$> getWord32be)
 
     parseKeys :: (BA.ByteArray input, IsString input, Show input, BA.ByteArray comment)
-                  => BP.Parser input [(PrivateKey, comment)]
+                  => BP.Parser input [(Key, comment)]
     parseKeys = do
         BP.bytes "openssh-key-v1\NUL"
         cipherAlgo <- getString
@@ -172,7 +180,7 @@ parsePrivateKeyFile passphrase = do
           BP.ParseFail e    -> fail e
           BP.ParseMore _    -> syntaxError
 
-    parsePrivateKeys :: (BA.ByteArray comment) => Int -> BP.Parser BA.ScrubbedBytes [(PrivateKey, comment)]
+    parsePrivateKeys :: (BA.ByteArray comment) => Int -> BP.Parser BA.ScrubbedBytes [(Key, comment)]
     parsePrivateKeys count = do
         check1 <- getWord32be
         check2 <- getWord32be
@@ -180,12 +188,14 @@ parsePrivateKeyFile passphrase = do
         replicateM count $ do
             key <- getString >>= \algo-> case algo of
                 "ssh-ed25519" -> do
-                    BP.skip 4 -- length field (is always 32 for ssh-ed25519)
+                    BP.skip 3
+                    BP.byte 32 -- length field (is always 32 for ssh-ed25519)
                     BP.skip Ed25519.publicKeySize
-                    BP.skip 4 -- length field (is always 64 for ssh-ed25519)
+                    BP.skip 3
+                    BP.byte 64 -- length field (is always 64 for ssh-ed25519)
                     secretKeyRaw <- BP.take 32
                     publicKeyRaw <- BP.take 32
-                    let key = Ed25519PrivateKey
+                    let key = Ed25519Key
                           <$> Ed25519.publicKey publicKeyRaw
                           <*> Ed25519.secretKey secretKeyRaw
                     case key of
