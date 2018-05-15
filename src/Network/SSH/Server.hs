@@ -1,33 +1,35 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
-module Network.SSH
-  ( serve
-  ) where
+module Network.SSH.Server
+    ( Config (..)
+    , Connection (..)
+    ) where
+
+import qualified Network.SSH.Server.Config     as Config
+import qualified Network.SSH.Server.Connection as Connection
 
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
-import           Control.Exception            (throwIO)
+import           Control.Exception             (throwIO)
 import           Control.Monad.STM
-import qualified Crypto.Cipher.ChaCha         as ChaCha
-import qualified Crypto.Hash                  as Hash
-import qualified Crypto.MAC.Poly1305          as Poly1305
-import qualified Crypto.PubKey.Curve25519     as Curve25519
-import qualified Crypto.PubKey.Ed25519        as Ed25519
-import qualified Data.Binary                  as B
-import qualified Data.Binary.Get              as B
-import qualified Data.Binary.Put              as B
-import qualified Data.ByteArray               as BA
-import qualified Data.ByteString              as BS
-import qualified Data.ByteString.Lazy         as LBS
-import           Data.Monoid                  ((<>))
+import qualified Crypto.Cipher.ChaCha          as ChaCha
+import qualified Crypto.Hash                   as Hash
+import qualified Crypto.MAC.Poly1305           as Poly1305
+import qualified Crypto.PubKey.Curve25519      as Curve25519
+import qualified Crypto.PubKey.Ed25519         as Ed25519
+import qualified Data.Binary                   as B
+import qualified Data.Binary.Get               as B
+import qualified Data.Binary.Put               as B
+import qualified Data.ByteArray                as BA
+import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Lazy          as LBS
+import           Data.Monoid                   ((<>))
 import           Data.Typeable
 import           Data.Word
 
-import           Network.SSH.Config
 import           Network.SSH.Connection
 import           Network.SSH.Constants
 import           Network.SSH.Exception
 import           Network.SSH.Message
+import           Network.SSH.Server.Config
 
 serve :: ServerConfig -> (BS.ByteString -> IO ()) -> (Int -> IO BS.ByteString) -> IO ()
 serve config send receive = do
@@ -255,7 +257,6 @@ deriveKeys sec hash i (SessionId sess) = BA.pack . BA.unpack <$> k1 : f [k1]
       Hash.hashUpdate Hash.hashInit secmpint
     secmpint =
       LBS.toStrict $ B.runPut $ putMpint $ BA.unpack sec
-
 
 putMpint :: [Word8] -> B.Put
 putMpint xs = zs

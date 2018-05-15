@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Network.SSH.Connection
+module Network.SSH.Server.Connection
   ( serveConnection
    ) where
 
@@ -20,9 +20,9 @@ import           Data.Text.Encoding           as T
 import           Data.Typeable
 import           System.Exit
 
-import           Network.SSH.Config
 import           Network.SSH.Constants
 import           Network.SSH.Message
+import           Network.SSH.Server.Config
 
 data Connection
   = Connection
@@ -62,7 +62,7 @@ data ProtocolException
 
 instance Exception ProtocolException
 
-serveConnection :: ServerConfig -> SessionId -> STM Message -> (Message -> STM ()) ->  IO ()
+serveConnection :: Config -> SessionId -> STM Message -> (Message -> STM ()) ->  IO ()
 serveConnection config sid input output = do
   debug  <- newTChanIO
   chans  <- newTVarIO mempty
@@ -103,7 +103,7 @@ serveConnection config sid input output = do
             forkIO action
       pure (reqExec, runExec)
 
-handleInput :: ServerConfig -> Connection -> STM () -> STM ()
+handleInput :: Config -> Connection -> STM () -> STM ()
 handleInput config conn disconnect = receive conn >>= \case
   MsgDisconnect {} -> disconnect
   MsgIgnore {} -> pure ()
@@ -158,7 +158,7 @@ handleInput config conn disconnect = receive conn >>= \case
           send conn (MsgChannelSuccess $ ChannelSuccess $ chanRemoteId ch)
       ChannelRequestShell lid wantReply -> do
         ch <- getChannel conn lid
-        case scRunShell config of
+        case onShellRequest config of
           Nothing ->
             when wantReply $
               send conn (MsgChannelFailure $ ChannelFailure $ chanRemoteId ch)
@@ -262,4 +262,3 @@ closeChannel conn lid = do
       writeTVar (chanClosed ch) True
       writeTVar (channels conn) $! M.insert lid Nothing cs -- semi-closed
       send conn (MsgChannelClose $ ChannelClose $ chanRemoteId ch)
-

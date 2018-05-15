@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 01c2171c2aa56abc370f6038a7660465d2acd5767c1714693a5de873648e82db
+-- hash: 9874c2b267cd0586830b77ffdee0b7690a7829b6cd1d921bdee32882108c8d45
 
 name:           hssh
 version:        0.1.0.0
@@ -32,13 +32,13 @@ flag demo
 
 library
   exposed-modules:
-      Network.SSH
-      Network.SSH.Config
-      Network.SSH.Connection
       Network.SSH.Constants
       Network.SSH.Exception
       Network.SSH.Key
       Network.SSH.Message
+      Network.SSH.Server
+      Network.SSH.Server.Config
+      Network.SSH.Server.Connection
   other-modules:
       Paths_hssh
   hs-source-dirs:

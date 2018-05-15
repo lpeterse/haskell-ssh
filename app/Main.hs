@@ -15,10 +15,11 @@ import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 
+import           Control.Monad.Replique
+import           Control.Monad.Terminal
+
 import           Network.SSH
-import           Network.SSH.Config
-import           Network.SSH.Constants
-import           Network.SSH.Message
+import qualified Network.SSH.Server             as Server
 
 main :: IO ()
 main = bracket open close accept
@@ -37,14 +38,45 @@ main = bracket open close accept
         forkIO $ bracket
           (S.accept s `finally` putMVar token ())
           (S.close . fst)
-          (\(x,_)-> serve config (send x) (receive x))
+          (\(x,_)-> withConnection x)
         takeMVar token
 
-    config = ServerConfig {
-        scHostKey  = exampleHostKey
-      , scRunShell = Just runShell
+    config = Server.Config {
+        Server.hostKey  = exampleHostKey
+      , Server.runWithShell = Just runShell
       }
 
-runShell :: Maybe PtySettings -> STM BS.ByteString -> (BS.ByteString -> STM ()) -> (BS.ByteString -> STM ()) -> IO ExitCode
-runShell mPty readStdin writeStdout writeStderr =
-  forever $ threadDelay 1000000
+withConnection :: S.Socket S.Inet6 S.Stream S.Default -> IO ()
+withConnection socket = do
+    config <- Server.newDefaultConfig { onShellRequest = Just serveShellRequest }
+    serve socket config
+
+serveShellRequest :: Terminal -> IO ExitCode
+serveShellRequest term = do
+    runTerminalT $ runRepliqueT repl 0
+    pure (ExitFailure 1)
+
+repl :: (MonadTerminal m, MonadColorPrinter m, MonadMask m, MonadIO m) => RepliqueT Int m ()
+repl = readLine prompt >>= \case
+    ""           -> pure ()
+    "quit"       -> quit
+    "fail"       -> fail "abcdef"
+    "failIO"     -> liftIO $ E.throwIO $ E.userError "Exception thrown in IO."
+    "throwM"     -> throwM $ E.userError "Exception thrown in RepliqueT."
+    "liftThrowM" -> lift $ throwM $ E.userError "Exception thrown within the monad transformer."
+    "load"       -> load >>= pprint
+    "inc"        -> load >>= store . succ
+    "dec"        -> load >>= store . pred
+    "loop"       -> forM_ [1..100000] $ \i-> store i >> putString (' ':show i)
+    "finally"    -> fail "I am failing, I am failing.." `finally` putStringLn "FINALLY"
+    "clear"      -> clearScreen
+    "screen"     -> getScreenSize >>= \p-> putStringLn (show p) >> flush
+    "cursor"     -> getCursorPosition >>= \p-> putStringLn (show p) >> flush
+    "home"       -> setCursorPosition (0,0)
+    "progress"   -> void $ runWithProgressBar $ \update-> (`finally` threadDelay 3000000) $ forM_ [1..1000] $ \i-> do
+                      threadDelay 10000
+                      update $ fromIntegral i / 1000
+    "colors"     -> undefined
+    "normal"     -> useAlternateScreenBuffer False
+    "alternate"  -> useAlternateScreenBuffer True
+    line         -> putStringLn (show (line :: String))
