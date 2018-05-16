@@ -1,9 +1,7 @@
 module Network.SSH.Server.Config where
 
-import           Control.Monad.STM
 import           Control.Monad.Terminal
 import qualified Crypto.PubKey.Ed25519  as Ed25519
-import qualified Data.ByteString        as BS
 import           System.Exit
 
 import           Network.SSH.Key

@@ -4,6 +4,7 @@
 {-# LANGUAGE TypeFamilies      #-}
 module Network.SSH.Key
     (   PrivateKey (..)
+    ,   PublicKey (..)
     ,   decodePrivateKeyFile
     ) where
 
@@ -28,6 +29,11 @@ import           Data.Word
 
 data PrivateKey
     = Ed25519PrivateKey Ed25519.PublicKey Ed25519.SecretKey
+    deriving (Eq, Show)
+
+data PublicKey
+    = PublicKeyEd25519 Ed25519.PublicKey
+    | PublicKeyRSA     RSA.PublicKey
     deriving (Eq, Show)
 
 decodePrivateKeyFile :: ( MonadFail m, BA.ByteArray input, IsString input, Show input

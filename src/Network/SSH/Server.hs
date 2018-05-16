@@ -1,20 +1,20 @@
-module Network.SSH.Server
-    ( Config (..)
-    , Connection (..)
-    ) where
+{-# LANGUAGE OverloadedStrings #-}
+module Network.SSH.Server ( serve ) where
 
 import qualified Network.SSH.Server.Config     as Config
 import qualified Network.SSH.Server.Connection as Connection
 
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
-import           Control.Exception             (throwIO)
+import           Control.Monad.Catch
+import           Control.Monad.IO.Class
 import           Control.Monad.STM
 import qualified Crypto.Cipher.ChaCha          as ChaCha
 import qualified Crypto.Hash                   as Hash
 import qualified Crypto.MAC.Poly1305           as Poly1305
 import qualified Crypto.PubKey.Curve25519      as Curve25519
 import qualified Crypto.PubKey.Ed25519         as Ed25519
+import           Crypto.Random.Types           (MonadRandom)
 import qualified Data.Binary                   as B
 import qualified Data.Binary.Get               as B
 import qualified Data.Binary.Put               as B
@@ -25,17 +25,23 @@ import           Data.Monoid                   ((<>))
 import           Data.Typeable
 import           Data.Word
 
-import           Network.SSH.Connection
 import           Network.SSH.Constants
 import           Network.SSH.Exception
+import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
+import           Network.SSH.Server.Connection
 
-serve :: ServerConfig -> (BS.ByteString -> IO ()) -> (Int -> IO BS.ByteString) -> IO ()
-serve config send receive = do
-  let sendPut         = send . LBS.toStrict . B.runPut
-  let serverSecretKey = scHostKey config
-  let serverPublicKey = PublicKeyEd25519 $ Ed25519.toPublic serverSecretKey
+class (Monad m) => MonadStream m where
+  send    :: BA.ByteArrayAccess ba => ba -> m ()
+  receive :: BA.ByteArray ba => Int -> m ba
+
+serve :: (MonadStream m, MonadThrow m, MonadRandom m, MonadIO m) => Config -> m ()
+serve config = do
+  let sendPut          = send . LBS.toStrict . B.runPut
+  let serverPrivateKey = hostKey config
+      serverPublicKey  = case serverPrivateKey of
+          Ed25519PrivateKey pk __ -> PublicKeyEd25519 pk
 
   -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
   -- key exchange.
@@ -46,7 +52,7 @@ serve config send receive = do
   -- Parsing in chunks of 32 bytes in order to not allocate unnecessarly
   -- much memory. The version string is usually short and transmitted within
   -- a single TCP segment.
-  (clientVersion, rem1) <- runGetIncremental B.get (receive 32) mempty
+  (clientVersion, rem1) <- runGetIncremental B.get 32 mempty
 
   -- Reply by sending the server version string.
   sendPut $ B.put version
@@ -56,10 +62,10 @@ serve config send receive = do
   sendPut $ packetize $ B.put serverKexInit
 
   -- Receive KexInit from client.
-  (clientKexInit, rem2) <- runGetIncremental (unpacketize B.get) (receive 4096) rem1
+  (clientKexInit, rem2) <- runGetIncremental (unpacketize B.get) 4096 rem1
 
   -- Receive KexEcdhInit from client.
-  (KexEcdhInit clientEphemeralPublicKey, rem3) <- runGetIncremental (unpacketize B.get) (receive 4096) rem2
+  (KexEcdhInit clientEphemeralPublicKey, rem3) <- runGetIncremental (unpacketize B.get) 4096 rem2
 
   -- Compute and perform the Diffie-Helman key exchange.
   let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
@@ -73,9 +79,9 @@ serve config send receive = do
         serverEphemeralPublicKey
         dhSecret
   let session = SessionId (BS.pack $ BA.unpack hash)
-  let signature = case serverPublicKey of
-        PublicKeyEd25519 pk -> SignatureEd25519 $ Ed25519.sign serverSecretKey pk hash
-        _                   -> error "FIXME: NOT IMPLEMENTED YET"
+  let signature = case serverPrivateKey of
+        Ed25519PrivateKey pk sk -> SignatureEd25519 $ Ed25519.sign sk pk hash
+        _                       -> error "FIXME: NOT IMPLEMENTED YET"
   let kexEcdhReply = KexEcdhReply {
         kexServerHostKey      = serverPublicKey
       , kexServerEphemeralKey = serverEphemeralPublicKey
@@ -83,7 +89,7 @@ serve config send receive = do
       }
   sendPut $ packetize $ B.put kexEcdhReply
   sendPut $ packetize $ B.put NewKeys
-  (NewKeys, _) <- runGetIncremental (unpacketize B.get) (receive 1) rem3
+  (NewKeys, _) <- runGetIncremental (unpacketize B.get) 1 rem3
 
   -- Derive the required encryption/decryption keys.
   -- The integrity keys etc. are not needed with chacha20.
@@ -91,17 +97,17 @@ serve config send receive = do
   let mainKeySC:headerKeySC:_ = deriveKeys dhSecret hash "D" session
 
   -- Proceed serving the connection in encrypted mode.
-  input  <- newTChanIO
-  output <- newTChanIO
+  input  <- liftIO newTChanIO
+  output <- liftIO newTChanIO
   let runSender i = do
         msg <- atomically $ readTChan output
         let plain = LBS.toStrict $ B.runPut $ B.put msg
-        encryptAndSend i headerKeySC mainKeySC send plain
+        encryptAndSend i headerKeySC mainKeySC plain
         runSender (i + 1)
   let runReceiver i = do
-        plain <- receiveAndDecrypt i headerKeyCS mainKeyCS receive
+        plain <- receiveAndDecrypt i headerKeyCS mainKeyCS
         case B.runGetOrFail B.get (LBS.fromStrict plain) of
-          Left (_,_,e) -> throwIO (SshSyntaxErrorException e)
+          Left (_,_,e) -> throwM (SshSyntaxErrorException e)
           Right (_,_,msg) -> do
             atomically $ writeTChan input msg
             runReceiver (i + 1)
@@ -109,21 +115,26 @@ serve config send receive = do
     `race_` runSender 3
     `race_` runReceiver 3
 
-runGetIncremental :: B.Get a -> IO BS.ByteString -> BS.ByteString -> IO (a, BS.ByteString)
-runGetIncremental getter more initial = case B.runGetIncremental getter of
+runGetIncremental :: (MonadStream m, MonadThrow m) => B.Get a -> Int -> BS.ByteString -> m (a, BS.ByteString)
+runGetIncremental getter chunkSize initial = case B.runGetIncremental getter of
   B.Done _ _ a       -> pure (a, initial)
-  B.Fail _ _ e       -> throwIO (SshSyntaxErrorException e)
+  B.Fail _ _ e       -> throwM (SshSyntaxErrorException e)
   B.Partial continue -> f (continue $ Just initial)
   where
     f (B.Done remainder _ a) = pure (a, remainder)
-    f (B.Fail _ _ e        ) = throwIO (SshSyntaxErrorException e)
-    f (B.Partial continue  ) = f =<< (continue . nothingIfEmpty <$> more)
+    f (B.Fail _ _ e        ) = throwM (SshSyntaxErrorException e)
+    f (B.Partial continue  ) = f =<< (continue . nothingIfEmpty <$> receive chunkSize)
     nothingIfEmpty bs
       | BS.null bs = Nothing
       | otherwise  = Just bs
 
-encryptAndSend :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> (BS.ByteString -> IO ()) -> BS.ByteString -> IO ()
-encryptAndSend seqnr headerKey mainKey send datBS = send ciph3 >> send mac
+encryptAndSend :: (MonadStream m, MonadThrow m, BA.ByteArrayAccess ba)
+               => Int           -- ^
+               -> ba            -- ^
+               -> ba            -- ^
+               -> BS.ByteString -- ^
+               -> m ()
+encryptAndSend seqnr headerKey mainKey datBS = send ciph3 >> send mac
   where
     build         = LBS.toStrict . B.runPut
 
@@ -146,8 +157,8 @@ encryptAndSend seqnr headerKey mainKey send datBS = send ciph3 >> send mac
     mac           = let Poly1305.Auth auth = Poly1305.auth (BS.take 32 poly) ciph3
                     in  BS.pack (BA.unpack auth)
 
-receiveAndDecrypt :: (BA.ByteArrayAccess ba) => Int -> ba -> ba -> (Int -> IO BS.ByteString) -> IO BS.ByteString
-receiveAndDecrypt seqnr headerKey mainKey receive = do
+receiveAndDecrypt :: (MonadStream m, MonadThrow m, BA.ByteArrayAccess ba) => Int -> ba -> ba -> m BS.ByteString
+receiveAndDecrypt seqnr headerKey mainKey = do
   ciph1          <- receiveExactly 4
   let paclen      = sizeFromBS (fst $ ChaCha.combine st1 ciph1)
   ciph2          <- receiveExactly paclen
@@ -155,7 +166,7 @@ receiveAndDecrypt seqnr headerKey mainKey receive = do
   let actualMAC   = Poly1305.Auth (BA.pack $ BS.unpack ciph3)
   let expectedMAC = Poly1305.auth (BS.take 32 poly) (ciph1 <> ciph2)
   if actualMAC /= expectedMAC
-    then throwIO SshMacMismatchException
+    then throwM SshMacMismatchException
     else pure $ unpacket $ fst $ ChaCha.combine st3 ciph2
   where
     build         = LBS.toStrict . B.runPut
@@ -171,7 +182,7 @@ receiveAndDecrypt seqnr headerKey mainKey receive = do
       Nothing    -> bs
       Just (h,t) -> BS.take (BS.length t - fromIntegral h) t
 
-    receiveExactly :: Int -> IO BS.ByteString
+    receiveExactly :: (MonadStream m, MonadThrow m) => Int -> m BS.ByteString
     receiveExactly i = f mempty
       where
       f acc
@@ -179,7 +190,7 @@ receiveAndDecrypt seqnr headerKey mainKey receive = do
         | otherwise = do
             bs <- receive (i - BS.length acc)
             if BS.null bs
-              then throwIO SshUnexpectedEndOfInputException
+              then throwM SshUnexpectedEndOfInputException
               else f $! acc <> bs
 
 -------------------------------------------------------------------------------

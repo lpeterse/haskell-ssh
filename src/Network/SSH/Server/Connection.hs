@@ -156,7 +156,8 @@ handleInput config conn disconnect = receive conn >>= \case
         writeTVar (chanPty ch) (Just ts)
         when wantReply $
           send conn (MsgChannelSuccess $ ChannelSuccess $ chanRemoteId ch)
-      ChannelRequestShell lid wantReply -> do
+      ChannelRequestShell lid wantReply -> undefined
+        {-
         ch <- getChannel conn lid
         case onShellRequest config of
           Nothing ->
@@ -188,7 +189,7 @@ handleInput config conn disconnect = receive conn >>= \case
                              True    -> pure ()
                              False   -> retry
                        in  atomically (waitProcessTerm `orElse` waitChannelTerm)
-
+      -}
       ChannelRequestOther lid _ -> do
         ch <- getChannel conn lid
         send conn (MsgChannelFailure $ ChannelFailure $ chanRemoteId ch)

@@ -97,6 +97,8 @@ import           Data.Monoid              ((<>))
 import           Data.Word
 import           System.Exit
 
+import           Network.SSH.Key
+
 data Message
   = MsgDisconnect              Disconnect
   | MsgIgnore                  Ignore
@@ -242,9 +244,9 @@ data ChannelClose
 
 data ChannelRequest
   = ChannelRequestPty
-    { crChannelId     :: ChannelId
-    , crWantReply     :: Bool
-    , crPtySettings   :: PtySettings
+    { crChannelId   :: ChannelId
+    , crWantReply   :: Bool
+    , crPtySettings :: PtySettings
     }
   | ChannelRequestShell
     { crChannelId :: ChannelId
@@ -282,12 +284,6 @@ data AuthMethod
   | AuthPublicKey Algorithm PublicKey (Maybe Signature)
   deriving (Eq, Show)
 
-data PublicKey
-  = PublicKeyEd25519 Ed25519.PublicKey
-  | PublicKeyRSA     RSA.PublicKey
-  | PublicKeyOther   BS.ByteString BS.ByteString
-  deriving (Eq, Show)
-
 data Signature
   = SignatureEd25519 Ed25519.Signature
   | SignatureRSA     BS.ByteString
@@ -296,12 +292,12 @@ data Signature
 
 data PtySettings
   = PtySettings
-  { ptyEnv           :: BS.ByteString
-  , ptyWidthCols     :: Word32
-  , ptyHeightRows    :: Word32
-  , ptyWidthPixels   :: Word32
-  , ptyHeightPixels  :: Word32
-  , ptyModes         :: BS.ByteString
+  { ptyEnv          :: BS.ByteString
+  , ptyWidthCols    :: Word32
+  , ptyHeightRows   :: Word32
+  , ptyWidthPixels  :: Word32
+  , ptyHeightPixels :: Word32
+  , ptyModes        :: BS.ByteString
   } deriving (Eq, Show)
 
 newtype Cookie           = Cookie           BS.ByteString deriving (Eq, Ord, Show)
@@ -684,7 +680,6 @@ instance B.Binary PublicKey where
   put = \case
     PublicKeyEd25519    pk -> ed25519Builder    pk
     PublicKeyRSA        pk -> rsaBuilder        pk
-    PublicKeyOther name pk -> otherBuilder name pk
     where
       ed25519Builder :: Ed25519.PublicKey -> B.Put
       ed25519Builder key = mconcat
@@ -700,12 +695,6 @@ instance B.Binary PublicKey where
         , putInteger e
         ]
 
-      otherBuilder :: BS.ByteString -> BS.ByteString -> B.Put
-      otherBuilder name pk = putFramed $ mconcat
-        [ putString name
-        , putString pk
-        ]
-
   get = getFramed $ const $ getString >>= \case
     "ssh-ed25519" ->
       Ed25519.publicKey <$> getString >>= \case
@@ -715,8 +704,7 @@ instance B.Binary PublicKey where
       (n,_) <- getIntegerAndSize
       (e,s) <- getIntegerAndSize
       pure $ PublicKeyRSA $ RSA.PublicKey s n e
-    other ->
-      PublicKeyOther other <$> getString
+    other -> fail ("Unknown pubkey algorithm " ++ show other)
 
 instance B.Binary Signature where
   put = putFramed . \case

@@ -23,6 +23,7 @@ dependencies:
 - async
 - base >= 4.7 && < 5
 - binary
+- exceptions
 - bytestring
 - containers
 - cryptonite
