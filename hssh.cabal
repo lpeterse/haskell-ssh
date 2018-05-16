@@ -1,8 +1,8 @@
--- This file has been generated from package.yaml by hpack version 0.20.0.
+-- This file has been generated from package.yaml by hpack version 0.28.2.
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 959d221bf8692878bd71ca7cc54e9726220d6d47c3eb9129abaf26f1190ae2a6
+-- hash: 1d4ce06b3f845fc2ebb527b833eec7586bac98b3cc1c9906cc4d764adf60001f
 
 name:           hssh
 version:        0.1.0.0
@@ -17,7 +17,6 @@ license:        MIT
 license-file:   LICENSE
 build-type:     Simple
 cabal-version:  >= 1.10
-
 extra-source-files:
     CHANGELOG.md
     README.md
@@ -49,6 +48,7 @@ library
     , text
   exposed-modules:
       Network.SSH.Constants
+      Network.SSH.DuplexStream
       Network.SSH.Exception
       Network.SSH.Key
       Network.SSH.Message

@@ -1,9 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server ( serve ) where
 
-import qualified Network.SSH.Server.Config     as Config
-import qualified Network.SSH.Server.Connection as Connection
-
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
 import           Control.Monad.Catch
@@ -18,6 +15,7 @@ import           Crypto.Random.Types           (MonadRandom)
 import qualified Data.Binary                   as B
 import qualified Data.Binary.Get               as B
 import qualified Data.Binary.Put               as B
+import           Data.Bits
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Lazy          as LBS
@@ -26,172 +24,191 @@ import           Data.Typeable
 import           Data.Word
 
 import           Network.SSH.Constants
+import           Network.SSH.DuplexStream
 import           Network.SSH.Exception
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
+import qualified Network.SSH.Server.Config     as Config
 import           Network.SSH.Server.Connection
+import qualified Network.SSH.Server.Connection as Connection
 
-class (Monad m) => MonadStream m where
-  send    :: BA.ByteArrayAccess ba => ba -> m ()
-  receive :: BA.ByteArray ba => Int -> m ba
+serve :: (DuplexStream stream) => Config -> stream -> IO ()
+serve config stream = do
+    let serverPrivateKey = hostKey config
+        serverPublicKey  = case serverPrivateKey of
+            Ed25519PrivateKey pk __ -> PublicKeyEd25519 pk
 
-serve :: (MonadStream m, MonadThrow m, MonadRandom m, MonadIO m) => Config -> m ()
-serve config = do
-  let sendPut          = send . LBS.toStrict . B.runPut
-  let serverPrivateKey = hostKey config
-      serverPublicKey  = case serverPrivateKey of
-          Ed25519PrivateKey pk __ -> PublicKeyEd25519 pk
+    -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
+    -- key exchange.
+    serverEphemeralSecretKey <- Curve25519.generateSecretKey
+    serverEphemeralPublicKey <- pure (Curve25519.toPublic serverEphemeralSecretKey)
 
-  -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
-  -- key exchange.
-  serverEphemeralSecretKey <- Curve25519.generateSecretKey
-  let serverEphemeralPublicKey = Curve25519.toPublic serverEphemeralSecretKey
+    -- The maximum length of the version string is 255 chars including CR+LF.
+    -- Parsing in chunks of 32 bytes in order to not allocate unnecessarly
+    -- much memory. The version string is usually short and transmitted within
+    -- a single TCP segment.
+    (clientVersion, rem1) <- receiveGetter stream B.get (BA.empty :: BA.Bytes)
 
-  -- The maximum length of the version string is 255 chars including CR+LF.
-  -- Parsing in chunks of 32 bytes in order to not allocate unnecessarly
-  -- much memory. The version string is usually short and transmitted within
-  -- a single TCP segment.
-  (clientVersion, rem1) <- runGetIncremental B.get 32 mempty
+    -- Reply by sending the server version string.
+    sendPutter stream $ B.put version
 
-  -- Reply by sending the server version string.
-  sendPut $ B.put version
+    -- Send KexInit to client.
+    serverKexInit <- kexInit <$> newCookie
+    sendPutter stream $ packetize $ B.put serverKexInit
 
-  -- Send KexInit to client.
-  serverKexInit <- kexInit <$> newCookie
-  sendPut $ packetize $ B.put serverKexInit
+    -- Receive KexInit from client.
+    (clientKexInit, rem2) <- receiveGetter stream (unpacketize B.get) rem1
 
-  -- Receive KexInit from client.
-  (clientKexInit, rem2) <- runGetIncremental (unpacketize B.get) 4096 rem1
+    -- Receive KexEcdhInit from client.
+    (KexEcdhInit clientEphemeralPublicKey, rem3) <- receiveGetter stream (unpacketize B.get) rem2
 
-  -- Receive KexEcdhInit from client.
-  (KexEcdhInit clientEphemeralPublicKey, rem3) <- runGetIncremental (unpacketize B.get) 4096 rem2
+    -- Compute and perform the Diffie-Helman key exchange.
+    let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
+    let hash = exchangeHash
+            clientVersion
+            version
+            clientKexInit
+            serverKexInit
+            serverPublicKey
+            clientEphemeralPublicKey
+            serverEphemeralPublicKey
+            dhSecret
+    let session = SessionId (BS.pack $ BA.unpack hash)
+    let signature = case serverPrivateKey of
+            Ed25519PrivateKey pk sk -> SignatureEd25519 $ Ed25519.sign sk pk hash
+    let kexEcdhReply = KexEcdhReply {
+              kexServerHostKey      = serverPublicKey
+            , kexServerEphemeralKey = serverEphemeralPublicKey
+            , kexHashSignature      = signature
+            }
+    sendPutter stream $ packetize $ B.put kexEcdhReply
+    sendPutter stream $ packetize $ B.put NewKeys
+    (NewKeys, rem4) <- receiveGetter stream (unpacketize B.get) rem3
 
-  -- Compute and perform the Diffie-Helman key exchange.
-  let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
-  let hash = exchangeHash
-        clientVersion
-        version
-        clientKexInit
-        serverKexInit
-        serverPublicKey
-        clientEphemeralPublicKey
-        serverEphemeralPublicKey
-        dhSecret
-  let session = SessionId (BS.pack $ BA.unpack hash)
-  let signature = case serverPrivateKey of
-        Ed25519PrivateKey pk sk -> SignatureEd25519 $ Ed25519.sign sk pk hash
-        _                       -> error "FIXME: NOT IMPLEMENTED YET"
-  let kexEcdhReply = KexEcdhReply {
-        kexServerHostKey      = serverPublicKey
-      , kexServerEphemeralKey = serverEphemeralPublicKey
-      , kexHashSignature      = signature
-      }
-  sendPut $ packetize $ B.put kexEcdhReply
-  sendPut $ packetize $ B.put NewKeys
-  (NewKeys, _) <- runGetIncremental (unpacketize B.get) 1 rem3
+    -- Derive the required encryption/decryption keys.
+    -- The integrity keys etc. are not needed with chacha20.
+    let mainKeyCS:headerKeyCS:_ = deriveKeys dhSecret hash "C" session
+    let mainKeySC:headerKeySC:_ = deriveKeys dhSecret hash "D" session
 
-  -- Derive the required encryption/decryption keys.
-  -- The integrity keys etc. are not needed with chacha20.
-  let mainKeyCS:headerKeyCS:_ = deriveKeys dhSecret hash "C" session
-  let mainKeySC:headerKeySC:_ = deriveKeys dhSecret hash "D" session
+    -- Proceed serving the connection in encrypted mode.
+    undefined
 
-  -- Proceed serving the connection in encrypted mode.
-  input  <- liftIO newTChanIO
-  output <- liftIO newTChanIO
-  let runSender i = do
-        msg <- atomically $ readTChan output
-        let plain = LBS.toStrict $ B.runPut $ B.put msg
-        encryptAndSend i headerKeySC mainKeySC plain
-        runSender (i + 1)
-  let runReceiver i = do
-        plain <- receiveAndDecrypt i headerKeyCS mainKeyCS
-        case B.runGetOrFail B.get (LBS.fromStrict plain) of
-          Left (_,_,e) -> throwM (SshSyntaxErrorException e)
-          Right (_,_,msg) -> do
-            atomically $ writeTChan input msg
-            runReceiver (i + 1)
-  serveConnection config session (readTChan input) (writeTChan output)
-    `race_` runSender 3
-    `race_` runReceiver 3
+    {-
+    input  <- liftIO newTChanIO
+    output <- liftIO newTChanIO
+    let runSender i = do
+          msg <- atomically $ readTChan output
+          let plain = LBS.toStrict $ B.runPut $ B.put msg
+          encryptAndSend i headerKeySC mainKeySC plain
+          runSender (i + 1)
+    let runReceiver i = do
+          plain <- receiveAndDecrypt i headerKeyCS mainKeyCS
+          case B.runGetOrFail B.get (LBS.fromStrict plain) of
+            Left (_,_,e) -> throwM (SshSyntaxErrorException e)
+            Right (_,_,msg) -> do
+              atomically $ writeTChan input msg
+              runReceiver (i + 1)
+    serveConnection config session (readTChan input) (writeTChan output)
+      `race_` runSender 3
+      `race_` runReceiver 3
+    -}
 
-runGetIncremental :: (MonadStream m, MonadThrow m) => B.Get a -> Int -> BS.ByteString -> m (a, BS.ByteString)
-runGetIncremental getter chunkSize initial = case B.runGetIncremental getter of
-  B.Done _ _ a       -> pure (a, initial)
-  B.Fail _ _ e       -> throwM (SshSyntaxErrorException e)
-  B.Partial continue -> f (continue $ Just initial)
-  where
-    f (B.Done remainder _ a) = pure (a, remainder)
-    f (B.Fail _ _ e        ) = throwM (SshSyntaxErrorException e)
-    f (B.Partial continue  ) = f =<< (continue . nothingIfEmpty <$> receive chunkSize)
-    nothingIfEmpty bs
-      | BS.null bs = Nothing
-      | otherwise  = Just bs
+newtype Encoder plain cipher
+    = Encoder (plain -> (cipher, Encoder plain cipher))
 
-encryptAndSend :: (MonadStream m, MonadThrow m, BA.ByteArrayAccess ba)
-               => Int           -- ^
-               -> ba            -- ^
-               -> ba            -- ^
-               -> BS.ByteString -- ^
-               -> m ()
-encryptAndSend seqnr headerKey mainKey datBS = send ciph3 >> send mac
-  where
-    build         = LBS.toStrict . B.runPut
+newtype Decoder cipher plain
+    = Decoder (cipher -> Maybe (Maybe plain, Decoder cipher plain))
 
-    datlen        = BS.length datBS                :: Int
-    padlen        = let p = 8 - ((1 + datlen) `mod` 8)
-                    in  if p < 4 then p + 8 else p :: Int
-    paclen        = 1 + datlen + padlen            :: Int
+chacha20Poly1305Encoder :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey, BA.ByteArray plain, BA.ByteArray cipher)
+                        => headerKey -> mainKey -> Word64 -> Encoder plain cipher
+chacha20Poly1305Encoder headerKey mainKey seqnr =
+    Encoder $ \plain ->
+      (enciphered plain, chacha20Poly1305Encoder headerKey mainKey (seqnr + 1))
+    where
+        enciphered plain = BA.convert $ ciph3 <> mac
+            where
+                plainlen      = BA.length plain                :: Int
+                padlen        = let p = 8 - ((1 + plainlen) `mod` 8)
+                                in  if p < 4 then p + 8 else p :: Int
+                paclen        = 1 + plainlen + padlen          :: Int
+                padding       = BA.replicate padlen 0
+                padlenBA      = BA.singleton (fromIntegral padlen)
+                paclenBA      = BA.pack
+                    [ fromIntegral $ paclen `shiftR` 24
+                    , fromIntegral $ paclen `shiftR` 16
+                    , fromIntegral $ paclen `shiftR`  8
+                    , fromIntegral $ paclen `shiftR`  0
+                    ]
+                nonceBA       = BA.pack
+                    [ fromIntegral $ seqnr  `shiftR` 56
+                    , fromIntegral $ seqnr  `shiftR` 48
+                    , fromIntegral $ seqnr  `shiftR` 40
+                    , fromIntegral $ seqnr  `shiftR` 32
+                    , fromIntegral $ seqnr  `shiftR` 24
+                    , fromIntegral $ seqnr  `shiftR` 16
+                    , fromIntegral $ seqnr  `shiftR`  8
+                    , fromIntegral $ seqnr  `shiftR`  0
+                    ] :: BA.Bytes
+                st1           = ChaCha.initialize 20 mainKey nonceBA
+                st2           = ChaCha.initialize 20 headerKey nonceBA
+                (poly, st3)   = ChaCha.generate st1 64
+                ciph1         = fst $ ChaCha.combine st2 paclenBA
+                ciph2         = fst $ ChaCha.combine st3 $ padlenBA <> plain <> padding
+                ciph3         = ciph1 <> ciph2
+                mac           = BA.convert (Poly1305.auth (BS.take 32 poly) ciph3)
 
-    padBS         = BS.replicate padlen 0
-    padlenBS      = build $ B.putWord8    (fromIntegral padlen)
-    paclenBS      = build $ B.putWord32be (fromIntegral paclen)
-    nonceBS       = build $ B.putWord64be (fromIntegral seqnr)
+chacha20Poly1305Decoder :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey, BA.ByteArray plain, BA.ByteArray cipher)
+                        => headerKey -> mainKey -> Word64 -> Decoder cipher plain
+chacha20Poly1305Decoder headerKey mainKey seqnr = Decoder st0
+    where
+      st0 cipher
+          | BA.length cipher < 4 =
+              Just (Nothing, Decoder $ st0 . (cipher <>))
+          | otherwise =
+              st1 paclen paclenBA (BA.drop 4 cipher)
+          where
+              cc = ChaCha.initialize 20 headerKey nonce
+              paclenBA = fst $ ChaCha.combine cc (BA.take 4 cipher)
+              paclen  = fromIntegral (BA.index paclenBA 0) `shiftL` 24
+                    .|. fromIntegral (BA.index paclenBA 1) `shiftL` 16
+                    .|. fromIntegral (BA.index paclenBA 2) `shiftL`  8
+                    .|. fromIntegral (BA.index paclenBA 3) `shiftL`  0
 
-    st1           = ChaCha.initialize 20 mainKey nonceBS
-    st2           = ChaCha.initialize 20 headerKey nonceBS
-    (poly, st3)   = ChaCha.generate st1 64
-    ciph1         = fst $ ChaCha.combine st2 paclenBS
-    ciph2         = fst $ ChaCha.combine st3 $ padlenBS <> datBS <> padBS
-    ciph3         = ciph1 <> ciph2
-    mac           = let Poly1305.Auth auth = Poly1305.auth (BS.take 32 poly) ciph3
-                    in  BS.pack (BA.unpack auth)
+      st1 paclen paclenBA cipher
+          | BA.length cipher < paclen =
+              Just (Nothing, Decoder $ st1 paclen paclenBA . (cipher <>))
+          | otherwise =
+              st2 paclenBA (BA.take paclen cipher) (BA.drop paclen cipher)
 
-receiveAndDecrypt :: (MonadStream m, MonadThrow m, BA.ByteArrayAccess ba) => Int -> ba -> ba -> m BS.ByteString
-receiveAndDecrypt seqnr headerKey mainKey = do
-  ciph1          <- receiveExactly 4
-  let paclen      = sizeFromBS (fst $ ChaCha.combine st1 ciph1)
-  ciph2          <- receiveExactly paclen
-  ciph3          <- receiveExactly maclen
-  let actualMAC   = Poly1305.Auth (BA.pack $ BS.unpack ciph3)
-  let expectedMAC = Poly1305.auth (BS.take 32 poly) (ciph1 <> ciph2)
-  if actualMAC /= expectedMAC
-    then throwM SshMacMismatchException
-    else pure $ unpacket $ fst $ ChaCha.combine st3 ciph2
-  where
-    build         = LBS.toStrict . B.runPut
-    sizeFromBS    = fromIntegral . B.runGet B.getWord32be. LBS.fromStrict
-    maclen        = 16
-    nonceBS       = build $ B.putWord64be (fromIntegral seqnr)
-    st1           = ChaCha.initialize 20 headerKey nonceBS
-    st2           = ChaCha.initialize 20 mainKey   nonceBS
-    (poly, st3)   = ChaCha.generate st2 64
+      st2 paclenBA pacBA cipher
+          | BA.length cipher < maclen =
+              Just (Nothing, Decoder $ st2 paclenBA pacBA . (cipher <>))
+          | otherwise = if mac /= macExpected
+              then Nothing
+              else let Decoder f = chacha20Poly1305Decoder headerKey mainKey (seqnr + 1)
+                   in  Just (Just plain, Decoder $ f . (BA.drop maclen cipher <>))
+          where
+              maclen      = 16
+              cc          = ChaCha.initialize 20 mainKey nonce
+              (poly, cc') = ChaCha.generate cc 64
+              mac         = Poly1305.Auth (BA.convert $ BA.take maclen cipher)
+              macExpected = Poly1305.auth (BS.take 32 poly) (paclenBA <> pacBA)
+              plain       = unpad $ fst $ ChaCha.combine cc' pacBA
+              unpad ba    = case BA.uncons ba of
+                  Nothing    -> BA.convert ba -- invalid input, unavoidable anyway
+                  Just (h,t) -> BA.convert $ BA.take (BA.length t - fromIntegral h) t
 
-    unpacket :: BS.ByteString -> BS.ByteString
-    unpacket bs = case BS.uncons bs of
-      Nothing    -> bs
-      Just (h,t) -> BS.take (BS.length t - fromIntegral h) t
-
-    receiveExactly :: (MonadStream m, MonadThrow m) => Int -> m BS.ByteString
-    receiveExactly i = f mempty
-      where
-      f acc
-        | BS.length acc >= i = pure acc
-        | otherwise = do
-            bs <- receive (i - BS.length acc)
-            if BS.null bs
-              then throwM SshUnexpectedEndOfInputException
-              else f $! acc <> bs
+      nonce = BA.pack
+          [ fromIntegral $ seqnr  `shiftR` 56
+          , fromIntegral $ seqnr  `shiftR` 48
+          , fromIntegral $ seqnr  `shiftR` 40
+          , fromIntegral $ seqnr  `shiftR` 32
+          , fromIntegral $ seqnr  `shiftR` 24
+          , fromIntegral $ seqnr  `shiftR` 16
+          , fromIntegral $ seqnr  `shiftR`  8
+          , fromIntegral $ seqnr  `shiftR`  0
+          ] :: BA.Bytes
 
 -------------------------------------------------------------------------------
 -- Misc
