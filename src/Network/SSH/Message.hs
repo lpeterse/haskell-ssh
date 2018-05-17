@@ -141,7 +141,7 @@ data Ignore
   deriving (Eq, Show)
 
 data Unimplemented
-  = Unimplemented
+  = Unimplemented -- TODO: has Word32 payload
   deriving (Eq, Show)
 
 data Debug

@@ -1,8 +1,11 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server.Connection
-  ( serveConnection
-   ) where
+    ( Connection ()
+    , withConnection
+    , pushMessage
+    , pullMessage
+    ) where
 
 import           Control.Concurrent
 import           Control.Concurrent.Async
@@ -21,16 +24,16 @@ import           Data.Typeable
 import           System.Exit
 
 import           Network.SSH.Constants
+import           Network.SSH.Exception
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 
 data Connection
   = Connection
-  { sessionId :: SessionId
-  , receive   :: STM Message
-  , send      :: Message -> STM ()
-  , println   :: String -> STM ()
-  , exec      :: IO () -> STM ()
+  { config    :: Config
+  , sessionId :: SessionId
+  , logs      :: TChan String
+  , output    :: TChan Message
   , channels  :: TVar (M.Map ChannelId (Maybe Channel))
   }
 
@@ -62,138 +65,160 @@ data ProtocolException
 
 instance Exception ProtocolException
 
-serveConnection :: Config -> SessionId -> STM Message -> (Message -> STM ()) ->  IO ()
-serveConnection config sid input output = do
-  debug  <- newTChanIO
-  chans  <- newTVarIO mempty
-  (reqExec, runExec) <- setupExec
-  let conn = Connection {
-      sessionId = sid
-    , receive  = input
-    , send     = output
-    , println  = writeTChan debug
-    , exec     = reqExec
-    , channels = chans
-    }
-  runConnection conn
-     `race_` runDebug conn debug
-     `race_` runExec
-  where
-    runDebug :: Connection -> TChan String -> IO ()
-    runDebug _ ch = forever $ do
-      s <- atomically (readTChan ch)
-      putStrLn $ "DEBUG: " ++ s
+withConnection :: Config -> SessionId -> (Connection -> IO ()) -> IO ()
+withConnection cfg sid = bracket before after
+    where
+        before = Connection
+            <$> pure cfg
+            <*> pure sid
+            <*> newTChanIO
+            <*> newTChanIO
+            <*> newTVarIO mempty
+        after connection = do
+            pure ()
 
-    runConnection :: Connection -> IO ()
-    runConnection conn = do
-      (disconnect, isDisconnected) <- newTVarIO False >>= \d-> pure (writeTVar d True, readTVarIO d)
-      fix $ \continue-> do
-        atomically $ handleInput config conn disconnect
-            `orElse` handleChannels conn
-        isDisconnected >>= \case
-          True  -> pure ()  -- this is the only thread that may return
-          False -> continue
+pullMessage :: Connection -> IO Message
+pullMessage connection =
+    atomically $ readTChan (output connection)
 
-    setupExec :: IO (IO () -> STM (), IO ())
-    setupExec = do
-      ch <- newTChanIO
-      let reqExec = writeTChan ch
-      let runExec = forever $ do
-            action <- atomically (readTChan ch)
-            forkIO action
-      pure (reqExec, runExec)
+pushMessage :: Connection -> Message -> IO ()
+pushMessage connection = \case
+    MsgIgnore {}                  -> pure ()
+    MsgDisconnect {}              -> throwIO SshDisconnectException
+    MsgUnimplemented {}           -> throwIO SshUnimplementedException
 
-handleInput :: Config -> Connection -> STM () -> STM ()
-handleInput config conn disconnect = receive conn >>= \case
-  MsgDisconnect {} -> disconnect
-  MsgIgnore {} -> pure ()
-  MsgUnimplemented {} -> pure ()
-  MsgServiceRequest (ServiceRequest x) -> do
-    println conn (show x)
-    send conn (MsgServiceAccept $ ServiceAccept x)
-  MsgServiceAccept {} -> fail "FIXME"
-  MsgUserAuthFailure {} -> fail "FIXME"
-  MsgUserAuthSuccess {} -> fail "FIXME"
-  MsgUserAuthBanner {} -> fail "FIXME"
-  MsgUserAuthPublicKeyOk {} -> fail "FIXME"
-  MsgChannelOpenConfirmation {} -> fail "FIXME"
-  MsgChannelOpenFailure {} -> fail "FIXME"
-  MsgChannelFailure {} -> fail "FIXME"
-  MsgChannelSuccess {} -> fail "FIXME"
-  x@(MsgUserAuthRequest (UserAuthRequest user service method)) -> do
-    println conn (show x)
-    case method of
-      AuthNone        -> send conn (MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False)
-      AuthHostBased   -> send conn (MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False)
-      AuthPassword {} -> send conn (MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False)
-      AuthPublicKey algo pk msig -> case msig of
-        Nothing  -> send conn (MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk)
-        Just sig -> if verifyAuthSignature (sessionId conn) user service algo pk sig
-          then println conn "AUTHSUCCESS" >> send conn (MsgUserAuthSuccess $ UserAuthSuccess)
-          else println conn "AUTHFAILURE" >> send conn (MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False)
-  MsgChannelOpen (ChannelOpen t rid ws ps) ->
-    openChannel conn t rid ws ps >>= \case
-      Nothing  -> send conn $ MsgChannelOpenFailure $ ChannelOpenFailure rid 4 "" ""
-      Just ch  -> send conn $ MsgChannelOpenConfirmation $ ChannelOpenConfirmation
-        (chanRemoteId ch)
-        (chanLocalId ch)
-        (chanInitWindowSize ch)
-        (chanMaxPacketSize ch)
-  MsgChannelData (ChannelData lid bs) -> do
-    ch <- getChannel conn lid
-    writeTChan (chanReadFd ch) bs
-  MsgChannelExtendedData (ChannelExtendedData lid _ bs) -> do
-    ch <- getChannel conn lid
-    writeTChan (chanExtendedFd ch) bs
-  MsgChannelEof (ChannelEof _) ->
-    pure ()
-  MsgChannelClose (ChannelClose lid) ->
-    closeChannel conn lid
-  MsgChannelRequest x -> case x of
-      ChannelRequestPty lid wantReply ts -> do
-        println conn $ show x
-        ch <- getChannel conn lid
-        writeTVar (chanPty ch) (Just ts)
-        when wantReply $
-          send conn (MsgChannelSuccess $ ChannelSuccess $ chanRemoteId ch)
-      ChannelRequestShell lid wantReply -> undefined
-        {-
-        ch <- getChannel conn lid
-        case onShellRequest config of
-          Nothing ->
-            when wantReply $
-              send conn (MsgChannelFailure $ ChannelFailure $ chanRemoteId ch)
-          Just runShell -> do
-            when wantReply $
-              send conn (MsgChannelSuccess $ ChannelSuccess $ chanRemoteId ch)
-            mpty <- readTVar (chanPty ch)
-            exec conn $ do
-              let run = runShell mpty
-                    (readTChan  $ chanReadFd ch)
-                    (writeTChan $ chanWriteFd ch)
-                    (writeTChan $ chanExtendedFd ch)
-              withAsync run $ \asnc-> do
-                closed <- atomically $ do
-                  closed <- readTVar (chanClosed ch)
-                  unless closed $ writeTVar (chanProc ch) (Just ProcRunning)
-                  pure closed
-                -- `asnc` will be terminated as soon as the following block returns
-                if closed
-                  then pure ()
-                  else let waitProcessTerm = waitCatchSTM asnc >>= \case
-                             Left  e -> writeTVar (chanProc ch) $ Just $
-                                        ProcExitSignal "ABRT" False (T.encodeUtf8 $ T.pack $ show e) ""
-                             Right c -> writeTVar (chanProc ch) $ Just $
-                                        ProcExitStatus c
-                           waitChannelTerm = readTVar (chanClosed ch) >>= \case
-                             True    -> pure ()
-                             False   -> retry
-                       in  atomically (waitProcessTerm `orElse` waitChannelTerm)
-      -}
-      ChannelRequestOther lid _ -> do
-        ch <- getChannel conn lid
-        send conn (MsgChannelFailure $ ChannelFailure $ chanRemoteId ch)
+    MsgServiceRequest x           -> handleServiceRequest x
+    MsgServiceAccept {}           -> send (MsgUnimplemented Unimplemented)
 
+    MsgUserAuthRequest x          -> handleAuthRequest x
+    MsgUserAuthFailure {}         -> send (MsgUnimplemented Unimplemented)
+    MsgUserAuthSuccess {}         -> send (MsgUnimplemented Unimplemented)
+    MsgUserAuthBanner {}          -> send (MsgUnimplemented Unimplemented)
+    MsgUserAuthPublicKeyOk {}     -> send (MsgUnimplemented Unimplemented)
+
+    MsgChannelOpenConfirmation {} -> send (MsgUnimplemented Unimplemented)
+    MsgChannelOpenFailure {}      -> send (MsgUnimplemented Unimplemented)
+    MsgChannelFailure {}          -> send (MsgUnimplemented Unimplemented)
+    MsgChannelSuccess {}          -> send (MsgUnimplemented Unimplemented)
+
+    MsgChannelOpen x              -> handleChannelOpen x
+    MsgChannelData x              -> handleChannelData x
+    MsgChannelExtendedData x      -> handleChannelExtendedData x
+    MsgChannelEof x               -> handleChannelEof x
+    MsgChannelClose x             -> handleChannelClose x
+    MsgChannelRequest x           -> handleChannelRequest x
+    where
+        send :: Message -> IO ()
+        send = atomically . writeTChan (output connection)
+
+        handleServiceRequest :: ServiceRequest -> IO ()
+        handleServiceRequest (ServiceRequest x) = do
+            send (MsgServiceAccept $ ServiceAccept x)
+
+        handleAuthRequest :: UserAuthRequest -> IO ()
+        handleAuthRequest x@(UserAuthRequest user service method) = do
+            print (show x)
+            case method of
+              AuthNone -> do
+                  send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+              AuthHostBased -> do
+                  send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+              AuthPassword {} -> do
+                  send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+              AuthPublicKey algo pk msig -> case msig of
+                Nothing -> do
+                    send $ MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
+                Just sig
+                    | verifyAuthSignature (sessionId connection) user service algo pk sig -> do
+                        putStrLn "AUTHSUCCESS"
+                        send $ MsgUserAuthSuccess UserAuthSuccess
+                    | otherwise -> do
+                        putStrLn "AUTHFAILURE"
+                        send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+
+        handleChannelOpen :: ChannelOpen -> IO ()
+        handleChannelOpen (ChannelOpen t rid ws ps) =
+            undefined
+            {-
+            openChannel conn t rid ws ps >>= \case
+              Nothing  -> send conn $ MsgChannelOpenFailure $ ChannelOpenFailure rid 4 "" ""
+              Just ch  -> send conn $ MsgChannelOpenConfirmation $ ChannelOpenConfirmation
+                (chanRemoteId ch)
+                (chanLocalId ch)
+                (chanInitWindowSize ch)
+                (chanMaxPacketSize ch) -}
+
+        handleChannelEof :: ChannelEof -> IO ()
+        handleChannelEof = undefined
+
+        handleChannelClose :: ChannelClose -> IO ()
+        handleChannelClose = undefined
+
+        handleChannelData :: ChannelData -> IO ()
+        handleChannelData (ChannelData lid bs) = do
+            undefined
+            {-
+            ch <- getChannel conn lid
+            writeTChan (chanReadFd ch) bs -}
+
+        handleChannelExtendedData :: ChannelExtendedData -> IO ()
+        handleChannelExtendedData (ChannelExtendedData lid _ bs) = do
+            undefined
+            {-
+            ch <- getChannel conn lid
+            writeTChan (chanExtendedFd ch) bs -}
+
+        handleChannelRequest :: ChannelRequest -> IO ()
+        handleChannelRequest = \case
+            ChannelRequestPty lid wantReply ts -> do
+                undefined
+                {-
+                println conn $ show x
+                ch <- getChannel conn lid
+                writeTVar (chanPty ch) (Just ts)
+                when wantReply $ do
+                    send $ MsgChannelSuccess $ ChannelSuccess $ chanRemoteId ch -}
+            ChannelRequestShell lid wantReply -> undefined
+              {-
+              ch <- getChannel conn lid
+              case onShellRequest config of
+                Nothing ->
+                  when wantReply $
+                    send conn (MsgChannelFailure $ ChannelFailure $ chanRemoteId ch)
+                Just runShell -> do
+                  when wantReply $
+                    send conn (MsgChannelSuccess $ ChannelSuccess $ chanRemoteId ch)
+                  mpty <- readTVar (chanPty ch)
+                  exec conn $ do
+                    let run = runShell mpty
+                          (readTChan  $ chanReadFd ch)
+                          (writeTChan $ chanWriteFd ch)
+                          (writeTChan $ chanExtendedFd ch)
+                    withAsync run $ \asnc-> do
+                      closed <- atomically $ do
+                        closed <- readTVar (chanClosed ch)
+                        unless closed $ writeTVar (chanProc ch) (Just ProcRunning)
+                        pure closed
+                      -- `asnc` will be terminated as soon as the following block returns
+                      if closed
+                        then pure ()
+                        else let waitProcessTerm = waitCatchSTM asnc >>= \case
+                                  Left  e -> writeTVar (chanProc ch) $ Just $
+                                              ProcExitSignal "ABRT" False (T.encodeUtf8 $ T.pack $ show e) ""
+                                  Right c -> writeTVar (chanProc ch) $ Just $
+                                              ProcExitStatus c
+                                waitChannelTerm = readTVar (chanClosed ch) >>= \case
+                                  True    -> pure ()
+                                  False   -> retry
+                            in  atomically (waitProcessTerm `orElse` waitChannelTerm)
+            -}
+            ChannelRequestOther lid _ -> do
+                undefined
+                {-
+                ch <- getChannel conn lid
+                send (MsgChannelFailure $ ChannelFailure $ chanRemoteId ch) -}
+
+{-
 handleChannels :: Connection -> STM ()
 handleChannels conn =
   tryAny (\ch-> h1 ch `orElse` h2 ch `orElse` h3 ch) =<< readTVar (channels conn)
@@ -263,3 +288,4 @@ closeChannel conn lid = do
       writeTVar (chanClosed ch) True
       writeTVar (channels conn) $! M.insert lid Nothing cs -- semi-closed
       send conn (MsgChannelClose $ ChannelClose $ chanRemoteId ch)
+-}

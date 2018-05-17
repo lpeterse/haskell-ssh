@@ -65,7 +65,7 @@ serve config stream = do
 
     -- Compute and perform the Diffie-Helman key exchange.
     let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
-    let hash = exchangeHash
+        hash = exchangeHash
             clientVersion
             version
             clientKexInit
@@ -74,14 +74,17 @@ serve config stream = do
             clientEphemeralPublicKey
             serverEphemeralPublicKey
             dhSecret
-    let session = SessionId (BS.pack $ BA.unpack hash)
-    let signature = case serverPrivateKey of
+        session = SessionId (BS.pack $ BA.unpack hash)
+        signature = case serverPrivateKey of
             Ed25519PrivateKey pk sk -> SignatureEd25519 $ Ed25519.sign sk pk hash
-    let kexEcdhReply = KexEcdhReply {
+        kexEcdhReply = KexEcdhReply {
               kexServerHostKey      = serverPublicKey
             , kexServerEphemeralKey = serverEphemeralPublicKey
             , kexHashSignature      = signature
             }
+
+    -- Complete the key exchange and wait for the client to confirm
+    -- with a NewKeys msg.
     sendPutter stream $ packetize $ B.put kexEcdhReply
     sendPutter stream $ packetize $ B.put NewKeys
     (NewKeys, rem4) <- receiveGetter stream (unpacketize B.get) rem3
@@ -89,36 +92,53 @@ serve config stream = do
     -- Derive the required encryption/decryption keys.
     -- The integrity keys etc. are not needed with chacha20.
     let mainKeyCS:headerKeyCS:_ = deriveKeys dhSecret hash "C" session
-    let mainKeySC:headerKeySC:_ = deriveKeys dhSecret hash "D" session
+        mainKeySC:headerKeySC:_ = deriveKeys dhSecret hash "D" session
 
-    -- Proceed serving the connection in encrypted mode.
-    undefined
+    -- Initialize cryptographic encoder/decoder.
+    -- TODO: Make this simpler.
+    let Decoder f = chacha20Poly1305Decoder headerKeyCS mainKeyCS 3
+        decoder   = Decoder $ f . (rem4 <>) -- include eventual remainder
+        encoder   = chacha20Poly1305Encoder headerKeySC mainKeySC 3
 
-    {-
-    input  <- liftIO newTChanIO
-    output <- liftIO newTChanIO
-    let runSender i = do
-          msg <- atomically $ readTChan output
-          let plain = LBS.toStrict $ B.runPut $ B.put msg
-          encryptAndSend i headerKeySC mainKeySC plain
-          runSender (i + 1)
-    let runReceiver i = do
-          plain <- receiveAndDecrypt i headerKeyCS mainKeyCS
-          case B.runGetOrFail B.get (LBS.fromStrict plain) of
-            Left (_,_,e) -> throwM (SshSyntaxErrorException e)
-            Right (_,_,msg) -> do
-              atomically $ writeTChan input msg
-              runReceiver (i + 1)
-    serveConnection config session (readTChan input) (writeTChan output)
-      `race_` runSender 3
-      `race_` runReceiver 3
-    -}
+    -- The connection is essentially a state machine.
+    -- It also contains resources that need to be freed on termination
+    -- (like running threads), therefore the bracket pattern.
+    withConnection config session >>= \connection-> do
+        -- The sender is an infinite loop that pulls messages from the connection
+        -- object. This thread actually drives the state machine - producing
+        -- messages to be sent is just a nice side effect.
+        -- Produced messages are encoded and sent. NB: The state machine doesn't
+        -- make any progress when the thread is I/O wait on writing.
+        let sender (Encoder encode) = do
+                msg <- pull connection
+                let plain = LBS.toStrict $ B.runPut $ B.put msg
+                    (cipher, encoder') = encode plain
+                sendAll stream cipher
+                sender encoder'
+
+        -- The receiver is an infinite loop that waits for input on the stream,
+        -- decodes and parses it and pushes it into the connection state object.
+        let receiver (Decoder decode) = do
+                cipher <- receive stream 1024
+                when (BA.null input) (throwIO SshUnexpectedEndOfInputException)
+                case decode cipher of
+                    Left e -> throwIO (SshCryptoErrorException e)
+                    Right (mplain, decoder') -> do
+                        case mplain of
+                            Nothing    -> pure ()
+                            Just plain -> case B.runGetOrFail B.get (LBS.fromStrict plain) of
+                                Left (_,_,e)    -> throwM (SshSyntaxErrorException e)
+                                Right (_,_,msg) -> push connection msg
+                        receiver decoder'
+
+        -- Exactly two threads are necessary to process input and output concurrently.
+        sender encoder `race_` receiver decoder
 
 newtype Encoder plain cipher
     = Encoder (plain -> (cipher, Encoder plain cipher))
 
 newtype Decoder cipher plain
-    = Decoder (cipher -> Maybe (Maybe plain, Decoder cipher plain))
+    = Decoder (cipher -> Either String (Maybe plain, Decoder cipher plain))
 
 chacha20Poly1305Encoder :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey, BA.ByteArray plain, BA.ByteArray cipher)
                         => headerKey -> mainKey -> Word64 -> Encoder plain cipher
