@@ -7,9 +7,11 @@ module Network.SSH.Server.Connection
     , pullMessage
     ) where
 
+import           Control.Applicative
 import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
+import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.STM.TVar
 import           Control.Exception
 import           Control.Monad                (forever, unless, when)
@@ -30,11 +32,12 @@ import           Network.SSH.Server.Config
 
 data Connection
   = Connection
-  { config    :: Config
-  , sessionId :: SessionId
-  , logs      :: TChan String
-  , output    :: TChan Message
-  , channels  :: TVar (M.Map ChannelId (Maybe Channel))
+  { config     :: Config
+  , sessionId  :: SessionId
+  , logs       :: TChan String
+  , output     :: TChan Message
+  , disconnect :: TMVar Disconnect
+  , channels   :: TVar (M.Map ChannelId (Maybe Channel))
   }
 
 data Channel
@@ -73,24 +76,31 @@ withConnection cfg sid = bracket before after
             <*> pure sid
             <*> newTChanIO
             <*> newTChanIO
+            <*> newEmptyTMVarIO
             <*> newTVarIO mempty
         after connection = do
             pure ()
 
 pullMessage :: Connection -> IO Message
-pullMessage connection =
-    atomically $ readTChan (output connection)
+pullMessage connection = atomically $ disconnectMessage <|> nextMessage
+    where
+        disconnectMessage = MsgDisconnect <$> readTMVar (disconnect connection)
+        nextMessage = readTChan (output connection)
+
+-- Calling this operation will store a disconnect message
+-- in the connection state. Afterwards, any attempts to read outgoing
+-- messages from the connection shall yield this message.
+disconnectWith :: Connection -> DisconnectReason -> IO ()
+disconnectWith connection reason =
+    atomically $ putTMVar (disconnect connection) (Disconnect reason mempty mempty) <|> pure ()
 
 pushMessage :: Connection -> Message -> IO ()
 pushMessage connection msg = do
   print msg
   case msg of
     MsgIgnore {}                  -> pure ()
-    MsgDisconnect {}              -> throwIO SshDisconnectException
-    MsgUnimplemented {}           -> throwIO SshUnimplementedException
 
     MsgServiceRequest x           -> handleServiceRequest x
-    MsgServiceAccept {}           -> send (MsgUnimplemented Unimplemented)
 
     MsgUserAuthRequest x          -> handleAuthRequest x
     MsgUserAuthFailure {}         -> send (MsgUnimplemented Unimplemented)
@@ -109,34 +119,41 @@ pushMessage connection msg = do
     MsgChannelEof x               -> handleChannelEof x
     MsgChannelClose x             -> handleChannelClose x
     MsgChannelRequest x           -> handleChannelRequest x
+
+    _                             -> connection `disconnectWith` DisconnectProtocolError
     where
         send :: Message -> IO ()
         send = atomically . writeTChan (output connection)
 
         handleServiceRequest :: ServiceRequest -> IO ()
-        handleServiceRequest (ServiceRequest x) = do
-            send (MsgServiceAccept $ ServiceAccept x)
+        handleServiceRequest (ServiceRequest (ServiceName srv)) = case srv of
+            "ssh-userauth"   -> accept
+            "ssh-connection" -> accept
+            _                -> reject
+            where
+              accept = send $ MsgServiceAccept (ServiceAccept (ServiceName srv))
+              reject = connection `disconnectWith` DisconnectServiceNotAvailable
 
         handleAuthRequest :: UserAuthRequest -> IO ()
-        handleAuthRequest x@(UserAuthRequest user service method) = do
-            print (show x)
+        handleAuthRequest (UserAuthRequest user service method) = do
+            print (UserAuthRequest user service method)
             case method of
-              AuthNone -> do
-                  send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
-              AuthHostBased -> do
-                  send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
-              AuthPassword {} -> do
-                  send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
               AuthPublicKey algo pk msig -> case msig of
-                Nothing -> do
-                    send $ MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
+                Nothing ->
+                    unconditionallyConfirmPublicKeyIsOk algo pk
                 Just sig
-                    | verifyAuthSignature (sessionId connection) user service algo pk sig -> do
-                        putStrLn "AUTHSUCCESS"
-                        send $ MsgUserAuthSuccess UserAuthSuccess
-                    | otherwise -> do
-                        putStrLn "AUTHFAILURE"
-                        send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+                    | verifyAuthSignature (sessionId connection) user service algo pk sig ->
+                        sendSuccess
+                    | otherwise ->
+                        sendSupportedAuthMethods
+              _ -> sendSupportedAuthMethods
+              where
+                  sendSuccess =
+                      send $ MsgUserAuthSuccess UserAuthSuccess
+                  sendSupportedAuthMethods =
+                      send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+                  unconditionallyConfirmPublicKeyIsOk algo pk =
+                      send $ MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
 
         handleChannelOpen :: ChannelOpen -> IO ()
         handleChannelOpen (ChannelOpen t rid ws ps) =

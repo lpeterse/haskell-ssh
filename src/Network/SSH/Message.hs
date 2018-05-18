@@ -6,6 +6,7 @@ module Network.SSH.Message
     Message (..)
     -- ** Disconnect (1)
   , Disconnect (..)
+  , DisconnectReason (..)
     -- ** Ignore (2)
   , Ignore (..)
     -- ** Unimplemented (3)
@@ -77,6 +78,7 @@ module Network.SSH.Message
   , Version (..)
   ) where
 
+import           Control.Exception
 import           Control.Monad            (unless, void)
 import           Crypto.Error
 import qualified Crypto.Hash.Algorithms   as Hash
@@ -130,11 +132,29 @@ data Message
 
 data Disconnect
   = Disconnect
-  { disconnectReasonCode  :: Word32
+  { disconnectReason      :: DisconnectReason
   , disconnectDescription :: BS.ByteString
   , disconnectLanguagtTag :: BS.ByteString
   }
   deriving (Eq, Show)
+
+data DisconnectReason
+    = DisconnectHostNotAllowedToConnect
+    | DisconnectProtocolError
+    | DisconnectKeyExchangeFailed
+    | DisconnectReserved
+    | DisconnectMacError
+    | DisconnectCompressionError
+    | DisconnectServiceNotAvailable
+    | DisconnectProtocolVersionNotSupported
+    | DisconnectHostKeyNotVerifiable
+    | DisconnectConnectionLost
+    | DisconnectByApplication
+    | DisconnectTooManyConnection
+    | DisconnectAuthCancelledByUser
+    | DisconnectNoMoreAuthMethodsAvailable
+    | DisconnectIllegalUsername
+    deriving (Eq, Show)
 
 data Ignore
   = Ignore
@@ -382,16 +402,48 @@ instance B.Binary Message where
     _   -> MsgUnknown                 <$> B.getWord8 <*> (LBS.toStrict <$> B.getRemainingLazyByteString)
 
 instance B.Binary Disconnect where
-  put (Disconnect c d l) = mconcat
+  put (Disconnect r d l) = mconcat
     [ putByte   1
-    , putUint32 c
+    , putUint32 $ case r of
+          DisconnectHostNotAllowedToConnect     -> 1
+          DisconnectProtocolError               -> 2
+          DisconnectKeyExchangeFailed           -> 3
+          DisconnectReserved                    -> 4
+          DisconnectMacError                    -> 5
+          DisconnectCompressionError            -> 6
+          DisconnectServiceNotAvailable         -> 7
+          DisconnectProtocolVersionNotSupported -> 8
+          DisconnectHostKeyNotVerifiable        -> 9
+          DisconnectConnectionLost              -> 10
+          DisconnectByApplication               -> 11
+          DisconnectTooManyConnection           -> 12
+          DisconnectAuthCancelledByUser         -> 13
+          DisconnectNoMoreAuthMethodsAvailable  -> 14
+          DisconnectIllegalUsername             -> 15
     , putString d
     , putString l
     ]
   get = do
     getMsgType 1
+    reason <- getUint32 >>= \case
+        1  -> pure DisconnectHostNotAllowedToConnect
+        2  -> pure DisconnectProtocolError
+        3  -> pure DisconnectKeyExchangeFailed
+        4  -> pure DisconnectReserved
+        5  -> pure DisconnectMacError
+        6  -> pure DisconnectCompressionError
+        7  -> pure DisconnectServiceNotAvailable
+        8  -> pure DisconnectProtocolVersionNotSupported
+        9  -> pure DisconnectHostKeyNotVerifiable
+        10 -> pure DisconnectConnectionLost
+        11 -> pure DisconnectByApplication
+        12 -> pure DisconnectTooManyConnection
+        13 -> pure DisconnectAuthCancelledByUser
+        14 -> pure DisconnectNoMoreAuthMethodsAvailable
+        15 -> pure DisconnectIllegalUsername
+        _  -> fail ""
     Disconnect
-      <$> getUint32
+      <$> pure reason
       <*> getString
       <*> getString
 

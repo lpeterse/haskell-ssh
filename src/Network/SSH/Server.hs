@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server ( serve ) where
 
@@ -118,15 +119,22 @@ serve config stream = do
                 let plain = buildMessage msg
                     cipher = encode seqnr (plain `asTypeOf` cipher)
                 sendAll stream (cipher :: BA.Bytes)
-                sender (seqnr + 1)
+                -- This thread shall terminate gracefully in case the
+                -- message was a disconnect message. Per specification
+                -- no other messages may follow after a disconnect message.
+                case msg of
+                    MsgDisconnect {} -> pure ()
+                    _                -> sender (seqnr + 1)
 
         -- The receiver is an infinite loop that waits for input on the stream,
         -- decodes and parses it and pushes it into the connection state object.
         let receiver seqnr initial = do
                 (plain, remainder) <- decode seqnr initial
-                msg <- parseMessage (plain `asTypeOf` remainder)
-                pushMessage connection msg
-                receiver (seqnr + 1) remainder
+                parseMessage (plain `asTypeOf` remainder) >>= \case
+                    MsgDisconnect {} -> pure ()
+                    msg -> do
+                        pushMessage connection msg
+                        receiver (seqnr + 1) remainder
 
         -- Exactly two threads are necessary to process input and output concurrently.
         sender 3 `race_` receiver 3 rem4
