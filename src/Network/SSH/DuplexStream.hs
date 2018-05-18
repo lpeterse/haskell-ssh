@@ -15,25 +15,26 @@ import           Data.Typeable
 import           Network.SSH.Exception
 
 class DuplexStream stream where
-    waitReadableSTM         :: stream -> STM ()
-    waitWritableSTM         :: stream -> STM ()
-    sendChunk               :: BA.ByteArray ba => stream -> ba -> IO ba
-    sendChunkNonBlocking    :: BA.ByteArray ba => stream -> ba -> IO (Maybe ba)
-    receiveChunk            :: BA.ByteArray ba => stream -> Int -> IO ba
-    receiveChunkNonBlocking :: BA.ByteArray ba => stream -> Int -> IO (Maybe ba)
+    send                    :: BA.ByteArrayAccess ba => stream -> ba -> IO Int
+    receive                 :: BA.ByteArray ba => stream -> Int -> IO ba
 
 sendAll :: (DuplexStream stream, BA.ByteArray ba) => stream -> ba -> IO ()
-sendAll stream ba = do
-    ba' <- sendChunk stream ba
-    unless (BA.null ba') (sendAll stream ba')
+sendAll stream ba = sendAll' 0
+    where
+        len = BA.length ba
+        sendAll' offset
+            | offset >= len = pure ()
+            | otherwise = do
+                sent <- send stream (BA.dropView ba offset)
+                sendAll' (offset + sent)
 
 receiveAll :: (DuplexStream stream, BA.ByteArray ba) => stream -> Int -> IO ba
-receiveAll stream len = loop mempty
+receiveAll stream len = receive stream len >>= loop
     where
         loop ba
             | BA.length ba >= len = pure ba
             | otherwise = do
-                  ba' <- receiveChunk stream 1024
+                  ba' <- receive stream (len - BA.length ba)
                   when (BA.null ba') (throwIO SshUnexpectedEndOfInputException)
                   loop (ba <> ba')
 
@@ -54,4 +55,4 @@ receiveGetter stream getter initial =
             | otherwise  = Just ba
         f (B.Done remainder _ a) = pure (a, BA.convert remainder)
         f (B.Fail _ _ e        ) = throwIO (SshSyntaxErrorException e)
-        f (B.Partial continue  ) = f =<< (continue . nothingIfEmpty <$> receiveChunk stream chunkSize)
+        f (B.Partial continue  ) = f =<< (continue . nothingIfEmpty <$> receive stream chunkSize)

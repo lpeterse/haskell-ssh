@@ -3,7 +3,8 @@ module Network.SSH.Server ( serve ) where
 
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM.TChan
-import           Control.Monad.Catch
+import           Control.Exception
+import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.STM
 import qualified Crypto.Cipher.ChaCha          as ChaCha
@@ -103,16 +104,13 @@ serve config stream = do
     -- The connection is essentially a state machine.
     -- It also contains resources that need to be freed on termination
     -- (like running threads), therefore the bracket pattern.
-    withConnection config session >>= \connection-> do
+    withConnection config session $ \connection-> do
         -- The sender is an infinite loop that pulls messages from the connection
-        -- object. This thread actually drives the state machine - producing
-        -- messages to be sent is just a nice side effect.
-        -- Produced messages are encoded and sent. NB: The state machine doesn't
-        -- make any progress when the thread is I/O wait on writing.
+        -- object. Produced messages are encoded and sent.
         let sender (Encoder encode) = do
-                msg <- pull connection
+                msg <- pullMessage connection
                 let plain = LBS.toStrict $ B.runPut $ B.put msg
-                    (cipher, encoder') = encode plain
+                    (cipher, encoder') = encode (plain `asTypeOf` cipher)
                 sendAll stream cipher
                 sender encoder'
 
@@ -120,15 +118,15 @@ serve config stream = do
         -- decodes and parses it and pushes it into the connection state object.
         let receiver (Decoder decode) = do
                 cipher <- receive stream 1024
-                when (BA.null input) (throwIO SshUnexpectedEndOfInputException)
+                when (BA.null cipher) (throwIO SshUnexpectedEndOfInputException)
                 case decode cipher of
                     Left e -> throwIO (SshCryptoErrorException e)
                     Right (mplain, decoder') -> do
                         case mplain of
                             Nothing    -> pure ()
                             Just plain -> case B.runGetOrFail B.get (LBS.fromStrict plain) of
-                                Left (_,_,e)    -> throwM (SshSyntaxErrorException e)
-                                Right (_,_,msg) -> push connection msg
+                                Left (_,_,e)    -> throwIO (SshSyntaxErrorException e)
+                                Right (_,_,msg) -> pushMessage connection msg
                         receiver decoder'
 
         -- Exactly two threads are necessary to process input and output concurrently.
@@ -184,7 +182,7 @@ chacha20Poly1305Decoder headerKey mainKey seqnr = Decoder st0
     where
       st0 cipher
           | BA.length cipher < 4 =
-              Just (Nothing, Decoder $ st0 . (cipher <>))
+              Right (Nothing, Decoder $ st0 . (cipher <>))
           | otherwise =
               st1 paclen paclenBA (BA.drop 4 cipher)
           where
@@ -197,17 +195,17 @@ chacha20Poly1305Decoder headerKey mainKey seqnr = Decoder st0
 
       st1 paclen paclenBA cipher
           | BA.length cipher < paclen =
-              Just (Nothing, Decoder $ st1 paclen paclenBA . (cipher <>))
+              Right (Nothing, Decoder $ st1 paclen paclenBA . (cipher <>))
           | otherwise =
               st2 paclenBA (BA.take paclen cipher) (BA.drop paclen cipher)
 
       st2 paclenBA pacBA cipher
           | BA.length cipher < maclen =
-              Just (Nothing, Decoder $ st2 paclenBA pacBA . (cipher <>))
+              Right (Nothing, Decoder $ st2 paclenBA pacBA . (cipher <>))
           | otherwise = if mac /= macExpected
-              then Nothing
+              then Left "message authentication failed"
               else let Decoder f = chacha20Poly1305Decoder headerKey mainKey (seqnr + 1)
-                   in  Just (Just plain, Decoder $ f . (BA.drop maclen cipher <>))
+                   in  Right (Just plain, Decoder $ f . (BA.drop maclen cipher <>))
           where
               maclen      = 16
               cc          = ChaCha.initialize 20 mainKey nonce
