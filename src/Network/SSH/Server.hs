@@ -97,9 +97,8 @@ serve config stream = do
 
     -- Initialize cryptographic encoder/decoder.
     -- TODO: Make this simpler.
-    let Decoder f = chacha20Poly1305Decoder headerKeyCS mainKeyCS 3
-        decoder   = Decoder $ f . (rem4 <>) -- include eventual remainder
-        encoder   = chacha20Poly1305Encoder headerKeySC mainKeySC 3
+    let decoder = chacha20Poly1305Decoder headerKeyCS mainKeyCS 3
+        encoder = chacha20Poly1305Encoder headerKeySC mainKeySC 3
 
     -- The connection is essentially a state machine.
     -- It also contains resources that need to be freed on termination
@@ -116,21 +115,20 @@ serve config stream = do
 
         -- The receiver is an infinite loop that waits for input on the stream,
         -- decodes and parses it and pushes it into the connection state object.
-        let receiver (Decoder decode) = do
-                cipher <- receive stream 1024
-                when (BA.null cipher) (throwIO SshUnexpectedEndOfInputException)
-                case decode cipher of
-                    Left e -> throwIO (SshCryptoErrorException e)
-                    Right (mplain, decoder') -> do
-                        case mplain of
-                            Nothing    -> pure ()
-                            Just plain -> case B.runGetOrFail B.get (LBS.fromStrict plain) of
-                                Left (_,_,e)    -> throwIO (SshSyntaxErrorException e)
-                                Right (_,_,msg) -> pushMessage connection msg
-                        receiver decoder'
+        let receiver (Decoder decode) cipher = case decode cipher of
+                Left e -> throwIO (SshCryptoErrorException e)
+                Right (mplain, decoder') -> do
+                    case mplain of
+                        Nothing    -> pure ()
+                        Just plain -> case B.runGetOrFail B.get (LBS.fromStrict plain) of
+                            Left (_,_,e)    -> throwIO (SshSyntaxErrorException e)
+                            Right (_,_,msg) -> pushMessage connection msg
+                    cipher' <- receive stream 1024
+                    when (BA.null cipher) (throwIO SshUnexpectedEndOfInputException)
+                    receiver decoder' cipher'
 
         -- Exactly two threads are necessary to process input and output concurrently.
-        sender encoder `race_` receiver decoder
+        sender encoder `race_` receiver decoder rem4
 
 newtype Encoder plain cipher
     = Encoder (plain -> (cipher, Encoder plain cipher))
@@ -176,57 +174,58 @@ chacha20Poly1305Encoder headerKey mainKey seqnr =
                 ciph3         = ciph1 <> ciph2
                 mac           = BA.convert (Poly1305.auth (BS.take 32 poly) ciph3)
 
-chacha20Poly1305Decoder :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey, BA.ByteArray plain, BA.ByteArray cipher)
+chacha20Poly1305Decoder :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey, BA.ByteArray plain, BA.ByteArray cipher, Show cipher)
                         => headerKey -> mainKey -> Word64 -> Decoder cipher plain
 chacha20Poly1305Decoder headerKey mainKey seqnr = Decoder st0
     where
-      st0 cipher
-          | BA.length cipher < 4 =
-              Right (Nothing, Decoder $ st0 . (cipher <>))
-          | otherwise =
-              st1 paclen paclenBA (BA.drop 4 cipher)
-          where
-              cc = ChaCha.initialize 20 headerKey nonce
-              paclenBA = fst $ ChaCha.combine cc (BA.take 4 cipher)
-              paclen  = fromIntegral (BA.index paclenBA 0) `shiftL` 24
-                    .|. fromIntegral (BA.index paclenBA 1) `shiftL` 16
-                    .|. fromIntegral (BA.index paclenBA 2) `shiftL`  8
-                    .|. fromIntegral (BA.index paclenBA 3) `shiftL`  0
+        st0 cipher
+            | BA.length cipher < 4 =
+                Right (Nothing, Decoder $ st0 . (cipher <>))
+            | otherwise =
+                st1 paclen paclenCiph (BA.drop 4 cipher)
+            where
+                cc = ChaCha.initialize 20 headerKey nonce
+                paclenCiph = BA.take 4 cipher
+                paclenPlain = fst $ ChaCha.combine cc paclenCiph
+                paclen = fromIntegral (BA.index paclenPlain 0) `shiftL` 24
+                    .|.  fromIntegral (BA.index paclenPlain 1) `shiftL` 16
+                    .|.  fromIntegral (BA.index paclenPlain 2) `shiftL`  8
+                    .|.  fromIntegral (BA.index paclenPlain 3) `shiftL`  0
 
-      st1 paclen paclenBA cipher
-          | BA.length cipher < paclen =
-              Right (Nothing, Decoder $ st1 paclen paclenBA . (cipher <>))
-          | otherwise =
-              st2 paclenBA (BA.take paclen cipher) (BA.drop paclen cipher)
+        st1 paclen paclenCiph cipher
+            | BA.length cipher < paclen =
+                Right (Nothing, Decoder $ st1 paclen paclenCiph . (cipher <>))
+            | otherwise =
+                st2 paclenCiph (BA.take paclen cipher) (BA.drop paclen cipher)
 
-      st2 paclenBA pacBA cipher
-          | BA.length cipher < maclen =
-              Right (Nothing, Decoder $ st2 paclenBA pacBA . (cipher <>))
-          | otherwise = if mac /= macExpected
-              then Left "message authentication failed"
-              else let Decoder f = chacha20Poly1305Decoder headerKey mainKey (seqnr + 1)
-                   in  Right (Just plain, Decoder $ f . (BA.drop maclen cipher <>))
-          where
-              maclen      = 16
-              cc          = ChaCha.initialize 20 mainKey nonce
-              (poly, cc') = ChaCha.generate cc 64
-              mac         = Poly1305.Auth (BA.convert $ BA.take maclen cipher)
-              macExpected = Poly1305.auth (BS.take 32 poly) (paclenBA <> pacBA)
-              plain       = unpad $ fst $ ChaCha.combine cc' pacBA
-              unpad ba    = case BA.uncons ba of
-                  Nothing    -> BA.convert ba -- invalid input, unavoidable anyway
-                  Just (h,t) -> BA.convert $ BA.take (BA.length t - fromIntegral h) t
+        st2 paclenCiph pacCiph cipher
+            | BA.length cipher < maclen =
+                Right (Nothing, Decoder $ st2 paclenCiph pacCiph . (cipher <>))
+            | otherwise = if mac /= macExpected
+                then Left "message authentication failed"
+                else let Decoder f = chacha20Poly1305Decoder headerKey mainKey (seqnr + 1)
+                     in  Right (Just plain, Decoder $ f . (BA.drop maclen cipher <>))
+            where
+                maclen      = 16
+                cc          = ChaCha.initialize 20 mainKey nonce
+                (poly, cc') = ChaCha.generate cc 64
+                mac         = Poly1305.Auth (BA.convert $ BA.take maclen cipher)
+                macExpected = Poly1305.auth (BS.take 32 poly) (paclenCiph <> pacCiph)
+                plain       = unpad $ fst $ ChaCha.combine cc' pacCiph
+                unpad ba    = case BA.uncons ba of
+                    Nothing    -> BA.convert ba -- invalid input, unavoidable anyway
+                    Just (h,t) -> BA.convert $ BA.take (BA.length t - fromIntegral h) t
 
-      nonce = BA.pack
-          [ fromIntegral $ seqnr  `shiftR` 56
-          , fromIntegral $ seqnr  `shiftR` 48
-          , fromIntegral $ seqnr  `shiftR` 40
-          , fromIntegral $ seqnr  `shiftR` 32
-          , fromIntegral $ seqnr  `shiftR` 24
-          , fromIntegral $ seqnr  `shiftR` 16
-          , fromIntegral $ seqnr  `shiftR`  8
-          , fromIntegral $ seqnr  `shiftR`  0
-          ] :: BA.Bytes
+        nonce = BA.pack
+            [ fromIntegral $ seqnr  `shiftR` 56
+            , fromIntegral $ seqnr  `shiftR` 48
+            , fromIntegral $ seqnr  `shiftR` 40
+            , fromIntegral $ seqnr  `shiftR` 32
+            , fromIntegral $ seqnr  `shiftR` 24
+            , fromIntegral $ seqnr  `shiftR` 16
+            , fromIntegral $ seqnr  `shiftR`  8
+            , fromIntegral $ seqnr  `shiftR`  0
+            ] :: BA.Bytes
 
 -------------------------------------------------------------------------------
 -- Misc
