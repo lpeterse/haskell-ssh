@@ -4,11 +4,17 @@ module Network.SSH.Constants where
 import           Crypto.Error
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Data.ByteString       as BS
+import           Data.Semigroup
+import qualified Data.Version          as V
 
 import           Network.SSH.Message
 
+import qualified Paths_hssh            as Library
+
 version :: Version
-version  = Version "SSH-2.0-haskell-ssh_0.1"
+version  = Version ("SSH-2.0-hssh_" <> v)
+    where
+        v = BS.pack $ fmap (fromIntegral . fromEnum) (V.showVersion Library.version)
 
 kexInit :: Cookie -> KexInit
 kexInit cookie = KexInit
@@ -25,12 +31,3 @@ kexInit cookie = KexInit
     , kexLanguagesServerToClient             = []
     , kexFirstPacketFollows                  = False
     }
-
-exampleHostKey :: Ed25519.SecretKey
-exampleHostKey = case Ed25519.secretKey bs of
-    CryptoPassed k -> k
-    CryptoFailed _ -> undefined
-    where
-        bs = BS.pack
-            [ 239,90,200,222,247,52,104,25,64,47,196,140,102,205,187,142
-            , 226,139,42,39,225,249,15,144,86,235,102,104,136,224,207,161]

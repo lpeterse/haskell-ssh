@@ -28,7 +28,6 @@ dependencies:
 - containers
 - cryptonite
 - memory
-- mtl
 - stm
 - terminal
 - text
@@ -61,6 +60,7 @@ executables:
     dependencies:
     - hssh
     - socket
+    - replique
     when:
       - condition: flag(demo)
         then:

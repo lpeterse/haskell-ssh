@@ -1,3 +1,7 @@
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Main where
 
 import           Control.Concurrent             (forkIO, threadDelay)
@@ -6,6 +10,7 @@ import           Control.Exception              (SomeException, bracket, catch,
                                                  finally)
 import           Control.Monad                  (forever)
 import           Control.Monad.STM
+import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
 import qualified Data.Text                      as T
 import qualified Data.Text.Encoding             as T
@@ -18,17 +23,30 @@ import qualified System.Socket.Type.Stream      as S
 import           Control.Monad.Replique
 import           Control.Monad.Terminal
 
-import           Network.SSH
+import           Network.SSH.Constants
+import           Network.SSH.DuplexStream
+import           Network.SSH.Key
 import qualified Network.SSH.Server             as Server
+import qualified Network.SSH.Server.Config      as Server
 
 main :: IO ()
-main = bracket open close accept
+main = do
+    print version
+    file <- BS.readFile "./resources/id_ed25519"
+    (privateKey, _):_ <- decodePrivateKeyFile BS.empty file :: IO [(PrivateKey, BA.Bytes)]
+
+    c <- Server.newDefaultConfig
+    let config = c {
+            Server.hostKey        = privateKey
+        ,   Server.onShellRequest = Just runShell
+        }
+    bracket open close (accept config)
   where
     open        = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
     close       = S.close
     send    s x = S.sendAll s x S.msgNoSignal >> pure ()
     receive s i = S.receive s i S.msgNoSignal
-    accept s = do
+    accept config s = do
       S.setSocketOption s (S.ReuseAddress True)
       S.setSocketOption s (S.V6Only False)
       S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
@@ -38,45 +56,21 @@ main = bracket open close accept
         forkIO $ bracket
           (S.accept s `finally` putMVar token ())
           (S.close . fst)
-          (\(x,_)-> withConnection x)
+          (\(stream,_)-> Server.serve config stream)
         takeMVar token
 
-    config = Server.Config {
-        Server.hostKey  = exampleHostKey
-      , Server.runWithShell = Just runShell
-      }
-
-withConnection :: S.Socket S.Inet6 S.Stream S.Default -> IO ()
-withConnection socket = do
-    config <- Server.newDefaultConfig { onShellRequest = Just serveShellRequest }
-    serve socket config
-
-serveShellRequest :: Terminal -> IO ExitCode
-serveShellRequest term = do
-    runTerminalT $ runRepliqueT repl 0
+runShell :: Terminal -> IO ExitCode
+runShell term = do
+    runTerminalT (runRepliqueT repl 0) term
     pure (ExitFailure 1)
 
-repl :: (MonadTerminal m, MonadColorPrinter m, MonadMask m, MonadIO m) => RepliqueT Int m ()
-repl = readLine prompt >>= \case
+repl :: RepliqueT Int (TerminalT IO) ()
+repl = readLine "ssh % " >>= \case
     ""           -> pure ()
     "quit"       -> quit
-    "fail"       -> fail "abcdef"
-    "failIO"     -> liftIO $ E.throwIO $ E.userError "Exception thrown in IO."
-    "throwM"     -> throwM $ E.userError "Exception thrown in RepliqueT."
-    "liftThrowM" -> lift $ throwM $ E.userError "Exception thrown within the monad transformer."
-    "load"       -> load >>= pprint
-    "inc"        -> load >>= store . succ
-    "dec"        -> load >>= store . pred
-    "loop"       -> forM_ [1..100000] $ \i-> store i >> putString (' ':show i)
-    "finally"    -> fail "I am failing, I am failing.." `finally` putStringLn "FINALLY"
-    "clear"      -> clearScreen
-    "screen"     -> getScreenSize >>= \p-> putStringLn (show p) >> flush
-    "cursor"     -> getCursorPosition >>= \p-> putStringLn (show p) >> flush
-    "home"       -> setCursorPosition (0,0)
-    "progress"   -> void $ runWithProgressBar $ \update-> (`finally` threadDelay 3000000) $ forM_ [1..1000] $ \i-> do
-                      threadDelay 10000
-                      update $ fromIntegral i / 1000
-    "colors"     -> undefined
-    "normal"     -> useAlternateScreenBuffer False
-    "alternate"  -> useAlternateScreenBuffer True
+    "fail"       -> fail "Failure is not an option."
     line         -> putStringLn (show (line :: String))
+
+instance DuplexStream (S.Socket f S.Stream p) where
+    send stream bytes = S.send stream (BA.convert bytes) S.msgNoSignal
+    receive stream len = BA.convert <$> S.receive stream len S.msgNoSignal

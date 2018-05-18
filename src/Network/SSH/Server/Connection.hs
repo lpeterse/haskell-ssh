@@ -82,7 +82,9 @@ pullMessage connection =
     atomically $ readTChan (output connection)
 
 pushMessage :: Connection -> Message -> IO ()
-pushMessage connection = \case
+pushMessage connection msg = do
+  print msg
+  case msg of
     MsgIgnore {}                  -> pure ()
     MsgDisconnect {}              -> throwIO SshDisconnectException
     MsgUnimplemented {}           -> throwIO SshUnimplementedException

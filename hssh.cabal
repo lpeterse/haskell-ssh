@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 1d4ce06b3f845fc2ebb527b833eec7586bac98b3cc1c9906cc4d764adf60001f
+-- hash: b9b742c27e1986c8684d8a8c3783f53cb06909820fcf4c22ea3cbdd59d97bdf8
 
 name:           hssh
 version:        0.1.0.0
@@ -42,7 +42,6 @@ library
     , cryptonite
     , exceptions
     , memory
-    , mtl
     , stm
     , terminal
     , text
@@ -74,7 +73,7 @@ executable hssh-demo
     , exceptions
     , hssh
     , memory
-    , mtl
+    , replique
     , socket
     , stm
     , terminal
@@ -103,7 +102,6 @@ test-suite hssh-test
     , exceptions
     , hssh
     , memory
-    , mtl
     , stm
     , tasty
     , tasty-hunit
