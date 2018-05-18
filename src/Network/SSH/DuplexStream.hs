@@ -18,7 +18,7 @@ class DuplexStream stream where
     send    :: BA.ByteArrayAccess ba => stream -> ba -> IO Int
     receive :: BA.ByteArray ba => stream -> Int -> IO ba
 
-sendAll :: (DuplexStream stream, BA.ByteArray ba) => stream -> ba -> IO ()
+sendAll :: (DuplexStream stream, BA.ByteArrayAccess ba) => stream -> ba -> IO ()
 sendAll stream ba = sendAll' 0
     where
         len = BA.length ba

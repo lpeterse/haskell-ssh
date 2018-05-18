@@ -97,8 +97,15 @@ serve config stream = do
 
     -- Initialize cryptographic encoder/decoder.
     -- TODO: Make this simpler.
-    let decoder = chacha20Poly1305Decoder headerKeyCS mainKeyCS 3
-        encoder = chacha20Poly1305Encoder headerKeySC mainKeySC 3
+    let encode = chacha20Poly1305Encode headerKeySC mainKeySC
+        decode = (f .) . chacha20Poly1305Decoder headerKeyCS mainKeyCS
+            where
+                f (DecoderDone p c) = pure (p, c)
+                f (DecoderFail e)   = throwIO (SshCryptoErrorException e)
+                f (DecoderMore c)   = do
+                    cipher <- receive stream 1024
+                    when (BA.null cipher) (throwIO SshUnexpectedEndOfInputException)
+                    f (c cipher)
 
     -- The connection is essentially a state machine.
     -- It also contains resources that need to be freed on termination
@@ -106,81 +113,79 @@ serve config stream = do
     withConnection config session $ \connection-> do
         -- The sender is an infinite loop that pulls messages from the connection
         -- object. Produced messages are encoded and sent.
-        let sender (Encoder encode) = do
+        let sender seqnr = do
                 msg <- pullMessage connection
-                let plain = LBS.toStrict $ B.runPut $ B.put msg
-                    (cipher, encoder') = encode (plain `asTypeOf` cipher)
-                sendAll stream cipher
-                sender encoder'
+                let plain = buildMessage msg
+                    cipher = encode seqnr (plain `asTypeOf` cipher)
+                sendAll stream (cipher :: BA.Bytes)
+                sender (seqnr + 1)
 
         -- The receiver is an infinite loop that waits for input on the stream,
         -- decodes and parses it and pushes it into the connection state object.
-        let receiver (Decoder decode) cipher = case decode cipher of
-                Left e -> throwIO (SshCryptoErrorException e)
-                Right (mplain, decoder') -> do
-                    case mplain of
-                        Nothing    -> pure ()
-                        Just plain -> case B.runGetOrFail B.get (LBS.fromStrict plain) of
-                            Left (_,_,e)    -> throwIO (SshSyntaxErrorException e)
-                            Right (_,_,msg) -> pushMessage connection msg
-                    cipher' <- receive stream 1024
-                    when (BA.null cipher) (throwIO SshUnexpectedEndOfInputException)
-                    receiver decoder' cipher'
+        let receiver seqnr initial = do
+                (plain, remainder) <- decode seqnr initial
+                msg <- parseMessage (plain `asTypeOf` remainder)
+                pushMessage connection msg
+                receiver (seqnr + 1) remainder
 
         -- Exactly two threads are necessary to process input and output concurrently.
-        sender encoder `race_` receiver decoder rem4
+        sender 3 `race_` receiver 3 rem4
 
-newtype Encoder plain cipher
-    = Encoder (plain -> (cipher, Encoder plain cipher))
+parseMessage :: BA.ByteArrayAccess plain => plain -> IO Message
+parseMessage plain = case B.runGetOrFail B.get (LBS.fromStrict (BA.convert plain)) of
+    Left (_,_,e)    -> throwIO (SshSyntaxErrorException e)
+    Right (_,_,msg) -> pure msg
 
-newtype Decoder cipher plain
-    = Decoder (cipher -> Either String (Maybe plain, Decoder cipher plain))
+buildMessage :: BA.ByteArray plain => Message -> plain
+buildMessage msg = BA.convert $ LBS.toStrict $ B.runPut $ B.put msg
 
-chacha20Poly1305Encoder :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey, BA.ByteArray plain, BA.ByteArray cipher)
-                        => headerKey -> mainKey -> Word64 -> Encoder plain cipher
-chacha20Poly1305Encoder headerKey mainKey seqnr =
-    Encoder $ \plain ->
-      (enciphered plain, chacha20Poly1305Encoder headerKey mainKey (seqnr + 1))
+data Decoder cipher plain
+    = DecoderMore (cipher -> Decoder cipher plain)
+    | DecoderDone plain cipher
+    | DecoderFail String
+
+chacha20Poly1305Encode :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey, BA.ByteArray plain, BA.ByteArray cipher)
+                        => headerKey -> mainKey -> Word64 -> plain -> cipher
+chacha20Poly1305Encode headerKey mainKey seqnr plain = cipher
     where
-        enciphered plain = BA.convert $ ciph3 <> mac
-            where
-                plainlen      = BA.length plain                :: Int
-                padlen        = let p = 8 - ((1 + plainlen) `mod` 8)
-                                in  if p < 4 then p + 8 else p :: Int
-                paclen        = 1 + plainlen + padlen          :: Int
-                padding       = BA.replicate padlen 0
-                padlenBA      = BA.singleton (fromIntegral padlen)
-                paclenBA      = BA.pack
-                    [ fromIntegral $ paclen `shiftR` 24
-                    , fromIntegral $ paclen `shiftR` 16
-                    , fromIntegral $ paclen `shiftR`  8
-                    , fromIntegral $ paclen `shiftR`  0
-                    ]
-                nonceBA       = BA.pack
-                    [ fromIntegral $ seqnr  `shiftR` 56
-                    , fromIntegral $ seqnr  `shiftR` 48
-                    , fromIntegral $ seqnr  `shiftR` 40
-                    , fromIntegral $ seqnr  `shiftR` 32
-                    , fromIntegral $ seqnr  `shiftR` 24
-                    , fromIntegral $ seqnr  `shiftR` 16
-                    , fromIntegral $ seqnr  `shiftR`  8
-                    , fromIntegral $ seqnr  `shiftR`  0
-                    ] :: BA.Bytes
-                st1           = ChaCha.initialize 20 mainKey nonceBA
-                st2           = ChaCha.initialize 20 headerKey nonceBA
-                (poly, st3)   = ChaCha.generate st1 64
-                ciph1         = fst $ ChaCha.combine st2 paclenBA
-                ciph2         = fst $ ChaCha.combine st3 $ padlenBA <> plain <> padding
-                ciph3         = ciph1 <> ciph2
-                mac           = BA.convert (Poly1305.auth (BS.take 32 poly) ciph3)
+        cipher        = BA.convert $ ciph3 <> mac
+        plainlen      = BA.length plain                :: Int
+        padlen        = let p = 8 - ((1 + plainlen) `mod` 8)
+                        in  if p < 4 then p + 8 else p :: Int
+        paclen        = 1 + plainlen + padlen          :: Int
+        padding       = BA.replicate padlen 0
+        padlenBA      = BA.singleton (fromIntegral padlen)
+        paclenBA      = BA.pack
+            [ fromIntegral $ paclen `shiftR` 24
+            , fromIntegral $ paclen `shiftR` 16
+            , fromIntegral $ paclen `shiftR`  8
+            , fromIntegral $ paclen `shiftR`  0
+            ]
+        nonceBA       = BA.pack
+            [ fromIntegral $ seqnr  `shiftR` 56
+            , fromIntegral $ seqnr  `shiftR` 48
+            , fromIntegral $ seqnr  `shiftR` 40
+            , fromIntegral $ seqnr  `shiftR` 32
+            , fromIntegral $ seqnr  `shiftR` 24
+            , fromIntegral $ seqnr  `shiftR` 16
+            , fromIntegral $ seqnr  `shiftR`  8
+            , fromIntegral $ seqnr  `shiftR`  0
+            ] :: BA.Bytes
+        st1           = ChaCha.initialize 20 mainKey nonceBA
+        st2           = ChaCha.initialize 20 headerKey nonceBA
+        (poly, st3)   = ChaCha.generate st1 64
+        ciph1         = fst $ ChaCha.combine st2 paclenBA
+        ciph2         = fst $ ChaCha.combine st3 $ padlenBA <> plain <> padding
+        ciph3         = ciph1 <> ciph2
+        mac           = BA.convert (Poly1305.auth (BS.take 32 poly) ciph3)
 
 chacha20Poly1305Decoder :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey, BA.ByteArray plain, BA.ByteArray cipher, Show cipher)
-                        => headerKey -> mainKey -> Word64 -> Decoder cipher plain
-chacha20Poly1305Decoder headerKey mainKey seqnr = Decoder st0
+                        => headerKey -> mainKey -> Word64 -> cipher -> Decoder cipher plain
+chacha20Poly1305Decoder headerKey mainKey seqnr = st0
     where
         st0 cipher
             | BA.length cipher < 4 =
-                Right (Nothing, Decoder $ st0 . (cipher <>))
+                DecoderMore $ st0 . (cipher <>)
             | otherwise =
                 st1 paclen paclenCiph (BA.drop 4 cipher)
             where
@@ -194,17 +199,16 @@ chacha20Poly1305Decoder headerKey mainKey seqnr = Decoder st0
 
         st1 paclen paclenCiph cipher
             | BA.length cipher < paclen =
-                Right (Nothing, Decoder $ st1 paclen paclenCiph . (cipher <>))
+                DecoderMore $ st1 paclen paclenCiph . (cipher <>)
             | otherwise =
                 st2 paclenCiph (BA.take paclen cipher) (BA.drop paclen cipher)
 
         st2 paclenCiph pacCiph cipher
             | BA.length cipher < maclen =
-                Right (Nothing, Decoder $ st2 paclenCiph pacCiph . (cipher <>))
-            | otherwise = if mac /= macExpected
-                then Left "message authentication failed"
-                else let Decoder f = chacha20Poly1305Decoder headerKey mainKey (seqnr + 1)
-                     in  Right (Just plain, Decoder $ f . (BA.drop maclen cipher <>))
+                DecoderMore $ st2 paclenCiph pacCiph . (cipher <>)
+            | otherwise = if mac == macExpected
+                then DecoderDone plain (BA.drop maclen cipher)
+                else DecoderFail "message authentication failed"
             where
                 maclen      = 16
                 cc          = ChaCha.initialize 20 mainKey nonce
