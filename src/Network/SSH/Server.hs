@@ -35,7 +35,7 @@ import qualified Network.SSH.Server.Config     as Config
 import           Network.SSH.Server.Connection
 import qualified Network.SSH.Server.Connection as Connection
 
-serve :: (DuplexStream stream) => Config -> stream -> IO ()
+serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = do
     let serverPrivateKey = hostKey config
         serverPublicKey  = case serverPrivateKey of

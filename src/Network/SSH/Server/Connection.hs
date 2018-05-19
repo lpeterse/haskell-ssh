@@ -30,10 +30,11 @@ import           Network.SSH.Exception
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 
-data Connection
+data Connection identity
   = Connection
-  { config     :: Config
+  { config     :: Config identity
   , sessionId  :: SessionId
+  , identity   :: TVar (Maybe identity)
   , logs       :: TChan String
   , output     :: TChan Message
   , disconnect :: TMVar Disconnect
@@ -68,12 +69,13 @@ data ProtocolException
 
 instance Exception ProtocolException
 
-withConnection :: Config -> SessionId -> (Connection -> IO ()) -> IO ()
+withConnection :: Config identity -> SessionId -> (Connection identity -> IO ()) -> IO ()
 withConnection cfg sid = bracket before after
     where
         before = Connection
             <$> pure cfg
             <*> pure sid
+            <*> newTVarIO Nothing
             <*> newTChanIO
             <*> newTChanIO
             <*> newEmptyTMVarIO
@@ -81,7 +83,7 @@ withConnection cfg sid = bracket before after
         after connection = do
             pure ()
 
-pullMessage :: Connection -> IO Message
+pullMessage :: Connection identity -> IO Message
 pullMessage connection = atomically $ disconnectMessage <|> nextMessage
     where
         disconnectMessage = MsgDisconnect <$> readTMVar (disconnect connection)
@@ -89,12 +91,14 @@ pullMessage connection = atomically $ disconnectMessage <|> nextMessage
 
 -- Calling this operation will store a disconnect message
 -- in the connection state. Afterwards, any attempts to read outgoing
--- messages from the connection shall yield this message.
-disconnectWith :: Connection -> DisconnectReason -> IO ()
+-- messages from the connection shall yield this message and
+-- the reader must close the connection after sending
+-- the disconnect message.
+disconnectWith :: Connection identity -> DisconnectReason -> IO ()
 disconnectWith connection reason =
     atomically $ putTMVar (disconnect connection) (Disconnect reason mempty mempty) <|> pure ()
 
-pushMessage :: Connection -> Message -> IO ()
+pushMessage :: Connection identity -> Message -> IO ()
 pushMessage connection msg = do
   print msg
   case msg of
@@ -103,16 +107,11 @@ pushMessage connection msg = do
     MsgServiceRequest x           -> handleServiceRequest x
 
     MsgUserAuthRequest x          -> handleAuthRequest x
-    MsgUserAuthFailure {}         -> send (MsgUnimplemented Unimplemented)
-    MsgUserAuthSuccess {}         -> send (MsgUnimplemented Unimplemented)
-    MsgUserAuthBanner {}          -> send (MsgUnimplemented Unimplemented)
-    MsgUserAuthPublicKeyOk {}     -> send (MsgUnimplemented Unimplemented)
 
     MsgChannelOpenConfirmation {} -> send (MsgUnimplemented Unimplemented)
     MsgChannelOpenFailure {}      -> send (MsgUnimplemented Unimplemented)
     MsgChannelFailure {}          -> send (MsgUnimplemented Unimplemented)
     MsgChannelSuccess {}          -> send (MsgUnimplemented Unimplemented)
-
     MsgChannelOpen x              -> handleChannelOpen x
     MsgChannelData x              -> handleChannelData x
     MsgChannelExtendedData x      -> handleChannelExtendedData x
@@ -131,8 +130,8 @@ pushMessage connection msg = do
             "ssh-connection" -> accept
             _                -> reject
             where
-              accept = send $ MsgServiceAccept (ServiceAccept (ServiceName srv))
-              reject = connection `disconnectWith` DisconnectServiceNotAvailable
+                accept = send $ MsgServiceAccept (ServiceAccept (ServiceName srv))
+                reject = connection `disconnectWith` DisconnectServiceNotAvailable
 
         handleAuthRequest :: UserAuthRequest -> IO ()
         handleAuthRequest (UserAuthRequest user service method) = do
@@ -142,18 +141,20 @@ pushMessage connection msg = do
                 Nothing ->
                     unconditionallyConfirmPublicKeyIsOk algo pk
                 Just sig
-                    | verifyAuthSignature (sessionId connection) user service algo pk sig ->
-                        sendSuccess
+                    | verifyAuthSignature (sessionId connection) user service algo pk sig -> do
+                        onAuthRequest (config connection) user service pk >>= \case
+                            Nothing -> sendSupportedAuthMethods
+                            Just ident -> atomically $ do
+                                writeTVar (identity connection) (Just ident)
+                                writeTChan (output connection) (MsgUserAuthSuccess UserAuthSuccess)
                     | otherwise ->
                         sendSupportedAuthMethods
               _ -> sendSupportedAuthMethods
-              where
-                  sendSuccess =
-                      send $ MsgUserAuthSuccess UserAuthSuccess
-                  sendSupportedAuthMethods =
-                      send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
-                  unconditionallyConfirmPublicKeyIsOk algo pk =
-                      send $ MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
+            where
+                sendSupportedAuthMethods =
+                    send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+                unconditionallyConfirmPublicKeyIsOk algo pk =
+                    send $ MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
 
         handleChannelOpen :: ChannelOpen -> IO ()
         handleChannelOpen (ChannelOpen t rid ws ps) =

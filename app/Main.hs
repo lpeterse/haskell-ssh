@@ -37,8 +37,9 @@ main = do
 
     c <- Server.newDefaultConfig
     let config = c {
-            Server.hostKey        = privateKey
-        ,   Server.onShellRequest = Just runShell
+          Server.hostKey        = privateKey
+        , Server.onAuthRequest  = \username _ _ -> pure (Just username)
+        , Server.onShellRequest = Just runShell
         }
     bracket open close (accept config)
   where
@@ -59,8 +60,8 @@ main = do
           (\(stream,_)-> Server.serve config stream)
         takeMVar token
 
-runShell :: Terminal -> IO ExitCode
-runShell term = do
+runShell :: identity -> Terminal -> IO ExitCode
+runShell identity term = do
     runTerminalT (runRepliqueT repl 0) term
     pure (ExitFailure 1)
 
