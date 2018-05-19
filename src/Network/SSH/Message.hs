@@ -41,6 +41,7 @@ module Network.SSH.Message
   , ChannelOpenConfirmation (..)
     -- ** ChannelOpenFailure (92)
   , ChannelOpenFailure (..)
+  , ChannelOpenFailureReason (..)
     -- ** ChannelData (94)
   , ChannelData (..)
     -- ** ChannelExtendedData (95)
@@ -64,16 +65,16 @@ module Network.SSH.Message
   , AuthMethod (..)
   , AuthMethodName (..)
   , ChannelId (..)
+  , ChannelPacketSize (..)
   , ChannelType (..)
+  , ChannelWindowSize (..)
   , Cookie (), newCookie, nilCookie
-  , InitWindowSize (..)
-  , MaxPacketSize (..)
   , Password (..)
+  , PtySettings (..)
   , PublicKey (..)
   , ServiceName (..)
   , SessionId (..)
   , Signature (..)
-  , PtySettings (..)
   , UserName (..)
   , Version (..)
   ) where
@@ -235,15 +236,22 @@ data UserAuthPublicKeyOk
   deriving (Eq, Show)
 
 data ChannelOpen
-  = ChannelOpen ChannelType ChannelId InitWindowSize MaxPacketSize
+  = ChannelOpen ChannelType ChannelId ChannelWindowSize ChannelPacketSize
   deriving (Eq, Show)
 
 data ChannelOpenConfirmation
-  = ChannelOpenConfirmation ChannelId ChannelId InitWindowSize MaxPacketSize
+  = ChannelOpenConfirmation ChannelId ChannelId ChannelWindowSize ChannelPacketSize
   deriving (Eq, Show)
 
 data ChannelOpenFailure
-  = ChannelOpenFailure ChannelId Word32 BS.ByteString BS.ByteString
+  = ChannelOpenFailure ChannelId ChannelOpenFailureReason BS.ByteString BS.ByteString
+  deriving (Eq, Show)
+
+data ChannelOpenFailureReason
+  = ChannelOpenAdministrativelyProhibited
+  | ChannelOpenConnectFailed
+  | ChannelOpenUnknownChannelType
+  | ChannelOpenResourceShortage
   deriving (Eq, Show)
 
 data ChannelData
@@ -328,17 +336,17 @@ newCookie  = Cookie <$> getRandomBytes 16
 nilCookie :: Cookie
 nilCookie  = Cookie  $  BS.replicate 16 0
 
-newtype Version          = Version          BS.ByteString deriving (Eq, Ord, Show)
-newtype Algorithm        = Algorithm        BS.ByteString deriving (Eq, Ord, Show)
-newtype Password         = Password         BS.ByteString deriving (Eq, Ord, Show)
-newtype SessionId        = SessionId        BS.ByteString deriving (Eq, Ord, Show)
-newtype UserName         = UserName         BS.ByteString deriving (Eq, Ord, Show)
-newtype AuthMethodName   = AuthMethodName   BS.ByteString deriving (Eq, Ord, Show)
-newtype ServiceName      = ServiceName      BS.ByteString deriving (Eq, Ord, Show)
-newtype ChannelType      = ChannelType      BS.ByteString deriving (Eq, Ord, Show)
-newtype ChannelId        = ChannelId        Word32        deriving (Eq, Ord, Show)
-newtype InitWindowSize   = InitWindowSize   Word32        deriving (Eq, Ord, Show)
-newtype MaxPacketSize    = MaxPacketSize    Word32        deriving (Eq, Ord, Show)
+newtype Version           = Version           BS.ByteString deriving (Eq, Ord, Show)
+newtype Algorithm         = Algorithm         BS.ByteString deriving (Eq, Ord, Show)
+newtype Password          = Password          BS.ByteString deriving (Eq, Ord, Show)
+newtype SessionId         = SessionId         BS.ByteString deriving (Eq, Ord, Show)
+newtype UserName          = UserName          BS.ByteString deriving (Eq, Ord, Show)
+newtype AuthMethodName    = AuthMethodName    BS.ByteString deriving (Eq, Ord, Show)
+newtype ServiceName       = ServiceName       BS.ByteString deriving (Eq, Ord, Show)
+newtype ChannelType       = ChannelType       BS.ByteString deriving (Eq, Ord, Show)
+newtype ChannelId         = ChannelId         Word32        deriving (Eq, Ord, Show)
+newtype ChannelWindowSize = ChannelWindowSize Word32        deriving (Eq, Ord, Show)
+newtype ChannelPacketSize = ChannelPacketSize Word32        deriving (Eq, Ord, Show)
 
 -------------------------------------------------------------------------------
 -- Binary instances
@@ -576,14 +584,32 @@ instance B.Binary ChannelOpen where
   get = getMsgType 90 >> ChannelOpen <$> B.get <*> B.get <*> B.get  <*> B.get
 
 instance B.Binary ChannelOpenConfirmation where
-  put (ChannelOpenConfirmation (ChannelId a) (ChannelId b) (InitWindowSize c) (MaxPacketSize d)) =
+  put (ChannelOpenConfirmation (ChannelId a) (ChannelId b) (ChannelWindowSize c) (ChannelPacketSize d)) =
     putByte 91 <> putUint32 a <> putUint32 b <> putUint32 c <> putUint32 d
   get = getMsgType 91 >> ChannelOpenConfirmation <$> B.get <*> B.get <*> B.get  <*> B.get
 
 instance B.Binary ChannelOpenFailure where
-  put (ChannelOpenFailure rid reason descr lang) =
-    putByte  92 <> B.put rid <> putUint32 reason <> putString descr <> putString lang
-  get = getMsgType 92 >> ChannelOpenFailure  <$> B.get <*> getUint32 <*> getString <*> getString
+  put (ChannelOpenFailure rid reason descr lang) = mconcat
+      [ putByte  92
+      , B.put rid
+      , putUint32 $ case reason of
+          ChannelOpenAdministrativelyProhibited -> 1
+          ChannelOpenConnectFailed              -> 2
+          ChannelOpenUnknownChannelType         -> 3
+          ChannelOpenResourceShortage           -> 4
+      , putString descr
+      , putString lang
+      ]
+  get = do
+      getMsgType 92
+      rid <- B.get
+      reason <- getUint32 >>= \case
+          1 -> pure ChannelOpenAdministrativelyProhibited
+          2 -> pure ChannelOpenConnectFailed
+          3 -> pure ChannelOpenUnknownChannelType
+          4 -> pure ChannelOpenResourceShortage
+          _ -> fail ""
+      ChannelOpenFailure rid reason <$> getString <*> getString
 
 instance B.Binary ChannelData where
   put (ChannelData (ChannelId lid) bs) =
@@ -662,13 +688,13 @@ instance B.Binary ChannelId where
   put (ChannelId x) = B.putWord32be x
   get = ChannelId <$> B.getWord32be
 
-instance B.Binary InitWindowSize where
-  put (InitWindowSize x) = B.putWord32be x
-  get = InitWindowSize <$> B.getWord32be
+instance B.Binary ChannelWindowSize where
+  put (ChannelWindowSize x) = B.putWord32be x
+  get = ChannelWindowSize <$> B.getWord32be
 
-instance B.Binary MaxPacketSize where
-  put (MaxPacketSize x) = B.putWord32be x
-  get = MaxPacketSize <$> B.getWord32be
+instance B.Binary ChannelPacketSize where
+  put (ChannelPacketSize x) = B.putWord32be x
+  get = ChannelPacketSize <$> B.getWord32be
 
 instance B.Binary ChannelType where
   put (ChannelType s) = putString s

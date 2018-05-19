@@ -8,16 +8,18 @@ import           Network.SSH.Key
 import           Network.SSH.Message
 
 data Config identity = Config {
-      hostKey        :: PrivateKey
-    , onAuthRequest  :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
-    , onShellRequest :: Maybe (identity -> Terminal -> IO ExitCode)
+      hostKey         :: PrivateKey
+    , onAuthRequest   :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
+    , onShellRequest  :: Maybe (identity -> Terminal -> IO ExitCode)
+    , channelMaxCount :: Int
     }
 
 newDefaultConfig :: IO (Config identity)
 newDefaultConfig = do
     sk <- Ed25519.generateSecretKey
     pure Config {
-          hostKey        = Ed25519PrivateKey (Ed25519.toPublic sk) sk
-        , onAuthRequest  = \_ _ _ -> pure Nothing
-        , onShellRequest = Nothing
+          hostKey         = Ed25519PrivateKey (Ed25519.toPublic sk) sk
+        , onAuthRequest   = \_ _ _ -> pure Nothing
+        , onShellRequest  = Nothing
+        , channelMaxCount = 256
         }
