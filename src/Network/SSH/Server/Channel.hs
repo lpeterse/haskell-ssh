@@ -27,78 +27,72 @@ import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
 
-data IncomingChannelMessage
-  = IncomingChannelOpen         ChannelOpen
-  | IncomingChannelEof          ChannelEof
-  | IncomingChannelClose        ChannelClose
-  | IncomingChannelData         ChannelData
-  | IncomingChannelExtendedData ChannelExtendedData
-  | IncomingChannelRequest      ChannelRequest
-  deriving (Eq, Show)
-
-handleIncomingChannelMessage :: Connection identity -> IncomingChannelMessage -> IO ()
-handleIncomingChannelMessage connection = \case
-    IncomingChannelOpen x         -> handleOpen x
-    IncomingChannelEof x          -> error "FIXME"
-    IncomingChannelClose x        -> handleClose x
-    IncomingChannelData x         -> error "FIXME"
-    IncomingChannelExtendedData x -> error "FIXME"
-    IncomingChannelRequest x      -> error "FIXME"
+handleChannelOpen :: Connection identity -> ChannelOpen -> IO ()
+handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) = atomically $ do
+    channels <- readTVar (connChannels connection)
+    case selectLocalChannelId channels of
+        Nothing -> do
+            send connection $ MsgChannelOpenFailure $
+              ChannelOpenFailure remoteChannelId ChannelOpenResourceShortage mempty mempty
+        Just localChannelId -> do
+            wsLocal  <- newTVar initialWindowSize
+            wsRemote <- newTVar initialWindowSize
+            let channel = Channel {
+                    chanConnection          = connection
+                  , chanType                = channelType
+                  , chanIdLocal             = localChannelId
+                  , chanIdRemote            = remoteChannelId
+                  , chanMaxPacketSizeLocal  = maxPacketSize
+                  , chanMaxPacketSizeRemote = maxPacketSize
+                  , chanWindowSizeLocal     = wsLocal
+                  , chanWindowSizeRemote    = wsRemote
+                  }
+            writeTVar (connChannels connection) $! M.insert localChannelId channel channels
+            send connection $ MsgChannelOpenConfirmation $ ChannelOpenConfirmation
+                remoteChannelId
+                localChannelId
+                initialWindowSize
+                maxPacketSize
     where
-        handleOpen :: ChannelOpen -> IO ()
-        handleOpen (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) = atomically $ do
-            channels <- readTVar (connChannels connection)
-            case selectLocalChannelId channels of
-                Nothing -> do
-                    send connection $ MsgChannelOpenFailure $
-                      ChannelOpenFailure remoteChannelId ChannelOpenResourceShortage mempty mempty
-                Just localChannelId -> do
-                    wsLocal  <- newTVar initialWindowSize
-                    wsRemote <- newTVar initialWindowSize
-                    let channel = Channel {
-                            chanConnection          = connection
-                          , chanType                = channelType
-                          , chanIdLocal             = localChannelId
-                          , chanIdRemote            = remoteChannelId
-                          , chanMaxPacketSizeLocal  = maxPacketSize
-                          , chanMaxPacketSizeRemote = maxPacketSize
-                          , chanWindowSizeLocal     = wsLocal
-                          , chanWindowSizeRemote    = wsRemote
-                          }
-                    writeTVar (connChannels connection) $! M.insert localChannelId channel channels
-                    send connection $ MsgChannelOpenConfirmation $ ChannelOpenConfirmation
-                        remoteChannelId
-                        localChannelId
-                        initialWindowSize
-                        maxPacketSize
-            where
-              selectLocalChannelId :: M.Map ChannelId a -> Maybe ChannelId
-              selectLocalChannelId m
-                  | M.size m >= channelMaxCount (connConfig connection) = Nothing
-                  | otherwise = f (ChannelId 1) $ M.keys m
-                  where
-                      f i [] = Just i
-                      f (ChannelId i) (ChannelId k:ks)
-                          | i == maxBound = Nothing
-                          | i == k        = f (ChannelId $ i+1) ks
-                          | otherwise     = Just (ChannelId i)
+      selectLocalChannelId :: M.Map ChannelId a -> Maybe ChannelId
+      selectLocalChannelId m
+          | M.size m >= channelMaxCount (connConfig connection) = Nothing
+          | otherwise = f (ChannelId 1) $ M.keys m
+          where
+              f i [] = Just i
+              f (ChannelId i) (ChannelId k:ks)
+                  | i == maxBound = Nothing
+                  | i == k        = f (ChannelId $ i+1) ks
+                  | otherwise     = Just (ChannelId i)
 
-        handleClose :: ChannelClose -> IO ()
-        handleClose (ChannelClose localChannelId) = atomically $ do
-            channels <- readTVar (connChannels connection)
-            case M.lookup localChannelId channels of
-                -- The client tries to close the same channel twice.
-                -- This is a protocol error and the server shall disconnect.
-                Nothing ->
-                    disconnectWith connection DisconnectProtocolError
-                Just channel -> do
-                    writeTVar (connChannels connection) $! M.delete localChannelId channels
-                    alreadyClosed <- swapTVar (chanClosed channel) True
-                    -- When the channel is not marked as already closed then the close
-                    -- must have been initiated by the client and the server needs to send
-                    -- a confirmation.
-                    unless alreadyClosed $
-                        send connection $ MsgChannelClose $ ChannelClose $ chanIdRemote channel
+handleChannelClose :: Connection identtiy -> ChannelClose -> IO ()
+handleChannelClose connection (ChannelClose localChannelId) = atomically $ do
+    channels <- readTVar (connChannels connection)
+    case M.lookup localChannelId channels of
+        -- The client tries to close the same channel twice.
+        -- This is a protocol error and the server shall disconnect.
+        Nothing ->
+            disconnectWith connection DisconnectProtocolError
+        Just channel -> do
+            writeTVar (connChannels connection) $! M.delete localChannelId channels
+            alreadyClosed <- swapTVar (chanClosed channel) True
+            -- When the channel is not marked as already closed then the close
+            -- must have been initiated by the client and the server needs to send
+            -- a confirmation.
+            unless alreadyClosed $
+                send connection $ MsgChannelClose $ ChannelClose $ chanIdRemote channel
+
+handleChannelEof :: Connection identity -> ChannelEof -> IO ()
+handleChannelEof = undefined
+
+handleChannelRequest :: Connection identity -> ChannelRequest -> IO ()
+handleChannelRequest = undefined
+
+handleChannelData :: Connection identity -> ChannelData -> IO ()
+handleChannelData = undefined
+
+handleChannelExtendedData :: Connection identity -> ChannelExtendedData -> IO ()
+handleChannelExtendedData = undefined
 
 -- Free all associated resources like threads etc.
 free :: Channel identity -> IO ()

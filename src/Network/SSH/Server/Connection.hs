@@ -30,7 +30,9 @@ import           Network.SSH.Exception
 import           Network.SSH.Message
 import qualified Network.SSH.Server.Channel   as Channel
 import           Network.SSH.Server.Config
+import qualified Network.SSH.Server.Service   as Service
 import           Network.SSH.Server.Types
+import qualified Network.SSH.Server.UserAuth  as UserAuth
 
 withConnection :: Config identity -> SessionId -> (Connection identity -> IO ()) -> IO ()
 withConnection cfg sid = bracket before after
@@ -67,54 +69,15 @@ pushMessage connection msg = do
   case msg of
     MsgIgnore {}                  -> pure ()
 
-    MsgServiceRequest x           -> handleServiceRequest x
+    MsgServiceRequest x           -> Service.handleServiceRequest      connection x
 
-    MsgUserAuthRequest x          -> handleAuthRequest x
+    MsgUserAuthRequest x          -> UserAuth.handleUserAuthRequest    connection x
 
-    MsgChannelOpenConfirmation {} -> send (MsgUnimplemented Unimplemented)
-    MsgChannelOpenFailure {}      -> send (MsgUnimplemented Unimplemented)
-    MsgChannelFailure {}          -> send (MsgUnimplemented Unimplemented)
-    MsgChannelSuccess {}          -> send (MsgUnimplemented Unimplemented)
-    MsgChannelOpen x              -> Channel.handleIncomingChannelMessage connection (Channel.IncomingChannelOpen x)
-    MsgChannelClose x             -> Channel.handleIncomingChannelMessage connection (Channel.IncomingChannelClose x)
-    MsgChannelEof x               -> Channel.handleIncomingChannelMessage connection (Channel.IncomingChannelEof x)
-    MsgChannelRequest x           -> Channel.handleIncomingChannelMessage connection (Channel.IncomingChannelRequest x)
-    MsgChannelData x              -> Channel.handleIncomingChannelMessage connection (Channel.IncomingChannelData x)
-    MsgChannelExtendedData x      -> Channel.handleIncomingChannelMessage connection (Channel.IncomingChannelExtendedData x)
+    MsgChannelOpen x              -> Channel.handleChannelOpen         connection x
+    MsgChannelClose x             -> Channel.handleChannelClose        connection x
+    MsgChannelEof x               -> Channel.handleChannelEof          connection x
+    MsgChannelRequest x           -> Channel.handleChannelRequest      connection x
+    MsgChannelData x              -> Channel.handleChannelData         connection x
+    MsgChannelExtendedData x      -> Channel.handleChannelExtendedData connection x
 
     _                             -> connection `disconnectWith` DisconnectProtocolError
-    where
-        send :: Message -> IO ()
-        send = atomically . writeTChan (connOutput connection)
-
-        handleServiceRequest :: ServiceRequest -> IO ()
-        handleServiceRequest (ServiceRequest (ServiceName srv)) = case srv of
-            "ssh-userauth"   -> accept
-            "ssh-connection" -> accept
-            _                -> reject
-            where
-                accept = send $ MsgServiceAccept (ServiceAccept (ServiceName srv))
-                reject = connection `disconnectWith` DisconnectServiceNotAvailable
-
-        handleAuthRequest :: UserAuthRequest -> IO ()
-        handleAuthRequest (UserAuthRequest user service method) = do
-            print (UserAuthRequest user service method)
-            case method of
-              AuthPublicKey algo pk msig -> case msig of
-                Nothing ->
-                    unconditionallyConfirmPublicKeyIsOk algo pk
-                Just sig
-                    | verifyAuthSignature (connSessionId connection) user service algo pk sig -> do
-                        onAuthRequest (connConfig connection) user service pk >>= \case
-                            Nothing -> sendSupportedAuthMethods
-                            Just ident -> atomically $ do
-                                writeTVar (connIdentity connection) (Just ident)
-                                writeTChan (connOutput connection) (MsgUserAuthSuccess UserAuthSuccess)
-                    | otherwise ->
-                        sendSupportedAuthMethods
-              _ -> sendSupportedAuthMethods
-            where
-                sendSupportedAuthMethods =
-                    send $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
-                unconditionallyConfirmPublicKeyIsOk algo pk =
-                    send $ MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk

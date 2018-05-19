@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 3053ffd9b1f81fff0359ba690cb9630375e49051cf54fc2df39a828d236ab806
+-- hash: 57fa4df6cfbb4f383249f4fa7d5c7ab93410ecb59e4ae3055012eb4322309088
 
 name:           hssh
 version:        0.1.0.0
@@ -55,8 +55,10 @@ library
       Network.SSH.Server.Channel
       Network.SSH.Server.Config
       Network.SSH.Server.Connection
+      Network.SSH.Server.Service
       Network.SSH.Server.Transport
       Network.SSH.Server.Types
+      Network.SSH.Server.UserAuth
   other-modules:
       Paths_hssh
   default-language: Haskell2010
