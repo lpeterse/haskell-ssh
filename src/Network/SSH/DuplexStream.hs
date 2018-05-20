@@ -14,11 +14,15 @@ import           Data.Typeable
 
 import           Network.SSH.Exception
 
-class DuplexStream stream where
+class (InputStream stream, OutputStream stream) => DuplexStream stream where
+
+class OutputStream stream where
     send    :: BA.ByteArrayAccess ba => stream -> ba -> IO Int
+
+class InputStream stream where
     receive :: BA.ByteArray ba => stream -> Int -> IO ba
 
-sendAll :: (DuplexStream stream, BA.ByteArrayAccess ba) => stream -> ba -> IO ()
+sendAll :: (DuplexStream stream, BA.ByteArray ba) => stream -> ba -> IO ()
 sendAll stream ba = sendAll' 0
     where
         len = BA.length ba

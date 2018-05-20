@@ -39,7 +39,7 @@ main = do
     let config = c {
           Server.hostKey        = privateKey
         , Server.onAuthRequest  = \username _ _ -> pure (Just username)
-        , Server.onShellRequest = Just runShell
+        , Server.onExecRequest  = Just runExec
         }
     bracket open close (accept config)
   where
@@ -60,6 +60,11 @@ main = do
           (\(stream,_)-> Server.serve config stream)
         takeMVar token
 
+runExec :: identity -> stdin -> stdout -> stderr -> command -> IO ExitCode
+runExec identity stdin stdout stderr command = do
+    print "Hallo Welt!"
+    error "ABC"
+
 runShell :: identity -> Terminal -> IO ExitCode
 runShell identity term = do
     runTerminalT (runRepliqueT repl 0) term
@@ -73,5 +78,9 @@ repl = readLine "ssh % " >>= \case
     line         -> putStringLn (show (line :: String))
 
 instance DuplexStream (S.Socket f S.Stream p) where
-    send stream bytes = S.send stream (BA.convert bytes) S.msgNoSignal
+
+instance InputStream  (S.Socket f S.Stream p) where
     receive stream len = BA.convert <$> S.receive stream len S.msgNoSignal
+
+instance OutputStream  (S.Socket f S.Stream p)  where
+    send stream bytes = S.send stream (BA.convert bytes) S.msgNoSignal

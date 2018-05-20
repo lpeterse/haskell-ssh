@@ -54,4 +54,8 @@ data Session
     = Session
     { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
     , sessTerminal    :: TVar (Maybe Terminal)
+    , sessThread      :: TVar (Maybe ThreadId)
+    , sessStdin       :: TMVar BS.ByteString
+    , sessStdout      :: TMVar BS.ByteString
+    , sessStderr      :: TMVar BS.ByteString
     }

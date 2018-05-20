@@ -43,6 +43,8 @@ module Network.SSH.Message
     -- ** ChannelOpenFailure (92)
   , ChannelOpenFailure (..)
   , ChannelOpenFailureReason (..)
+    -- ** ChannelWindowAdjust (93)
+  , ChannelWindowAdjust (..)
     -- ** ChannelData (94)
   , ChannelData (..)
     -- ** ChannelExtendedData (95)
@@ -124,6 +126,7 @@ data Message
   | MsgChannelOpen             ChannelOpen
   | MsgChannelOpenConfirmation ChannelOpenConfirmation
   | MsgChannelOpenFailure      ChannelOpenFailure
+  | MsgChannelWindowAdjust     ChannelWindowAdjust
   | MsgChannelData             ChannelData
   | MsgChannelExtendedData     ChannelExtendedData
   | MsgChannelEof              ChannelEof
@@ -259,6 +262,10 @@ data ChannelOpenFailureReason
   | ChannelOpenResourceShortage
   deriving (Eq, Show)
 
+data ChannelWindowAdjust
+  = ChannelWindowAdjust ChannelId ChannelWindowSize
+  deriving (Eq, Show)
+
 data ChannelData
   = ChannelData ChannelId BS.ByteString
   deriving (Eq, Show)
@@ -285,10 +292,14 @@ data ChannelRequestRequest
     , crPtySettings :: PtySettings
     }
   | ChannelRequestShell
+    { crWantReply     :: Bool
+    }
+  | ChannelRequestExec
     { crWantReply :: Bool
+    , crCommand   :: BS.ByteString
     }
   | ChannelRequestExitStatus
-    { crExitStatus :: ExitCode
+    { crExitStatus    :: ExitCode
     }
   | ChannelRequestExitSignal
     { crSignalName   :: BS.ByteString
@@ -381,6 +392,7 @@ instance B.Binary Message where
     MsgChannelOpen              x -> B.put x
     MsgChannelOpenConfirmation  x -> B.put x
     MsgChannelOpenFailure       x -> B.put x
+    MsgChannelWindowAdjust      x -> B.put x
     MsgChannelData              x -> B.put x
     MsgChannelExtendedData      x -> B.put x
     MsgChannelEof               x -> B.put x
@@ -409,6 +421,7 @@ instance B.Binary Message where
     90  -> MsgChannelOpen             <$> B.get
     91  -> MsgChannelOpenConfirmation <$> B.get
     92  -> MsgChannelOpenFailure      <$> B.get
+    93  -> MsgChannelWindowAdjust     <$> B.get
     94  -> MsgChannelData             <$> B.get
     95  -> MsgChannelExtendedData     <$> B.get
     96  -> MsgChannelEof              <$> B.get
@@ -620,6 +633,11 @@ instance B.Binary ChannelOpenFailure where
           _ -> fail ""
       ChannelOpenFailure rid reason <$> getString <*> getString
 
+instance B.Binary ChannelWindowAdjust where
+  put (ChannelWindowAdjust channelId windowSize) =
+    putByte  93 <> B.put channelId <> B.put windowSize
+  get = getMsgType 93 >> ChannelWindowAdjust <$> B.get <*> B.get
+
 instance B.Binary ChannelData where
   put (ChannelData (ChannelId lid) bs) =
     putByte  94 <> putUint32 lid <> putString bs
@@ -648,6 +666,8 @@ instance B.Binary ChannelRequest where
           [ putByte 98, B.put cid, putString "pty-req", putBool wantReply, B.put ts ]
       ChannelRequestShell wantReply -> mconcat
           [ putByte 98, B.put cid, putString "shell", putBool wantReply ]
+      ChannelRequestExec wantReply command -> mconcat
+          [ putByte 98, B.put cid, putString "exec", putBool wantReply, putString command ]
       ChannelRequestExitStatus status -> mconcat
           [ putByte 98, B.put cid, putString "exit-status", putBool False
           , putUint32 $ case status of { ExitSuccess -> 0; ExitFailure x -> fromIntegral x; } ]
@@ -670,6 +690,9 @@ instance B.Binary ChannelRequest where
                   <*> B.get
               "shell" -> ChannelRequestShell
                   <$> getBool
+              "exec" -> ChannelRequestExec
+                  <$> getBool
+                  <*> getString
               "exit-status" -> do
                   getFalse
                   status <- getUint32

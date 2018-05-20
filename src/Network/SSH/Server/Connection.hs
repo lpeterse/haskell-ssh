@@ -77,6 +77,7 @@ pushMessage connection msg = do
     MsgChannelClose x             -> Channel.handleChannelClose        connection x
     MsgChannelEof x               -> Channel.handleChannelEof          connection x
     MsgChannelRequest x           -> Channel.handleChannelRequest      connection x
+    MsgChannelWindowAdjust x      -> Channel.handleChannelWindowAdjust connection x
     MsgChannelData x              -> Channel.handleChannelData         connection x
     MsgChannelExtendedData x      -> Channel.handleChannelExtendedData connection x
 
