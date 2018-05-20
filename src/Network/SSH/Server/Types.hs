@@ -11,12 +11,11 @@ import           Control.Concurrent.STM.TVar
 import           Control.Exception
 import           Control.Monad                (forever, unless, when)
 import           Control.Monad.STM
+import           Control.Monad.Terminal
 import qualified Data.ByteString              as BS
 import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
 import           Data.Maybe
-import           Data.Text                    as T
-import           Data.Text.Encoding           as T
 import           Data.Typeable
 import           System.Exit
 
@@ -37,7 +36,7 @@ data Connection identity
 data Channel identity
     = Channel
     { chanConnection          :: Connection identity
-    , chanType                :: ChannelType
+    , chanApplication         :: ChannelApplication
     , chanIdLocal             :: ChannelId
     , chanIdRemote            :: ChannelId
     , chanMaxPacketSizeLocal  :: ChannelPacketSize
@@ -45,4 +44,14 @@ data Channel identity
     , chanWindowSizeLocal     :: TVar ChannelWindowSize
     , chanWindowSizeRemote    :: TVar ChannelWindowSize
     , chanClosed              :: TVar Bool
+    }
+
+data ChannelApplication
+    = ChannelApplicationSession Session
+    | ChannelApplicationOther   BS.ByteString
+
+data Session
+    = Session
+    { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
+    , sessTerminal    :: TVar (Maybe Terminal)
     }

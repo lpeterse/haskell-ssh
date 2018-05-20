@@ -35,11 +35,21 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
             send connection $ MsgChannelOpenFailure $
               ChannelOpenFailure remoteChannelId ChannelOpenResourceShortage mempty mempty
         Just localChannelId -> do
+            application <- case channelType of
+                  (ChannelType "session") -> do
+                      env <- newTVar mempty
+                      pty <- newTVar Nothing
+                      pure $ ChannelApplicationSession Session {
+                            sessEnvironment = env
+                          , sessTerminal = pty
+                          }
+                  (ChannelType other) ->
+                      pure (ChannelApplicationOther other)
             wsLocal  <- newTVar initialWindowSize
             wsRemote <- newTVar initialWindowSize
             let channel = Channel {
                     chanConnection          = connection
-                  , chanType                = channelType
+                  , chanApplication         = application
                   , chanIdLocal             = localChannelId
                   , chanIdRemote            = remoteChannelId
                   , chanMaxPacketSizeLocal  = maxPacketSize
@@ -85,9 +95,6 @@ handleChannelClose connection (ChannelClose localChannelId) = atomically $ do
 handleChannelEof :: Connection identity -> ChannelEof -> IO ()
 handleChannelEof = undefined
 
-handleChannelRequest :: Connection identity -> ChannelRequest -> IO ()
-handleChannelRequest = undefined
-
 handleChannelData :: Connection identity -> ChannelData -> IO ()
 handleChannelData = undefined
 
@@ -104,6 +111,27 @@ close channel = atomically $ do
     unless alreadyClosed $
         send (chanConnection channel) $ MsgChannelClose $ ChannelClose $ chanIdRemote channel
 
+getChannel :: Connection identity -> ChannelId -> STM (Channel identity)
+getChannel connection channelId = do
+    channels <- readTVar (connChannels connection)
+    case M.lookup channelId channels of
+        Just channel -> pure channel
+        Nothing      -> throwSTM (Disconnect DisconnectProtocolError "invalid channel id" "")
+
+handleChannelRequest :: Connection identity -> ChannelRequest -> IO ()
+handleChannelRequest connection (ChannelRequest channelId request) = atomically $ do
+    channel <- getChannel connection channelId
+    case chanApplication channel of
+        ChannelApplicationSession session -> case request of
+            ChannelRequestEnv wantReply name value -> do
+                env <- readTVar (sessEnvironment session)
+                writeTVar (sessEnvironment session) $! M.insert name value env
+                when wantReply (sendSuccess channel)
+            _ -> throwProtocolError "cannot dispatch channel request on session channel"
+        _ -> throwProtocolError "cannot dispatch channel request"
+    where
+        throwProtocolError e = throwSTM $ Disconnect DisconnectProtocolError e mempty
+        sendSuccess channel = send connection $ MsgChannelSuccess $ ChannelSuccess (chanIdRemote channel)
 
 {-
 

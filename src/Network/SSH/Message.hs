@@ -1,6 +1,7 @@
-{-# LANGUAGE BangPatterns      #-}
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE BangPatterns       #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE LambdaCase         #-}
+{-# LANGUAGE OverloadedStrings  #-}
 module Network.SSH.Message
   ( -- * Message
     Message (..)
@@ -52,6 +53,7 @@ module Network.SSH.Message
   , ChannelClose (..)
     -- ** ChannelRequest (98)
   , ChannelRequest (..)
+  , ChannelRequestRequest (..)
     -- ** ChannelSuccess (99)
   , ChannelSuccess (..)
     -- ** ChannelFailure (100)
@@ -97,6 +99,7 @@ import qualified Data.ByteString.Lazy     as LBS
 import           Data.Foldable
 import qualified Data.List                as L
 import           Data.Monoid              ((<>))
+import           Data.Typeable
 import           Data.Word
 import           System.Exit
 
@@ -135,9 +138,9 @@ data Disconnect
   = Disconnect
   { disconnectReason      :: DisconnectReason
   , disconnectDescription :: BS.ByteString
-  , disconnectLanguagtTag :: BS.ByteString
+  , disconnectLanguageTag :: BS.ByteString
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Typeable)
 
 data DisconnectReason
     = DisconnectHostNotAllowedToConnect
@@ -155,7 +158,9 @@ data DisconnectReason
     | DisconnectAuthCancelledByUser
     | DisconnectNoMoreAuthMethodsAvailable
     | DisconnectIllegalUsername
-    deriving (Eq, Show)
+    deriving (Eq, Show, Typeable)
+
+instance Exception Disconnect
 
 data Ignore
   = Ignore
@@ -271,29 +276,33 @@ data ChannelClose
   deriving (Eq, Show)
 
 data ChannelRequest
+    = ChannelRequest ChannelId ChannelRequestRequest
+    deriving (Eq, Show)
+
+data ChannelRequestRequest
   = ChannelRequestPty
-    { crChannelId   :: ChannelId
-    , crWantReply   :: Bool
+    { crWantReply   :: Bool
     , crPtySettings :: PtySettings
     }
   | ChannelRequestShell
-    { crChannelId :: ChannelId
-    , crWantReply :: Bool
+    { crWantReply :: Bool
     }
   | ChannelRequestExitStatus
-    { crChannelId  :: ChannelId
-    , crExitStatus :: ExitCode
+    { crExitStatus :: ExitCode
     }
   | ChannelRequestExitSignal
-    { crChannelId    :: ChannelId
-    , crSignalName   :: BS.ByteString
+    { crSignalName   :: BS.ByteString
     , crCodeDumped   :: Bool
     , crErrorMessage :: BS.ByteString
     , crLanguageTag  :: BS.ByteString
     }
+  | ChannelRequestEnv
+    { crWantReply     :: Bool
+    , crVariableName  :: BS.ByteString
+    , crVariableValue :: BS.ByteString
+    }
   | ChannelRequestOther
-    { crChannelId :: ChannelId
-    , crOther     :: BS.ByteString
+    { crOther     :: BS.ByteString
     }
   deriving (Eq, Show)
 
@@ -632,39 +641,49 @@ instance B.Binary ChannelClose where
   get = getMsgType 97 >> ChannelClose <$> B.get
 
 instance B.Binary ChannelRequest where
-  put = \case
-    ChannelRequestPty cid wantReply ts -> mconcat
-      [ putByte 98, B.put cid, putString "pty-req", putBool wantReply, B.put ts ]
-    ChannelRequestShell cid wantReply -> mconcat
-      [ putByte 98, B.put cid, putString "shell", putBool wantReply ]
-    ChannelRequestExitStatus cid status -> mconcat
-      [ putByte 98, B.put cid, putString "exit-status", putBool False
-                  , putUint32 $ case status of { ExitSuccess -> 0; ExitFailure x -> fromIntegral x; } ]
-    ChannelRequestExitSignal cid signame coredump errmsg lang -> mconcat
-      [ putByte 98, B.put cid, putString "exit-signal", putBool False
-                  , putString signame, putBool coredump, putString errmsg, putString lang ]
-    ChannelRequestOther cid other -> mconcat
-      [ putByte 98, B.put cid, putString other ]
-  get = getMsgType 98 >> B.get >>= \cid-> getString >>= \case
-    "pty-req" -> ChannelRequestPty cid
-      <$> getBool
-      <*> B.get
-    "shell" -> ChannelRequestShell cid
-      <$> getBool
-    "exit-status" -> do
-      getFalse
-      status <- getUint32
-      pure $ ChannelRequestExitStatus cid $ case status `mod` 256 of
-        0 -> ExitSuccess
-        x -> ExitFailure (fromIntegral x)
-    "exit-signal" -> do
-      getFalse
-      ChannelRequestExitSignal cid
-        <$> getString
-        <*> getBool
-        <*> getString
-        <*> getString
-    other   -> ChannelRequestOther cid <$> pure other
+    put (ChannelRequest cid dat) = case dat of
+      ChannelRequestEnv wantReply name value -> mconcat
+          [ putByte 98, B.put cid, putString "env", putBool wantReply, putString name, putString value ]
+      ChannelRequestPty wantReply ts -> mconcat
+          [ putByte 98, B.put cid, putString "pty-req", putBool wantReply, B.put ts ]
+      ChannelRequestShell wantReply -> mconcat
+          [ putByte 98, B.put cid, putString "shell", putBool wantReply ]
+      ChannelRequestExitStatus status -> mconcat
+          [ putByte 98, B.put cid, putString "exit-status", putBool False
+          , putUint32 $ case status of { ExitSuccess -> 0; ExitFailure x -> fromIntegral x; } ]
+      ChannelRequestExitSignal signame coredump errmsg lang -> mconcat
+          [ putByte 98, B.put cid, putString "exit-signal", putBool False
+          , putString signame, putBool coredump, putString errmsg, putString lang ]
+      ChannelRequestOther other -> mconcat
+          [ putByte 98, B.put cid, putString other ]
+    get = do
+        getMsgType 98
+        ChannelRequest <$> B.get <*> getRequest
+        where
+          getRequest = getString >>= \case
+              "env" -> ChannelRequestEnv
+                  <$> getBool
+                  <*> getString
+                  <*> getString
+              "pty-req" -> ChannelRequestPty
+                  <$> getBool
+                  <*> B.get
+              "shell" -> ChannelRequestShell
+                  <$> getBool
+              "exit-status" -> do
+                  getFalse
+                  status <- getUint32
+                  pure $ ChannelRequestExitStatus $ case status `mod` 256 of
+                      0 -> ExitSuccess
+                      x -> ExitFailure (fromIntegral x)
+              "exit-signal" -> do
+                  getFalse
+                  ChannelRequestExitSignal
+                      <$> getString
+                      <*> getBool
+                      <*> getString
+                      <*> getString
+              other -> pure $ ChannelRequestOther other
 
 instance B.Binary ChannelSuccess where
   put (ChannelSuccess (ChannelId lid)) =
