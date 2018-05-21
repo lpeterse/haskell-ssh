@@ -349,7 +349,7 @@ data PtySettings
   , ptyModes        :: BS.ByteString
   } deriving (Eq, Show)
 
-newtype Cookie           = Cookie           BS.ByteString deriving (Eq, Ord, Show)
+newtype Cookie            = Cookie            BS.ByteString deriving (Eq, Ord, Show)
 
 newCookie :: MonadRandom m => m Cookie
 newCookie  = Cookie <$> getRandomBytes 16
@@ -503,32 +503,32 @@ instance Encodable Disconnect where
             _  -> fail ""
         Disconnect reason <*> getString <*> getString
 
-instance B.Binary Ignore where
+instance Encoding Ignore where
     len _ = 1
     put _ = putWord8 2
     get   = BA.byte 2 >> pure Ignore
 
-instance B.Binary Unimplemented where
+instance Encoding Unimplemented where
     len _ = lenWord8 + lenWord32
     put (Unimplemented w) = putWord8 3 >> putWord32 w
     get = BA.byte 3 >> Unimplemented <$> getWord32
 
-instance B.Binary Debug where
+instance Encoding Debug where
     len (Debug ad msg lang) = lenWord8 + lenBool + lenString msg + lenString lang
     put (Debug ad msg lang) = putWord8 4 >> putBool ad >> putString msg >> putString lang
     get = BA.byte 4 >> Debug <$> getBool <*> getString <*> getString
 
-instance B.Binary ServiceRequest where
+instance Encoding ServiceRequest where
     len (ServiceRequest name) = lenWord8 + len name
     put (ServiceRequest name) = putWord8 5 >> put name
     get = BA.byte 5 >> ServiceRequest <$> get
 
-instance B.Binary ServiceAccept where
+instance Encoding ServiceAccept where
     len (ServiceAccept name) = lenWord8 + len name
     put (ServiceAccept s) = putWord8 6 >> put name
     get = BA.byte 6 >> ServiceAccept <$> B.get
 
-instance B.Binary KexInit where
+instance Encoding KexInit where
     len kex = lenWord8
         + len (kexCookie                              kex)
         + len (kexCookie                              kex)
@@ -568,17 +568,17 @@ instance B.Binary KexInit where
         getWord32 -- reserved for future extensions
         pure kex
 
-instance B.Binary NewKeys where
+instance Encoding NewKeys where
     len _ = lenWord8
     put _ = putWord8 21
     get   = BA.byte 21 >> pure NewKeys
 
-instance B.Binary KexEcdhInit where
+instance Encoding KexEcdhInit where
     len (KexEcdhInit key) = lenWord8 + lenCurve25519PK
     put (KexEcdhInit key) = putWord8 30 >> putCurve25519PK key
     get = BA.byte 30 >> KexEcdhInit <$> getCurve25519PK
 
-instance B.Binary KexEcdhReply where
+instance Encoding KexEcdhReply where
     len (KexEcdhReply hkey ekey sig) =
         lenWord8 + len hkey + len ekey + len sig
     put (KexEcdhReply hkey ekey sig) = do
@@ -593,12 +593,12 @@ instance B.Binary KexEcdhReply where
             <*> get
             <*> get
 
-instance B.Binary UserAuthRequest where
+instance Encoding UserAuthRequest where
     len (UserAuthRequest un sn am) = lenWord8 + len un + len sn + len am
     put (UserAuthRequest un sn am) = putWord8 50 >> put un >> put sn >> put an
     get = BA.byte 50 >> UserAuthRequest <$> B.get <*> B.get <*> B.get
 
-instance B.Binary UserAuthFailure where
+instance Encoding UserAuthFailure where
     len (UserAuthFailure ms ps) = lenWord8 + undefined
     put (UserAuthFailure ms ps) = do
         putWord8 51
@@ -608,32 +608,32 @@ instance B.Binary UserAuthFailure where
         BA.byte 51
         UserAuthFailure <$> (fmap AuthMethodName <$> getNameList) <*> getBool
 
-instance B.Binary UserAuthSuccess where
+instance Encoding UserAuthSuccess where
     len _ = lenWord8
     put _ = putWord8 52
     get   = BA.byte 52 >> pure UserAuthSuccess
 
-instance B.Binary UserAuthBanner where
+instance Encoding UserAuthBanner where
     len (UserAuthBanner x y) = lenWord8 + lenString x + lenString y
     put (UserAuthBanner x y) = putWord8 53 >> putString x >> putString y
     get = BA.byte 53 >> UserAuthBanner <$> getString <*> getString
 
-instance B.Binary UserAuthPublicKeyOk where
+instance Encoding UserAuthPublicKeyOk where
     len (UserAuthPublicKeyOk alg pk) = lenWord8 + len alg + len pk
     put (UserAuthPublicKeyOk alg pk) = putWord8 60 >> put alg >> put pk
     get = BA.byte 60 >> UserAuthPublicKeyOk <$> get <*> get
 
-instance B.Binary ChannelOpen where
+instance Encoding ChannelOpen where
     len (ChannelOpen ct rid ws ps) = lenWord8 + len ct + len rid + len ws + len ps
     put (ChannelOpen ct rid ws ps) = putWord8 90 + put ct + put rid + put ws + put ps
     get = BA.byte 90 >> ChannelOpen <$> get <*> get <*> get  <*> get
 
-instance B.Binary ChannelOpenConfirmation where
+instance Encoding ChannelOpenConfirmation where
     len (ChannelOpenConfirmation a b c d) = lenWord8 + len a + len b + len c + len d
     put (ChannelOpenConfirmation a b c d) = putWord8 91 >> put a >> put b >> put c >> put d
     get = BA.byte 91 >> ChannelOpenConfirmation <$> get <*> get <*> get  <*> get
 
-instance B.Binary ChannelOpenFailure where
+instance Encoding ChannelOpenFailure where
     len (ChannelOpenFailure rid reason descr lang) =
         lenWord8 + len rid + lenString reason + lenString desc + lenString lang
     put (ChannelOpenFailure rid reason descr lang) = do
@@ -649,7 +649,7 @@ instance B.Binary ChannelOpenFailure where
     get = do
         BA.byte 92
         rid <- get
-        reason <- getUint32 >>= \case
+        reason <- getWord32 >>= \case
             1 -> pure ChannelOpenAdministrativelyProhibited
             2 -> pure ChannelOpenConnectFailed
             3 -> pure ChannelOpenUnknownChannelType
@@ -657,32 +657,32 @@ instance B.Binary ChannelOpenFailure where
             _ -> fail ""
         ChannelOpenFailure rid reason <$> getString <*> getString
 
-instance B.Binary ChannelWindowAdjust where
+instance Encoding ChannelWindowAdjust where
     len (ChannelWindowAdjust cid ws) = lenWord8 + len cid + len ws
     put (ChannelWindowAdjust channelId windowSize) = putWord8 93 >> put cid <> put ws
     get = BA.byte 93 >> ChannelWindowAdjust <$> get <*> get
 
-instance B.Binary ChannelData where
+instance Encoding ChannelData where
     len (ChannelData cid ba) = lenWord8 + len cid + lenString ba
     put (ChannelData cid ba) = putWord8 94 >> put cid >> putString ba
     get = BA.byte 94 >> ChannelData <$> get <*> getString
 
-instance B.Binary ChannelExtendedData where
+instance Encoding ChannelExtendedData where
     len (ChannelData cid _ ba) = lenWord8 + len cid + lenWord32 + lenString ba
     put (ChannelData cid x ba) = putWord8 95 >> put cid >> putWord32 >> putString ba
     get = BA.byte 95 >> ChannelExtendedData <$> get <*> getString
 
-instance B.Binary ChannelEof where
+instance Encoding ChannelEof where
     len (ChannelEof cid) = lenWord8 + len cid
     put (ChannelEof cid) = putWord8 96 >> put cid
     get = BA.byte 96 >> ChannelEof <$> get
 
-instance B.Binary ChannelClose where
+instance Encoding ChannelClose where
     len (ChannelClose cid) = lenWord8 + len cid
     put (ChannelClose cid) = putWord8 97 >> put cid
     get = BA.byte 97 >> ChannelClose <$> get
 
-instance B.Binary ChannelRequest where
+instance Encoding ChannelRequest where
     len (ChannelRequest cid req) = lenWord8 + len cid + len req
     put (ChannelRequest cid req) = putWord8 98 >> put cid >> put req
     get = BA.byte 98 >> ChannelRequest <$> get
@@ -859,9 +859,7 @@ instance B.Binary PublicKey where
                 CryptoPassed k -> pure (PublicKeyEd25519 k)
                 CryptoFailed _ -> fail ""
         "ssh-rsa" -> do
-            (n,_) <- getIntegerAndSize
-            (e,s) <- getIntegerAndSize
-            pure $ PublicKeyRSA $ RSA.PublicKey s n e
+
         other -> fail $ "Unknown pubkey algorithm " ++ show other
 
 instance B.Binary Signature where
@@ -883,7 +881,7 @@ instance B.Binary Signature where
         other ->
             SignatureOther other <$> getString
 
-instance B.Binary PtySettings where
+instance Encoding PtySettings where
     len (PtySettings env __ __ __ __ modes) =
         lenString env + lenWord32 + lenWord32 + lenWord32 + lenWord32 + lenString modes
     put (PtySettings env wc hc wp hp modes) =
@@ -898,41 +896,57 @@ instance B.Binary PtySettings where
 getNameList :: (BA.ByteArray ba, BA.ByteArray name) => BA.Parser ba [name]
 getNameList = do
     len <- fromIntegral <$> getWord32be
-    BS.split 0x2c <$> B.getByteString len
+    BA.split 0x2c <$> BA.take len
 
-putNameList :: [BS.ByteString] -> B.Put
-putNameList xs =
-    B.putWord32be (fromIntegral $ g xs)
-    <> mconcat (B.putByteString <$> L.intersperse "," xs)
+putNameList :: [BS.ByteString] -> BA.Pack
+putNameList xs = do
+    putWord32be (fromIntegral $ g xs)
+    mapM_ BA.putBytes (L.intersperse "," xs)
     where
         g [] = 0
-        g ys = sum (BS.length <$> ys) + length ys - 1
+        g ys = sum (BA.length <$> ys) + length ys - 1
 
-getCurve25519PK :: B.Get Curve25519.PublicKey
-getCurve25519PK = getString >>= \s-> case Curve25519.publicKey s of
-    CryptoPassed pk -> pure pk
-    CryptoFailed e  -> fail (show e)
+instance Encoding Curve25519.PublicKey where
+    len = fromIntegral . BA.length
+    put = putString
+    get = getString >>= \s-> case Curve25519.publicKey s of
+        CryptoPassed k -> pure k
+        CryptoFailed _ -> ""
 
-putCurve25519PK :: Curve25519.PublicKey -> B.Put
-putCurve25519PK = putString . BS.pack . BA.unpack
+instance Encoding Ed25519.PublicKey where
+    len = fromIntegral . BA.length
+    put = putString
+    get = getString >>= \s-> case Ed25519.publicKey s of
+        CryptoPassed k -> pure k
+        CryptoFailed _ -> ""
 
--- Observing the encoded length is far cheaper than calculating the
--- log2 of the resulting integer.
-getIntegerAndSize :: B.Get (Integer, Int)
-getIntegerAndSize = do
-  bs <- BS.dropWhile (==0) <$> getString -- eventually remove leading 0 byte
-  pure (foldl' (\i b-> i*256 + fromIntegral b) 0 $ BS.unpack bs, BS.length bs * 8)
+instance Encoding RSA.PublicKey where
+    len = undefined -- TODO
+    put (RSA.PublicKey _ n e) = do
+        putInteger n
+        putInteger e
+        where
+          putInteger :: Integer -> B.Put
+          putInteger x = B.putWord32be (fromIntegral $ BS.length bs) <> B.putByteString bs
 
-putInteger :: Integer -> B.Put
-putInteger x = B.putWord32be (fromIntegral $ BS.length bs) <> B.putByteString bs
-  where
-    bs      = BS.pack $ g $ f x []
-    f 0 acc = acc
-    f i acc = let (q,r) = quotRem i 256
-              in  f q (fromIntegral r : acc)
-    g []        = []
-    g yys@(y:_) | y > 128   = 0:yys
-                | otherwise = yys
+          bs      = BS.pack $ g $ f x []
+          f 0 acc = acc
+          f i acc = let (q,r) = quotRem i 256
+                    in  f q (fromIntegral r : acc)
+          g []        = []
+          g yys@(y:_) | y > 128   = 0:yys
+                      | otherwise = yys
+    get = do
+        (n,_) <- getIntegerAndSize
+        (e,s) <- getIntegerAndSize
+        pure $ PublicKeyRSA $ RSA.PublicKey s n e
+        where
+            -- Observing the encoded length is far cheaper than calculating the
+            -- log2 of the resulting integer.
+            getIntegerAndSize :: B.Get (Integer, Int)
+            getIntegerAndSize = do
+              bs <- BS.dropWhile (==0) <$> getString -- eventually remove leading 0 byte
+              pure (foldl' (\i b-> i*256 + fromIntegral b) 0 $ BS.unpack bs, BS.length bs * 8)
 
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
 verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =
