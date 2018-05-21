@@ -22,16 +22,14 @@ flags:
 dependencies:
 - async
 - base >= 4.7 && < 5
-- exceptions
 - bytestring
-- binary
+- cereal
 - containers
 - cryptonite
 - memory
 - stm
 - terminal
 - text
-- cereal
 
 library:
   source-dirs: src

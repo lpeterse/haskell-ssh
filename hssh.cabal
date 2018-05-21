@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 0077f0853d6fd8e39c4b4c4f48df1b32a8304683c619c9f685ee1aa522f0430a
+-- hash: 3c8b47e146b61fa060c73b65e20c5f0d900eec33bae03c15555f5d0492cf2019
 
 name:           hssh
 version:        0.1.0.0
@@ -36,12 +36,10 @@ library
   build-depends:
       async
     , base >=4.7 && <5
-    , binary
     , bytestring
     , cereal
     , containers
     , cryptonite
-    , exceptions
     , memory
     , stm
     , terminal
@@ -74,12 +72,10 @@ executable hssh-demo
   build-depends:
       async
     , base >=4.7 && <5
-    , binary
     , bytestring
     , cereal
     , containers
     , cryptonite
-    , exceptions
     , hssh
     , memory
     , replique
@@ -104,12 +100,10 @@ test-suite hssh-test
   build-depends:
       async
     , base >=4.7 && <5
-    , binary
     , bytestring
     , cereal
     , containers
     , cryptonite
-    , exceptions
     , hssh
     , memory
     , stm

@@ -4,12 +4,11 @@ import           Control.Arrow         (second)
 import           Control.Exception
 import           Control.Monad         (unless, when)
 import           Control.Monad.STM
-import qualified Data.Binary           as B
-import qualified Data.Binary.Get       as B
-import qualified Data.Binary.Put       as B
 import qualified Data.ByteArray        as BA
-import qualified Data.ByteString.Lazy  as LBS
 import           Data.Monoid           ((<>))
+import qualified Data.Serialize        as B
+import qualified Data.Serialize.Get    as B
+import qualified Data.Serialize.Put    as B
 import           Data.Typeable
 
 import           Network.SSH.Exception
@@ -33,7 +32,8 @@ sendAll stream ba = sendAll' 0
                 sendAll' (offset + sent)
 
 receiveAll :: (DuplexStream stream, BA.ByteArray ba) => stream -> Int -> IO ba
-receiveAll stream len = receive stream len >>= loop
+receiveAll stream len =
+    receive stream len >>= loop
     where
         loop ba
             | BA.length ba >= len = pure ba
@@ -44,19 +44,13 @@ receiveAll stream len = receive stream len >>= loop
 
 sendPutter :: (DuplexStream stream) => stream -> B.Put -> IO ()
 sendPutter stream =
-    sendAll stream . LBS.toStrict . B.runPut
+    sendAll stream . B.runPut
 
 receiveGetter :: (DuplexStream stream, BA.ByteArray ba) => stream -> B.Get a -> ba -> IO (a, ba)
 receiveGetter stream getter initial =
-    second BA.convert <$> case B.runGetIncremental getter of
-        B.Done _ _ a       -> pure (a, initial)
-        B.Fail _ _ e       -> throwIO (SshSyntaxErrorException e)
-        B.Partial continue -> f (continue $ Just $ BA.convert initial)
+    f (B.runGetPartial getter $ BA.convert initial)
     where
-        chunkSize = 1024
-        nothingIfEmpty ba
-            | BA.null ba = Nothing
-            | otherwise  = Just ba
-        f (B.Done remainder _ a) = pure (a, BA.convert remainder)
-        f (B.Fail _ _ e        ) = throwIO (SshSyntaxErrorException e)
-        f (B.Partial continue  ) = f =<< (continue . nothingIfEmpty <$> receive stream chunkSize)
+        chunkSize              = 1024
+        f (B.Done a remainder) = pure (a, BA.convert remainder)
+        f (B.Fail e _        ) = throwIO (SshSyntaxErrorException e)
+        f (B.Partial continue) = f =<< (continue <$> receive stream chunkSize)
