@@ -2,20 +2,31 @@
 module Network.SSH.Encoding where
 
 import           Control.Applicative
+import           Control.Monad       (when)
+import qualified Control.Monad.Fail  as Fail
 import           Data.Bits
-import qualified Data.ByteArray       as BA
-import qualified Data.ByteArray.Pack  as BA
-import qualified Data.ByteArray.Parse as BP
+import qualified Data.ByteArray      as BA
+import qualified Data.ByteString     as BS
+import qualified Data.Serialize.Get  as G
+import qualified Data.Serialize.Put  as P
 import           Data.Word
 import           System.Exit
 
-type Putter = BA.Packer ()
-type Getter = BP.Parser BA.Bytes
+type Put = P.Put
+type Get = G.Get
+
+runPut :: BA.ByteArray ba => Put -> ba
+runPut = BA.convert . P.runPut
+
+runGet :: (Fail.MonadFail m, BA.ByteArray ba) => Get a -> ba -> m a
+runGet g ba = case G.runGet g (BA.convert ba) of
+    Left e  -> Fail.fail e
+    Right a -> pure a
 
 class Encoding a where
     len :: a -> Word32
-    put :: a -> Putter
-    get :: Getter a
+    put :: a -> Put
+    get :: Get a
 
 instance Encoding ExitCode where
     len = const 4
@@ -29,55 +40,66 @@ instance Encoding ExitCode where
 lenWord8 :: Word32
 lenWord8 = 1
 
-putWord8 :: Word8 -> Putter
-putWord8 = BA.putWord8
+putWord8 :: Word8 -> Put
+putWord8 = P.putWord8
 
-getWord8 :: Getter Word8
-getWord8 = BP.anyByte
+getWord8 :: Get Word8
+getWord8 = G.getWord8
+
+expectWord8 :: Word8 -> Get ()
+expectWord8 i = do
+    i' <- getWord8
+    when (i /= i') (fail "")
 
 lenWord32 :: Word32
 lenWord32 = 4
 
-putWord32 :: Word32 -> Putter
-putWord32 w = do
-    putWord8 $ fromIntegral $ shiftR w 24
-    putWord8 $ fromIntegral $ shiftR w 16
-    putWord8 $ fromIntegral $ shiftR w  8
-    putWord8 $ fromIntegral $ shiftR w  0
+putWord32 :: Word32 -> Put
+putWord32 = P.putWord32be
 
-getWord32 :: Getter Word32
-getWord32 = do
-    w0 <- flip shiftL 24 . fromIntegral <$> BP.anyByte
-    w1 <- flip shiftL 16 . fromIntegral <$> BP.anyByte
-    w2 <- flip shiftL  8 . fromIntegral <$> BP.anyByte
-    w3 <- flip shiftL  0 . fromIntegral <$> BP.anyByte
-    pure $ w0 .|. w1 .|. w2 .|. w3
+getWord32 :: Get Word32
+getWord32 = G.getWord32be
+
+lenBytes :: BA.ByteArrayAccess ba => ba -> Word32
+lenBytes = fromIntegral . BA.length
+
+putBytes :: BA.ByteArrayAccess ba => ba -> Put
+putBytes = P.putByteString . BA.convert
+
+getBytes :: BA.ByteArray ba => Word32 -> Get ba
+getBytes i = BA.convert <$> G.getByteString (fromIntegral i)
+
+putByteString :: BS.ByteString -> Put
+putByteString = P.putByteString
+
+getByteString :: Word32 -> Get BS.ByteString
+getByteString = G.getByteString . fromIntegral
 
 lenString :: BA.ByteArrayAccess ba => ba -> Word32
-lenString = fromIntegral . BA.length
+lenString ba = lenWord32 + lenBytes ba
 
-putString :: BA.ByteArrayAccess ba => ba -> Putter
+putString :: BA.ByteArrayAccess ba => ba -> Put
 putString ba = do
-    putWord32 (fromIntegral $ BA.length ba)
-    BA.putBytes ba
+    putWord32 (lenBytes ba)
+    putBytes ba
 
-getString :: BA.ByteArray ba => Getter ba
+getString :: BA.ByteArray ba => Get ba
 getString = do
     len <- getWord32
-    BA.convert <$> BP.take (fromIntegral len)
+    getBytes len
 
 lenBool :: Word32
 lenBool = 1
 
-putBool :: Bool -> Putter
+putBool :: Bool -> Put
 putBool False = putWord8 0
 putBool True  = putWord8 1
 
-getBool :: Getter Bool
-getBool = (BP.byte 0 >> pure False) <|> (BP.byte 1 >> pure True)
+getBool :: Get Bool
+getBool = (expectWord8 0 >> pure False) <|> (expectWord8 1 >> pure True)
 
-getTrue :: Getter ()
-getTrue = BP.byte 1
+getTrue :: Get ()
+getTrue = expectWord8 1
 
-getFalse :: Getter ()
-getFalse = BP.byte 0
+getFalse :: Get ()
+getFalse = expectWord8 0

@@ -34,6 +34,7 @@ data PrivateKey
 data PublicKey
     = PublicKeyEd25519 Ed25519.PublicKey
     | PublicKeyRSA     RSA.PublicKey
+    | PublicKeyOther   BA.Bytes
     deriving (Eq, Show)
 
 decodePrivateKeyFile :: ( MonadFail m, BA.ByteArray input, IsString input, Show input
