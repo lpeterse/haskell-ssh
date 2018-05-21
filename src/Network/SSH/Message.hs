@@ -105,6 +105,7 @@ import           Data.Typeable
 import           Data.Word
 import           System.Exit
 
+import           Network.SSH.Encoding
 import           Network.SSH.Key
 
 data Message
@@ -134,7 +135,7 @@ data Message
   | MsgChannelRequest          ChannelRequest
   | MsgChannelSuccess          ChannelSuccess
   | MsgChannelFailure          ChannelFailure
-  | MsgUnknown                 Word8 BS.ByteString
+  | MsgUnknown                 Word8
   deriving (Eq, Show)
 
 data Disconnect
@@ -369,542 +370,548 @@ newtype ChannelWindowSize = ChannelWindowSize Word32        deriving (Eq, Ord, S
 newtype ChannelPacketSize = ChannelPacketSize Word32        deriving (Eq, Ord, Show)
 
 -------------------------------------------------------------------------------
--- Binary instances
+-- Encoding instances
 -------------------------------------------------------------------------------
 
-instance B.Binary Message where
-  put = \case
-    MsgDisconnect               x -> B.put x
-    MsgIgnore                   x -> B.put x
-    MsgUnimplemented            x -> B.put x
-    MsgDebug                    x -> B.put x
-    MsgServiceRequest           x -> B.put x
-    MsgServiceAccept            x -> B.put x
-    MsgKexInit                  x -> B.put x
-    MsgNewKeys                  x -> B.put x
-    MsgKexEcdhInit              x -> B.put x
-    MsgKexEcdhReply             x -> B.put x
-    MsgUserAuthRequest          x -> B.put x
-    MsgUserAuthFailure          x -> B.put x
-    MsgUserAuthSuccess          x -> B.put x
-    MsgUserAuthBanner           x -> B.put x
-    MsgUserAuthPublicKeyOk      x -> B.put x
-    MsgChannelOpen              x -> B.put x
-    MsgChannelOpenConfirmation  x -> B.put x
-    MsgChannelOpenFailure       x -> B.put x
-    MsgChannelWindowAdjust      x -> B.put x
-    MsgChannelData              x -> B.put x
-    MsgChannelExtendedData      x -> B.put x
-    MsgChannelEof               x -> B.put x
-    MsgChannelClose             x -> B.put x
-    MsgChannelRequest           x -> B.put x
-    MsgChannelSuccess           x -> B.put x
-    MsgChannelFailure           x -> B.put x
-    MsgUnknown              mt bs -> putByte mt <> B.putByteString bs
+instance Encodable Message where
+    len = \case
+        MsgDisconnect               x -> len x
+        MsgIgnore                   x -> len x
+        MsgUnimplemented            x -> len x
+        MsgDebug                    x -> len x
+        MsgServiceRequest           x -> len x
+        MsgServiceAccept            x -> len x
+        MsgKexInit                  x -> len x
+        MsgNewKeys                  x -> len x
+        MsgKexEcdhInit              x -> len x
+        MsgKexEcdhReply             x -> len x
+        MsgUserAuthRequest          x -> len x
+        MsgUserAuthFailure          x -> len x
+        MsgUserAuthSuccess          x -> len x
+        MsgUserAuthBanner           x -> len x
+        MsgUserAuthPublicKeyOk      x -> len x
+        MsgChannelOpen              x -> len x
+        MsgChannelOpenConfirmation  x -> len x
+        MsgChannelOpenFailure       x -> len x
+        MsgChannelWindowAdjust      x -> len x
+        MsgChannelData              x -> len x
+        MsgChannelExtendedData      x -> len x
+        MsgChannelEof               x -> len x
+        MsgChannelClose             x -> len x
+        MsgChannelRequest           x -> len x
+        MsgChannelSuccess           x -> len x
+        MsgChannelFailure           x -> len x
+        MsgUnknown                  _ -> lenWord8
+    put = \case
+        MsgDisconnect               x -> put x
+        MsgIgnore                   x -> put x
+        MsgUnimplemented            x -> put x
+        MsgDebug                    x -> put x
+        MsgServiceRequest           x -> put x
+        MsgServiceAccept            x -> put x
+        MsgKexInit                  x -> put x
+        MsgNewKeys                  x -> put x
+        MsgKexEcdhInit              x -> put x
+        MsgKexEcdhReply             x -> put x
+        MsgUserAuthRequest          x -> put x
+        MsgUserAuthFailure          x -> put x
+        MsgUserAuthSuccess          x -> put x
+        MsgUserAuthBanner           x -> put x
+        MsgUserAuthPublicKeyOk      x -> put x
+        MsgChannelOpen              x -> put x
+        MsgChannelOpenConfirmation  x -> put x
+        MsgChannelOpenFailure       x -> put x
+        MsgChannelWindowAdjust      x -> put x
+        MsgChannelData              x -> put x
+        MsgChannelExtendedData      x -> put x
+        MsgChannelEof               x -> put x
+        MsgChannelClose             x -> put x
+        MsgChannelRequest           x -> put x
+        MsgChannelSuccess           x -> put x
+        MsgChannelFailure           x -> put x
+        MsgUnknown                  x -> putWord8 x
+    get =
+        MsgDisconnect              get <|>
+        MsgIgnore                  get <|>
+        MsgUnimplemented           get <|>
+        MsgDebug                   get <|>
+        MsgServiceRequest          get <|>
+        MsgServiceAccept           get <|>
+        MsgKexInit                 get <|>
+        MsgNewKeys                 get <|>
+        MsgKexEcdhInit             get <|>
+        MsgKexEcdhReply            get <|>
+        MsgUserAuthRequest         get <|>
+        MsgUserAuthFailure         get <|>
+        MsgUserAuthSuccess         get <|>
+        MsgUserAuthBanner          get <|>
+        MsgUserAuthPublicKeyOk     get <|>
+        MsgChannelOpen             get <|>
+        MsgChannelOpenConfirmation get <|>
+        MsgChannelOpenFailure      get <|>
+        MsgChannelWindowAdjust     get <|>
+        MsgChannelData             get <|>
+        MsgChannelExtendedData     get <|>
+        MsgChannelEof              get <|>
+        MsgChannelClose            get <|>
+        MsgChannelRequest          get <|>
+        MsgChannelSuccess          get <|>
+        MsgChannelFailure          get <|>
+        MsgUnknown                 getWord8
 
-  get = B.lookAhead getByte >>= \case
-    1   -> MsgDisconnect              <$> B.get
-    2   -> MsgIgnore                  <$> B.get
-    3   -> MsgUnimplemented           <$> B.get
-    4   -> MsgDebug                   <$> B.get
-    5   -> MsgServiceRequest          <$> B.get
-    6   -> MsgServiceAccept           <$> B.get
-    20  -> MsgKexInit                 <$> B.get
-    21  -> MsgNewKeys                 <$> B.get
-    30  -> MsgKexEcdhInit             <$> B.get
-    31  -> MsgKexEcdhReply            <$> B.get
-    50  -> MsgUserAuthRequest         <$> B.get
-    51  -> MsgUserAuthFailure         <$> B.get
-    52  -> MsgUserAuthSuccess         <$> B.get
-    53  -> MsgUserAuthBanner          <$> B.get
-    60  -> MsgUserAuthPublicKeyOk     <$> B.get
-    90  -> MsgChannelOpen             <$> B.get
-    91  -> MsgChannelOpenConfirmation <$> B.get
-    92  -> MsgChannelOpenFailure      <$> B.get
-    93  -> MsgChannelWindowAdjust     <$> B.get
-    94  -> MsgChannelData             <$> B.get
-    95  -> MsgChannelExtendedData     <$> B.get
-    96  -> MsgChannelEof              <$> B.get
-    97  -> MsgChannelClose            <$> B.get
-    98  -> MsgChannelRequest          <$> B.get
-    99  -> MsgChannelSuccess          <$> B.get
-    100 -> MsgChannelFailure          <$> B.get
-    _   -> MsgUnknown                 <$> B.getWord8 <*> (LBS.toStrict <$> B.getRemainingLazyByteString)
-
-instance B.Binary Disconnect where
-  put (Disconnect r d l) = mconcat
-    [ putByte   1
-    , putUint32 $ case r of
-          DisconnectHostNotAllowedToConnect     -> 1
-          DisconnectProtocolError               -> 2
-          DisconnectKeyExchangeFailed           -> 3
-          DisconnectReserved                    -> 4
-          DisconnectMacError                    -> 5
-          DisconnectCompressionError            -> 6
-          DisconnectServiceNotAvailable         -> 7
-          DisconnectProtocolVersionNotSupported -> 8
-          DisconnectHostKeyNotVerifiable        -> 9
-          DisconnectConnectionLost              -> 10
-          DisconnectByApplication               -> 11
-          DisconnectTooManyConnection           -> 12
-          DisconnectAuthCancelledByUser         -> 13
-          DisconnectNoMoreAuthMethodsAvailable  -> 14
-          DisconnectIllegalUsername             -> 15
-    , putString d
-    , putString l
-    ]
-  get = do
-    getMsgType 1
-    reason <- getUint32 >>= \case
-        1  -> pure DisconnectHostNotAllowedToConnect
-        2  -> pure DisconnectProtocolError
-        3  -> pure DisconnectKeyExchangeFailed
-        4  -> pure DisconnectReserved
-        5  -> pure DisconnectMacError
-        6  -> pure DisconnectCompressionError
-        7  -> pure DisconnectServiceNotAvailable
-        8  -> pure DisconnectProtocolVersionNotSupported
-        9  -> pure DisconnectHostKeyNotVerifiable
-        10 -> pure DisconnectConnectionLost
-        11 -> pure DisconnectByApplication
-        12 -> pure DisconnectTooManyConnection
-        13 -> pure DisconnectAuthCancelledByUser
-        14 -> pure DisconnectNoMoreAuthMethodsAvailable
-        15 -> pure DisconnectIllegalUsername
-        _  -> fail ""
-    Disconnect
-      <$> pure reason
-      <*> getString
-      <*> getString
+instance Encodable Disconnect where
+    len (Disconnect r d l) =
+        lenWord8 + len r + lenString d + lenString l
+    put (Disconnect r d l) = do
+        putWord8 1
+        putWord32 $ case r of
+            DisconnectHostNotAllowedToConnect     -> 1
+            DisconnectProtocolError               -> 2
+            DisconnectKeyExchangeFailed           -> 3
+            DisconnectReserved                    -> 4
+            DisconnectMacError                    -> 5
+            DisconnectCompressionError            -> 6
+            DisconnectServiceNotAvailable         -> 7
+            DisconnectProtocolVersionNotSupported -> 8
+            DisconnectHostKeyNotVerifiable        -> 9
+            DisconnectConnectionLost              -> 10
+            DisconnectByApplication               -> 11
+            DisconnectTooManyConnection           -> 12
+            DisconnectAuthCancelledByUser         -> 13
+            DisconnectNoMoreAuthMethodsAvailable  -> 14
+            DisconnectIllegalUsername             -> 15
+        putString d
+        putString l
+    get = do
+        BA.byte 1
+        reason <- getWord32 >>= \case
+            1  -> pure DisconnectHostNotAllowedToConnect
+            2  -> pure DisconnectProtocolError
+            3  -> pure DisconnectKeyExchangeFailed
+            4  -> pure DisconnectReserved
+            5  -> pure DisconnectMacError
+            6  -> pure DisconnectCompressionError
+            7  -> pure DisconnectServiceNotAvailable
+            8  -> pure DisconnectProtocolVersionNotSupported
+            9  -> pure DisconnectHostKeyNotVerifiable
+            10 -> pure DisconnectConnectionLost
+            11 -> pure DisconnectByApplication
+            12 -> pure DisconnectTooManyConnection
+            13 -> pure DisconnectAuthCancelledByUser
+            14 -> pure DisconnectNoMoreAuthMethodsAvailable
+            15 -> pure DisconnectIllegalUsername
+            _  -> fail ""
+        Disconnect reason <*> getString <*> getString
 
 instance B.Binary Ignore where
-  put Ignore = B.putWord8 2
-  get = do
-    getMsgType 2
-    pure Ignore
+    len _ = 1
+    put _ = putWord8 2
+    get   = BA.byte 2 >> pure Ignore
 
 instance B.Binary Unimplemented where
-  put Unimplemented = B.putWord8 3
-  get = do
-    getMsgType 3
-    pure Unimplemented
+    len _ = lenWord8 + lenWord32
+    put (Unimplemented w) = putWord8 3 >> putWord32 w
+    get = BA.byte 3 >> Unimplemented <$> getWord32
 
 instance B.Binary Debug where
-  put (Debug ad msg lang) = mconcat
-    [ putByte 4, putBool ad, putString msg, putString lang ]
-  get = do
-    getMsgType 4
-    Debug <$> getBool <*> getString <*> getString
+    len (Debug ad msg lang) = lenWord8 + lenBool + lenString msg + lenString lang
+    put (Debug ad msg lang) = putWord8 4 >> putBool ad >> putString msg >> putString lang
+    get = BA.byte 4 >> Debug <$> getBool <*> getString <*> getString
 
 instance B.Binary ServiceRequest where
-  put (ServiceRequest s) =
-    putByte 5 <> B.put s
-  get = do
-    getMsgType 5
-    ServiceRequest <$> B.get
+    len (ServiceRequest name) = lenWord8 + len name
+    put (ServiceRequest name) = putWord8 5 >> put name
+    get = BA.byte 5 >> ServiceRequest <$> get
 
 instance B.Binary ServiceAccept where
-  put (ServiceAccept s) =
-    putByte 6 <> B.put s
-  get = do
-    getMsgType 6
-    ServiceAccept <$> B.get
+    len (ServiceAccept name) = lenWord8 + len name
+    put (ServiceAccept s) = putWord8 6 >> put name
+    get = BA.byte 6 >> ServiceAccept <$> B.get
 
 instance B.Binary KexInit where
-  put kex = mconcat
-    [ putByte     20
-    , B.put       (kexCookie                              kex)
-    , putNameList (kexAlgorithms                          kex)
-    , putNameList (kexServerHostKeyAlgorithms             kex)
-    , putNameList (kexEncryptionAlgorithmsClientToServer  kex)
-    , putNameList (kexEncryptionAlgorithmsServerToClient  kex)
-    , putNameList (kexMacAlgorithmsClientToServer         kex)
-    , putNameList (kexMacAlgorithmsServerToClient         kex)
-    , putNameList (kexCompressionAlgorithmsClientToServer kex)
-    , putNameList (kexCompressionAlgorithmsServerToClient kex)
-    , putNameList (kexLanguagesClientToServer             kex)
-    , putNameList (kexLanguagesServerToClient             kex)
-    , putBool     (kexFirstPacketFollows                  kex)
-    , putUint32   0 -- reserved for future extensions
-    ]
-  get = do
-    getMsgType 20
-    kex <- KexInit
-      <$> B.get
-      <*> getNameList <*> getNameList <*> getNameList <*> getNameList
-      <*> getNameList <*> getNameList <*> getNameList <*> getNameList
-      <*> getNameList <*> getNameList <*> getBool
-    void getUint32 -- reserved for future extensions
-    pure kex
+    len kex = lenWord8
+        + len (kexCookie                              kex)
+        + len (kexCookie                              kex)
+        + len (kexAlgorithms                          kex)
+        + len (kexServerHostKeyAlgorithms             kex)
+        + len (kexEncryptionAlgorithmsClientToServer  kex)
+        + len (kexEncryptionAlgorithmsServerToClient  kex)
+        + len (kexMacAlgorithmsClientToServer         kex)
+        + len (kexMacAlgorithmsServerToClient         kex)
+        + len (kexCompressionAlgorithmsClientToServer kex)
+        + len (kexCompressionAlgorithmsServerToClient kex)
+        + len (kexLanguagesClientToServer             kex)
+        + len (kexLanguagesServerToClient             kex)
+        + len (kexFirstPacketFollows                  kex)
+        + lenWord32
+    put kex = do
+        putWord8     20
+        put         (kexCookie                              kex)
+        putNameList (kexAlgorithms                          kex)
+        putNameList (kexServerHostKeyAlgorithms             kex)
+        putNameList (kexEncryptionAlgorithmsClientToServer  kex)
+        putNameList (kexEncryptionAlgorithmsServerToClient  kex)
+        putNameList (kexMacAlgorithmsClientToServer         kex)
+        putNameList (kexMacAlgorithmsServerToClient         kex)
+        putNameList (kexCompressionAlgorithmsClientToServer kex)
+        putNameList (kexCompressionAlgorithmsServerToClient kex)
+        putNameList (kexLanguagesClientToServer             kex)
+        putNameList (kexLanguagesServerToClient             kex)
+        putBool     (kexFirstPacketFollows                  kex)
+        putWord32 0 -- reserved for future extensions
+    get = do
+        BA.byte 20
+        kex <- KexInit <$> B.get
+            <*> getNameList <*> getNameList <*> getNameList <*> getNameList
+            <*> getNameList <*> getNameList <*> getNameList <*> getNameList
+            <*> getNameList <*> getNameList <*> getBool
+        getWord32 -- reserved for future extensions
+        pure kex
 
 instance B.Binary NewKeys where
-  put NewKeys = B.putWord8 21
-  get = do
-    getMsgType 21
-    pure NewKeys
+    len _ = lenWord8
+    put _ = putWord8 21
+    get   = BA.byte 21 >> pure NewKeys
 
 instance B.Binary KexEcdhInit where
-  put (KexEcdhInit ephemeralKey) = mconcat
-    [ putByte 30
-    , putCurve25519PK ephemeralKey
-    ]
-  get = do
-    getMsgType 30
-    KexEcdhInit
-      <$> getCurve25519PK
+    len (KexEcdhInit key) = lenWord8 + lenCurve25519PK
+    put (KexEcdhInit key) = putWord8 30 >> putCurve25519PK key
+    get = BA.byte 30 >> KexEcdhInit <$> getCurve25519PK
 
 instance B.Binary KexEcdhReply where
-  put (KexEcdhReply hostKey ephemeralKey signature) = mconcat
-    [ B.putWord8 31
-    , B.put hostKey
-    , putCurve25519PK ephemeralKey
-    , B.put signature
-    ]
-  get = do
-    getMsgType 31
-    KexEcdhReply
-      <$> B.get
-      <*> getCurve25519PK
-      <*> B.get
+    len (KexEcdhReply hkey ekey sig) =
+        lenWord8 + len hkey + len ekey + len sig
+    put (KexEcdhReply hkey ekey sig) = do
+        putWord8 31
+        put hkey
+        put ekey
+        put sig
+    get = do
+        BA.byte 31
+        KexEcdhReply
+            <$> get
+            <*> get
+            <*> get
 
 instance B.Binary UserAuthRequest where
-  put (UserAuthRequest un sn am) = mconcat
-    [ putByte  50, B.put un, B.put sn, B.put am ]
-  get = do
-    getMsgType 50
-    UserAuthRequest <$> B.get <*> B.get <*> B.get
+    len (UserAuthRequest un sn am) = lenWord8 + len un + len sn + len am
+    put (UserAuthRequest un sn am) = putWord8 50 >> put un >> put sn >> put an
+    get = BA.byte 50 >> UserAuthRequest <$> B.get <*> B.get <*> B.get
 
 instance B.Binary UserAuthFailure where
-  put (UserAuthFailure ms ps) = mconcat
-    [ putByte 51, putNameList ((\(AuthMethodName x)->x) <$> ms), putBool ps ]
-  get =  do
-    getMsgType 51
-    UserAuthFailure <$> (fmap AuthMethodName <$> getNameList) <*> getBool
+    len (UserAuthFailure ms ps) = lenWord8 + undefined
+    put (UserAuthFailure ms ps) = do
+        putWord8 51
+        putNameList ((\(AuthMethodName x)->x) <$> ms)
+        putBool ps
+    get =  do
+        BA.byte 51
+        UserAuthFailure <$> (fmap AuthMethodName <$> getNameList) <*> getBool
 
 instance B.Binary UserAuthSuccess where
-  put UserAuthSuccess =
-    putByte 52
-  get = do
-    getMsgType 52
-    pure UserAuthSuccess
+    len _ = lenWord8
+    put _ = putWord8 52
+    get   = BA.byte 52 >> pure UserAuthSuccess
 
 instance B.Binary UserAuthBanner where
-  put (UserAuthBanner x y) = mconcat
-    [ putByte 53, putString x, putString y ]
-  get = do
-    getMsgType 53
-    UserAuthBanner <$> getString <*> getString
+    len (UserAuthBanner x y) = lenWord8 + lenString x + lenString y
+    put (UserAuthBanner x y) = putWord8 53 >> putString x >> putString y
+    get = BA.byte 53 >> UserAuthBanner <$> getString <*> getString
 
 instance B.Binary UserAuthPublicKeyOk where
-  put (UserAuthPublicKeyOk alg pk) =
-    putByte  60 <> B.put alg <> B.put pk
-  get = getMsgType 60 >> UserAuthPublicKeyOk <$> B.get <*> B.get
+    len (UserAuthPublicKeyOk alg pk) = lenWord8 + len alg + len pk
+    put (UserAuthPublicKeyOk alg pk) = putWord8 60 >> put alg >> put pk
+    get = BA.byte 60 >> UserAuthPublicKeyOk <$> get <*> get
 
 instance B.Binary ChannelOpen where
-  put (ChannelOpen ct rid ws ps) =
-    putByte 90 <> B.put ct <> B.put rid <> B.put ws <> B.put ps
-  get = getMsgType 90 >> ChannelOpen <$> B.get <*> B.get <*> B.get  <*> B.get
+    len (ChannelOpen ct rid ws ps) = lenWord8 + len ct + len rid + len ws + len ps
+    put (ChannelOpen ct rid ws ps) = putWord8 90 + put ct + put rid + put ws + put ps
+    get = BA.byte 90 >> ChannelOpen <$> get <*> get <*> get  <*> get
 
 instance B.Binary ChannelOpenConfirmation where
-  put (ChannelOpenConfirmation (ChannelId a) (ChannelId b) (ChannelWindowSize c) (ChannelPacketSize d)) =
-    putByte 91 <> putUint32 a <> putUint32 b <> putUint32 c <> putUint32 d
-  get = getMsgType 91 >> ChannelOpenConfirmation <$> B.get <*> B.get <*> B.get  <*> B.get
+    len (ChannelOpenConfirmation a b c d) = lenWord8 + len a + len b + len c + len d
+    put (ChannelOpenConfirmation a b c d) = putWord8 91 >> put a >> put b >> put c >> put d
+    get = BA.byte 91 >> ChannelOpenConfirmation <$> get <*> get <*> get  <*> get
 
 instance B.Binary ChannelOpenFailure where
-  put (ChannelOpenFailure rid reason descr lang) = mconcat
-      [ putByte  92
-      , B.put rid
-      , putUint32 $ case reason of
-          ChannelOpenAdministrativelyProhibited -> 1
-          ChannelOpenConnectFailed              -> 2
-          ChannelOpenUnknownChannelType         -> 3
-          ChannelOpenResourceShortage           -> 4
-      , putString descr
-      , putString lang
-      ]
-  get = do
-      getMsgType 92
-      rid <- B.get
-      reason <- getUint32 >>= \case
-          1 -> pure ChannelOpenAdministrativelyProhibited
-          2 -> pure ChannelOpenConnectFailed
-          3 -> pure ChannelOpenUnknownChannelType
-          4 -> pure ChannelOpenResourceShortage
-          _ -> fail ""
-      ChannelOpenFailure rid reason <$> getString <*> getString
+    len (ChannelOpenFailure rid reason descr lang) =
+        lenWord8 + len rid + lenString reason + lenString desc + lenString lang
+    put (ChannelOpenFailure rid reason descr lang) = do
+        putWord8 92
+        put rid
+        putWord32 $ case reason of
+            ChannelOpenAdministrativelyProhibited -> 1
+            ChannelOpenConnectFailed              -> 2
+            ChannelOpenUnknownChannelType         -> 3
+            ChannelOpenResourceShortage           -> 4
+        putString descr
+        putString lang
+    get = do
+        BA.byte 92
+        rid <- get
+        reason <- getUint32 >>= \case
+            1 -> pure ChannelOpenAdministrativelyProhibited
+            2 -> pure ChannelOpenConnectFailed
+            3 -> pure ChannelOpenUnknownChannelType
+            4 -> pure ChannelOpenResourceShortage
+            _ -> fail ""
+        ChannelOpenFailure rid reason <$> getString <*> getString
 
 instance B.Binary ChannelWindowAdjust where
-  put (ChannelWindowAdjust channelId windowSize) =
-    putByte  93 <> B.put channelId <> B.put windowSize
-  get = getMsgType 93 >> ChannelWindowAdjust <$> B.get <*> B.get
+    len (ChannelWindowAdjust cid ws) = lenWord8 + len cid + len ws
+    put (ChannelWindowAdjust channelId windowSize) = putWord8 93 >> put cid <> put ws
+    get = BA.byte 93 >> ChannelWindowAdjust <$> get <*> get
 
 instance B.Binary ChannelData where
-  put (ChannelData (ChannelId lid) bs) =
-    putByte  94 <> putUint32 lid <> putString bs
-  get = getMsgType 94 >> ChannelData <$> B.get <*> getString
+    len (ChannelData cid ba) = lenWord8 + len cid + lenString ba
+    put (ChannelData cid ba) = putWord8 94 >> put cid >> putString ba
+    get = BA.byte 94 >> ChannelData <$> get <*> getString
 
 instance B.Binary ChannelExtendedData where
-  put (ChannelExtendedData (ChannelId lid) x bs) =
-    putByte  95 <> putUint32 lid <> putUint32 x <> putString bs
-  get = getMsgType 95 >> ChannelExtendedData <$> B.get <*> getUint32 <*> getString
+    len (ChannelData cid _ ba) = lenWord8 + len cid + lenWord32 + lenString ba
+    put (ChannelData cid x ba) = putWord8 95 >> put cid >> putWord32 >> putString ba
+    get = BA.byte 95 >> ChannelExtendedData <$> get <*> getString
 
 instance B.Binary ChannelEof where
-  put (ChannelEof (ChannelId lid)) =
-    putByte  96 <> putUint32 lid
-  get = getMsgType 96 >> ChannelEof <$> B.get
+    len (ChannelEof cid) = lenWord8 + len cid
+    put (ChannelEof cid) = putWord8 96 >> put cid
+    get = BA.byte 96 >> ChannelEof <$> get
 
 instance B.Binary ChannelClose where
-  put (ChannelClose (ChannelId lid)) =
-    putByte  97 <> putUint32 lid
-  get = getMsgType 97 >> ChannelClose <$> B.get
+    len (ChannelClose cid) = lenWord8 + len cid
+    put (ChannelClose cid) = putWord8 97 >> put cid
+    get = BA.byte 97 >> ChannelClose <$> get
 
 instance B.Binary ChannelRequest where
-    put (ChannelRequest cid dat) = case dat of
-      ChannelRequestEnv wantReply name value -> mconcat
-          [ putByte 98, B.put cid, putString "env", putBool wantReply, putString name, putString value ]
-      ChannelRequestPty wantReply ts -> mconcat
-          [ putByte 98, B.put cid, putString "pty-req", putBool wantReply, B.put ts ]
-      ChannelRequestShell wantReply -> mconcat
-          [ putByte 98, B.put cid, putString "shell", putBool wantReply ]
-      ChannelRequestExec wantReply command -> mconcat
-          [ putByte 98, B.put cid, putString "exec", putBool wantReply, putString command ]
-      ChannelRequestExitStatus status -> mconcat
-          [ putByte 98, B.put cid, putString "exit-status", putBool False
-          , putUint32 $ case status of { ExitSuccess -> 0; ExitFailure x -> fromIntegral x; } ]
-      ChannelRequestExitSignal signame coredump errmsg lang -> mconcat
-          [ putByte 98, B.put cid, putString "exit-signal", putBool False
-          , putString signame, putBool coredump, putString errmsg, putString lang ]
-      ChannelRequestOther other -> mconcat
-          [ putByte 98, B.put cid, putString other ]
-    get = do
-        getMsgType 98
-        ChannelRequest <$> B.get <*> getRequest
-        where
-          getRequest = getString >>= \case
-              "env" -> ChannelRequestEnv
-                  <$> getBool
-                  <*> getString
-                  <*> getString
-              "pty-req" -> ChannelRequestPty
-                  <$> getBool
-                  <*> B.get
-              "shell" -> ChannelRequestShell
-                  <$> getBool
-              "exec" -> ChannelRequestExec
-                  <$> getBool
-                  <*> getString
-              "exit-status" -> do
-                  getFalse
-                  status <- getUint32
-                  pure $ ChannelRequestExitStatus $ case status `mod` 256 of
-                      0 -> ExitSuccess
-                      x -> ExitFailure (fromIntegral x)
-              "exit-signal" -> do
-                  getFalse
-                  ChannelRequestExitSignal
-                      <$> getString
-                      <*> getBool
-                      <*> getString
-                      <*> getString
-              other -> pure $ ChannelRequestOther other
+    len (ChannelRequest cid req) = lenWord8 + len cid + len req
+    put (ChannelRequest cid req) = putWord8 98 >> put cid >> put req
+    get = BA.byte 98 >> ChannelRequest <$> get
+
+instance Encoding ChannelRequestRequest where
+    len = \case
+        ChannelRequestEnv wantReply name value ->
+            lenString "env" + lenBool + lenString name + lenString value
+        ChannelRequestPty wantReply ts ->
+            lenString "pty-req" + lenBool + len ts
+        ChannelRequestShell wantReply ->
+            lenString "shell" + lenBool
+        ChannelRequestExec wantReply command ->
+            lenString "exec" + lenBool + lenString command
+        ChannelRequestExitStatus status ->
+            lenString "exit-status" + lenBool + lenWord32
+        ChannelRequestExitSignal signame _ errmsg lang ->
+            lenString "exit-signal" + lenBool + lenString signame +
+            lenBool + lenString errmsg + lenString lang
+        ChannelRequestOther other ->
+            lenString other
+    put = \case
+        ChannelRequestEnv wantReply name value ->
+            putString "env" >> putBool wantReply >> putString name >> putString value
+        ChannelRequestPty wantReply ts ->
+            putString "pty-req" >> putBool wantReply >> put ts
+        ChannelRequestShell wantReply ->
+            putString "shell" >> putBool wantReply
+        ChannelRequestExec wantReply command ->
+            putString "exec" >> putBool wantReply >> putString command
+        ChannelRequestExitStatus status ->
+            putString "exit-status" >> putBool False >> put status
+        ChannelRequestExitSignal signame coredump errmsg lang ->
+            putString "exit-signal" >> putBool False >> putString signame >>
+            putBool coredump >> putString errmsg >> putString lang
+        ChannelRequestOther other -> mconcat
+            putString other
+    get = getString >>= \case
+        "env" ->
+            ChannelRequestEnv <$> getBool <*> getString <*> getString
+        "pty-req" ->
+            ChannelRequestPty <$> getBool <*> B.get
+        "shell" ->
+            ChannelRequestShell <$> getBool
+        "exec" ->
+            ChannelRequestExec <$> getBool <*> getString
+        "exit-status" ->
+            getFalse >> ChannelRequestExitStatus <$> get
+        "exit-signal" ->
+            getFalse >> ChannelRequestExitSignal <$> getString <*> getBool <*> getString <*> getString
+        other ->
+            pure (ChannelRequestOther other)
 
 instance B.Binary ChannelSuccess where
-  put (ChannelSuccess (ChannelId lid)) =
-    putByte 99 <> putUint32 lid
-  get = getMsgType 99 >> ChannelSuccess <$> B.get
+    len (ChannelSuccess cid) = lenWord8 + len cid
+    put (ChannelSuccess cid) = putWord8 99 >> put cid
+    get = BA.byte 99 >> ChannelSuccess <$> get
 
 instance B.Binary ChannelFailure where
-  put (ChannelFailure (ChannelId lid)) =
-    putByte 100 <> putUint32 lid
-  get = getMsgType 100 >> ChannelFailure   <$> B.get
+    len (ChannelFailure cid) = lenWord8 + len cid
+    put (ChannelFailure cid) = putWord8 100 >> put cid
+    get = BA.byte 100 >> ChannelFailure <$> get
 
 instance B.Binary Cookie where
-  put (Cookie s) = B.putByteString s
-  get = Cookie <$> B.getByteString 16
+    len _ = 16
+    put (Cookie s) = BA.putBytes 16
+    get = Cookie <$> BA.take 16
 
 instance B.Binary Algorithm where
-  put (Algorithm s) = putString s
-  get = Algorithm <$> getString
+    put (Algorithm s) = putString s
+    get = Algorithm <$> getString
 
 instance B.Binary ChannelId where
-  put (ChannelId x) = B.putWord32be x
-  get = ChannelId <$> B.getWord32be
+    len (ChannelId x) = len x
+    put (ChannelId x) = put x
+    get = ChannelId <$> get
 
 instance B.Binary ChannelWindowSize where
-  put (ChannelWindowSize x) = B.putWord32be x
-  get = ChannelWindowSize <$> B.getWord32be
+    len (ChannelWindowSize x) = lenWord32 x
+    put (ChannelWindowSize x) = putWord32 x
+    get = ChannelWindowSize <$> getWord32
 
 instance B.Binary ChannelPacketSize where
-  put (ChannelPacketSize x) = B.putWord32be x
-  get = ChannelPacketSize <$> B.getWord32be
+    len (ChannelPacketSize x) = lenWord32 x
+    put (ChannelPacketSize x) = putWord32 x
+    get = ChannelPacketSize <$> getWord32
 
 instance B.Binary ChannelType where
-  put (ChannelType s) = putString s
-  get = ChannelType <$> getString
+    len (ChannelType x) = lenString x
+    put (ChannelType x) = putString x
+    get = ChannelType <$> getString
 
 instance B.Binary SessionId where
-  put (SessionId s) = putString s
-  get = SessionId <$> getString
+    len (SessionId x) = lenString x
+    put (SessionId x) = putString x
+    get = SessionId <$> getString
 
 instance B.Binary ServiceName where
-  put (ServiceName s) = putString s
-  get = ServiceName <$> getString
+    len (ServiceName x) = lenString x
+    put (ServiceName x) = putString x
+    get = ServiceName <$> getString
 
 instance B.Binary UserName where
-  put (UserName s) = putString s
-  get = UserName <$> getString
+    len (UserName x) = lenString x
+    put (UserName x) = putString x
+    get = UserName <$> getString
 
 instance B.Binary Version where
-  put (Version x) = B.putByteString x <> B.putWord16be 0x0d0a
-  get = do
-    magic <- B.getWord64be
-    if magic /= 0x5353482d322e302d -- "SSH-2.0-"
-      then stop
-      else untilCRLF 0 [0x2d, 0x30, 0x2e, 0x32, 0x2d, 0x48, 0x53, 0x53]
-    where
-      stop = fail ""
-      untilCRLF !i !xs
-        = if i >= (255 :: Int)
-          then stop
-          else B.getWord8 >>= \case
-            0x0d -> B.getWord8 >>= \case
-              0x0a -> pure $ Version $ BS.pack (reverse xs)
-              _    -> stop
-            x -> untilCRLF (i+1) (x:xs)
+    len (Version x) = fromIntegral (BA.length x) + 2
+    put (Version x) = BA.putBytes x >> putWord8 0x0d >> putWord8 >> 0x0a
+    put (Version x) = B.putByteString x <> B.putWord16be 0x0d0a
+    get = do
+      mapM_ BA.byte magic
+      untilCRLF 0 (reverse magic)
+      where
+        magic :: Word8
+        magic  = [0x53,0x53,0x48,0x2d,0x32,0x2e,0x30,0x2d]
+        untilCRLF !i !xs
+            | i >= (255 :: Int) = fail ""
+            | otherwise = B.getWord8 >>= \case
+                0x0d -> BA.byte 0x0a >>= pure (Version $ BS.pack $ reverse xs)
+                x    -> untilCRLF (i+1) (x:xs)
 
 instance B.Binary AuthMethod where
-  put = \case
-    AuthNone -> mconcat
-      [ putString "none" ]
-    AuthHostBased -> mconcat
-      [ putString "hostbased" ]
-    AuthPassword (Password pw) -> mconcat
-      [ putString "password", putBool False, putString pw ]
-    AuthPublicKey (Algorithm algo) pk msig -> mconcat $ case msig of
-      Nothing  -> [ putString "publickey", putBool False, putString algo, B.put pk ]
-      Just sig -> [ putString "publickey", putBool True,  putString algo, B.put pk, B.put sig ]
-
-  get = getString >>= \case
-    "none"      -> pure AuthNone
-    "hostbased" -> pure AuthHostBased
-    "password"  -> void getBool >> AuthPassword  <$> (Password <$> getString)
-    "publickey" -> do
-      signed <- getBool
-      algo   <- Algorithm <$> getString
-      key    <- B.get
-      msig   <- if signed then Just <$> B.get else pure Nothing
-      pure (AuthPublicKey algo key msig)
-    other       -> fail $ "Unknown AuthMethod " ++ show other
+    len = \case
+        AuthNone ->
+            lenString "none"
+        AuthHostBased ->
+            lenString "hostbased"
+        AuthPassword (Password pw) ->
+            lenString "password" + lenBool + lenString pw
+        AuthPublicKey (Algorithm algo) pk msig ->
+            lenString "publickey" + lenBool + lenString algo + len pk + maybe 0 len sig
+    put = \case
+        AuthNone ->
+            putString "none"
+        AuthHostBased -> mconcat
+            putString "hostbased"
+        AuthPassword (Password pw) ->
+            putString "password" >> putBool False >> putString pw
+        AuthPublicKey (Algorithm algo) pk msig ->
+            putString "publickey" >> case msig of
+                Nothing -> putBool False >> putString algo >> put pk
+                Just sig -> putBool True >> putString algo >> put pk >> put sig
+    get = getString >>= \case
+        "none" ->
+            pure AuthNone
+        "hostbased" ->
+            pure AuthHostBased
+        "password" ->
+            void getBool >> AuthPassword  <$> (Password <$> getString)
+        "publickey" -> do
+            signed <- getBool
+            algo   <- Algorithm <$> getString
+            key    <- get
+            msig   <- if signed then Just <$> get else pure Nothing
+            pure (AuthPublicKey algo key msig)
+        other       -> fail $ "Unknown AuthMethod " ++ show other
 
 instance B.Binary PublicKey where
-  put = \case
-    PublicKeyEd25519    pk -> ed25519Builder    pk
-    PublicKeyRSA        pk -> rsaBuilder        pk
-    where
-      ed25519Builder :: Ed25519.PublicKey -> B.Put
-      ed25519Builder key = mconcat
-        [ putUint32  51 -- total length is constant for ed25519
-        , putString  "ssh-ed25519"
-        , putString  (BS.pack $ BA.unpack key)
-        ]
-
-      rsaBuilder :: RSA.PublicKey -> B.Put
-      rsaBuilder (RSA.PublicKey _ n e) = putFramed $ mconcat
-        [ putString "ssh-rsa"
-        , putInteger n
-        , putInteger e
-        ]
-
-  get = getFramed $ const $ getString >>= \case
-    "ssh-ed25519" ->
-      Ed25519.publicKey <$> getString >>= \case
-        CryptoPassed k -> pure (PublicKeyEd25519 k)
-        CryptoFailed e -> fail (show e)
-    "ssh-rsa" -> do
-      (n,_) <- getIntegerAndSize
-      (e,s) <- getIntegerAndSize
-      pure $ PublicKeyRSA $ RSA.PublicKey s n e
-    other -> fail ("Unknown pubkey algorithm " ++ show other)
+    len = \case
+        PublicKeyEd25519 key ->
+            lenWord32 + lenString "ssh-ed25519" + lenString key
+        PublicKeyRSA ->
+            undefined
+    put k = putWord32 (len k) >> case k of
+        PublicKeyEd25519 key ->
+            putString "ssh-ed25519" >> putString key
+        PublicKeyRSA (RSA.PublicKey _ n e) ->
+            putString "ssh-rsa" >> putInteger n >> putInteger e
+    get = getWord32 >> getString >>= \case
+        "ssh-ed25519" ->
+            Ed25519.publicKey <$> getString >>= \case
+                CryptoPassed k -> pure (PublicKeyEd25519 k)
+                CryptoFailed _ -> fail ""
+        "ssh-rsa" -> do
+            (n,_) <- getIntegerAndSize
+            (e,s) <- getIntegerAndSize
+            pure $ PublicKeyRSA $ RSA.PublicKey s n e
+        other -> fail $ "Unknown pubkey algorithm " ++ show other
 
 instance B.Binary Signature where
-  put = putFramed . \case
-    SignatureEd25519    sig -> putString "ssh-ed25519" <> putString (BS.pack $ BA.unpack sig)
-    SignatureRSA        sig -> putString "ssh-rsa"     <> putString sig
-    SignatureOther algo sig -> putString algo          <> putString sig
-
-  get = getFramed $ const $ getString >>= \case
-    "ssh-ed25519" ->
-      Ed25519.signature <$> getString >>= \case
-        CryptoPassed s -> pure (SignatureEd25519 s)
-        CryptoFailed e -> fail (show e)
-    "ssh-rsa" ->
-      SignatureRSA <$> getString
-    other ->
-      SignatureOther other <$> getString
+    len = \case
+        SignatureEd25519    sig -> lenWord32 + lenString "ssh-ed25519" <> lenString sig
+        SignatureRSA        sig -> lenWord32 + lenString "ssh-rsa"     <> lenString sig
+        SignatureOther algo sig -> lenWord32 + lenString algo          <> lenString sig
+    put s = putWord32 (len s)  >> case s of
+        SignatureEd25519    sig -> putString "ssh-ed25519" <> putString sig
+        SignatureRSA        sig -> putString "ssh-rsa"     <> putString sig
+        SignatureOther algo sig -> putString algo          <> putString sig
+    get = getWord32 >> getString >>= \case
+        "ssh-ed25519" ->
+            Ed25519.signature <$> getString >>= \case
+                CryptoPassed s -> pure (SignatureEd25519 s)
+                CryptoFailed _ -> fail ""
+        "ssh-rsa" ->
+            SignatureRSA <$> getString
+        other ->
+            SignatureOther other <$> getString
 
 instance B.Binary PtySettings where
-  put (PtySettings env wc hc wp hp modes) = mconcat
-    [ putString env, putUint32 wc, putUint32 hc, putUint32 wp, putUint32 hp, putString modes ]
-  get = PtySettings
-    <$> getString <*> getUint32 <*> getUint32 <*> getUint32 <*> getUint32 <*> getString
+    len (PtySettings env __ __ __ __ modes) =
+        lenString env + lenWord32 + lenWord32 + lenWord32 + lenWord32 + lenString modes
+    put (PtySettings env wc hc wp hp modes) =
+        putString env >> putWord32 wc >> putWord32 hc >> putWord32 wp >> putWord32 hp >> putString modes
+    get =
+        PtySettings <$> getString <*> getWord32 <*> getWord32 <*> getWord32 <*> getWord32 <*> getString
 
 -------------------------------------------------------------------------------
 -- Util functions
 -------------------------------------------------------------------------------
 
-getNameList :: B.Get [BS.ByteString]
+getNameList :: (BA.ByteArray ba, BA.ByteArray name) => BA.Parser ba [name]
 getNameList = do
-  len <- fromIntegral <$> B.getWord32be
-  BS.split 0x2c <$> B.getByteString len
+    len <- fromIntegral <$> getWord32be
+    BS.split 0x2c <$> B.getByteString len
 
 putNameList :: [BS.ByteString] -> B.Put
 putNameList xs =
-  B.putWord32be (fromIntegral $ g xs)
-  <> mconcat (B.putByteString <$> L.intersperse "," xs)
-  where
-    g [] = 0
-    g ys = sum (BS.length <$> ys) + length ys - 1
-
-getSize    :: B.Get Int
-getSize     = fromIntegral <$> getUint32
-
---putSize    :: Int -> B.Put
---putSize     = putUint32 . fromIntegral
-
-getBool    :: B.Get Bool
-getBool     = getByte >>= \case { 0 -> pure False; _ -> pure True; }
-
-getTrue    :: B.Get ()
-getTrue     = getByte >>= \case { 1 -> pure (); _ -> fail "expected TRUE"; }
-
-getFalse   :: B.Get ()
-getFalse    = getByte >>= \case { 0 -> pure (); _ -> fail "expected FALSE"; }
-
-putBool    :: Bool -> B.Put
-putBool   x = B.putWord8 (if x then 0x01 else 0x00)
-
-getByte    :: B.Get Word8
-getByte     = B.getWord8
-
-putByte    :: Word8 -> B.Put
-putByte     = B.putWord8
-
-getUint32  :: B.Get Word32
-getUint32   = B.getWord32be
-
-putUint32  :: Word32 -> B.Put
-putUint32   = B.putWord32be
-
-getString  :: B.Get BS.ByteString
-getString   = B.getByteString =<< getSize
-
-putString  :: BS.ByteString -> B.Put
-putString x = B.putWord32be (fromIntegral $ BS.length x) <> B.putByteString x
+    B.putWord32be (fromIntegral $ g xs)
+    <> mconcat (B.putByteString <$> L.intersperse "," xs)
+    where
+        g [] = 0
+        g ys = sum (BS.length <$> ys) + length ys - 1
 
 getCurve25519PK :: B.Get Curve25519.PublicKey
 getCurve25519PK = getString >>= \s-> case Curve25519.publicKey s of
-  CryptoPassed pk -> pure pk
-  CryptoFailed e  -> fail (show e)
+    CryptoPassed pk -> pure pk
+    CryptoFailed e  -> fail (show e)
 
 putCurve25519PK :: Curve25519.PublicKey -> B.Put
 putCurve25519PK = putString . BS.pack . BA.unpack
@@ -927,43 +934,22 @@ putInteger x = B.putWord32be (fromIntegral $ BS.length bs) <> B.putByteString bs
     g yys@(y:_) | y > 128   = 0:yys
                 | otherwise = yys
 
-putFramed :: B.Put -> B.Put
-putFramed b = B.putWord32be (fromIntegral $ LBS.length lbs) <> B.putLazyByteString lbs
-  where
-    lbs = B.runPut b
-
-getFramed :: (Int -> B.Get a) -> B.Get a
-getFramed f = do
-  i <- getSize
-  B.isolate i (f i)
-
-getMsgType :: Word8 -> B.Get ()
-getMsgType expected = do
-  actual <- B.getWord8
-  unless (actual == expected) $ fail $
-    "Expected " ++ msgTypeName expected ++
-    ", got "    ++ msgTypeName actual   ++ "."
-
-msgTypeName :: Word8 -> String
-msgTypeName  x = "SSH_MSG_" ++ show x
-
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
 verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =
-  case (publicKey,signature) of
-    (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
-    (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
-    _                                        -> False
-  where
-    signedData :: BS.ByteString
-    signedData = LBS.toStrict $ B.runPut $ mconcat
-      [ B.put           sessionIdentifier
-      , B.putWord8      50
-      , B.put           userName
-      , B.put           serviceName
-      , B.putWord32be   9
-      , B.putByteString "publickey"
-      , B.putWord8      1
-      , B.put           algorithm
-      , B.put           publicKey
-      ]
-
+    case (publicKey,signature) of
+        (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
+        (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
+        _                                        -> False
+    where
+        signedData :: BS.ByteString
+        signedData = LBS.toStrict $ B.runPut $ mconcat
+            [ B.put           sessionIdentifier
+            , B.putWord8      50
+            , B.put           userName
+            , B.put           serviceName
+            , B.putWord32be   9
+            , B.putByteString "publickey"
+            , B.putWord8      1
+            , B.put           algorithm
+            , B.put           publicKey
+            ]

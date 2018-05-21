@@ -21,6 +21,7 @@ import           System.Exit
 
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
+import           Network.SSH.TAccountingQueue
 
 data Connection identity
     = Connection
@@ -55,7 +56,7 @@ data Session
     { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
     , sessTerminal    :: TVar (Maybe Terminal)
     , sessThread      :: TVar (Maybe ThreadId)
-    , sessStdin       :: TMVar BS.ByteString
-    , sessStdout      :: TMVar BS.ByteString
-    , sessStderr      :: TMVar BS.ByteString
+    , sessStdin       :: TAccountingQueue
+    , sessStdout      :: TAccountingQueue
+    , sessStderr      :: TAccountingQueue
     }

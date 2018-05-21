@@ -32,6 +32,7 @@ import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
+import qualified Network.SSH.TAccountingQueue as AQ
 
 handleChannelOpen :: Connection identity -> ChannelOpen -> IO ()
 handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) = atomically $ do
@@ -43,11 +44,19 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
         Just localChannelId -> do
             application <- case channelType of
                   (ChannelType "session") -> do
-                      env <- newTVar mempty
-                      pty <- newTVar Nothing
+                      env    <- newTVar mempty
+                      pty    <- newTVar Nothing
+                      thread <- newTVar Nothing
+                      stdin  <- AQ.newTAccountingQueue 1024
+                      stdout <- AQ.newTAccountingQueue 1024
+                      stderr <- AQ.newTAccountingQueue 1024
                       pure $ ChannelApplicationSession Session {
                             sessEnvironment = env
-                          , sessTerminal = pty
+                          , sessTerminal    = pty
+                          , sessThread      = thread
+                          , sessStdin       = stdin
+                          , sessStdout      = stdout
+                          , sessStderr      = stderr
                           }
                   (ChannelType other) ->
                       pure (ChannelApplicationOther other)
@@ -176,7 +185,9 @@ sessionExec connection channel session handler =
       -- loops until the session thread has terminated and exit has been signaled.
       wait :: Async.Async ExitCode ->IO ()
       wait thread = do
-          exit <- atomically $ waitExit thread
+          exit <- atomically $
+              waitExit thread <|>
+              waitStdout
           unless exit (wait thread)
 
       waitExit :: Async.Async ExitCode -> STM Bool
@@ -191,51 +202,9 @@ sessionExec connection channel session handler =
               sendExit = send connection . MsgChannelRequest
                   . ChannelRequest (chanIdRemote channel)
 
-instance DS.OutputStream (BS.ByteString -> IO Int) where
-  send stream ba = stream (BA.convert ba)
-
--- input lesen
--- output schreiben
--- windows size readjustment
--- close on exit
-
-data TAccountingQueue
-    = AccountingQueue
-    { aqTaken   :: TVar Int
-    , aqHead    :: TVar (BA.View BA.Bytes)
-    , aqTail    :: TChan (BA.View BA.Bytes)
-    , aqSize    :: TVar Int
-    , aqMaxSize :: Int
-    }
-
-enqueue :: TAccountingQueue -> BA.Bytes -> STM Int
-enqueue q ba = do
-    queueSize <- readTVar (aqSize q)
-    let len = BA.length ba
-    let available = aqMaxSize q - queueSize
-    if  | len == 0 -> pure 0
-        | available > 0 -> do
-            let n = min available len
-            writeTChan (aqTail q) (BA.takeView ba n)
-            writeTVar (aqSize q) (queueSize + n)
-            pure n
-        | otherwise -> retry
-
-dequeue :: TAccountingQueue -> Int -> STM BA.Bytes
-dequeue _ 0   = pure BA.empty
-dequeue q len = do
-    queueSize <- readTVar (aqSize q)
-    check (queueSize > 0) -- retry when queue is empty
-    h0 <- readTVar (aqHead q)
-    h1 <- if BA.null h0 then readTChan (aqTail q) else pure h0
-    let n = min (BA.length h1) len
-    writeTVar (aqHead q) $ BA.dropView (BA.convert $ BA.dropView h1 n :: BA.Bytes) 0
-    writeTVar (aqSize q) (queueSize - n)
-    writeTVar (aqTaken q) . (+ n) =<< readTVar (aqTaken q)
-    pure $ BA.convert $ BA.takeView h1 n
-
-instance DS.OutputStream TAccountingQueue where
-    send q ba = atomically $ enqueue q (BA.convert ba)
-
-instance DS.InputStream TAccountingQueue where
-    receive q i = atomically $ BA.convert <$> dequeue q i
+      waitStdout :: STM Bool
+      waitStdout = do
+          -- maxPacketSize <- readTVar (chanMaxPacketSizeRemote channel)
+          windowSize    <- readTVar (chanWindowSizeRemote channel)
+          ba            <- AQ.dequeue (sessStdout session) undefined --(min maxPacketSize windowSize)
+          pure False
