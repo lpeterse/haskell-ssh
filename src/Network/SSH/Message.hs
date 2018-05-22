@@ -1,7 +1,8 @@
-{-# LANGUAGE BangPatterns       #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE LambdaCase         #-}
-{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE BangPatterns               #-}
+{-# LANGUAGE DeriveDataTypeable         #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE OverloadedStrings          #-}
 module Network.SSH.Message
   ( -- * Message
     Message (..)
@@ -355,17 +356,28 @@ newCookie  = Cookie <$> getRandomBytes 16
 nilCookie :: Cookie
 nilCookie  = Cookie  $  BS.replicate 16 0
 
-newtype Version           = Version           BS.ByteString deriving (Eq, Ord, Show)
-newtype Algorithm         = Algorithm         BS.ByteString deriving (Eq, Ord, Show)
-newtype Password          = Password          BS.ByteString deriving (Eq, Ord, Show)
-newtype SessionId         = SessionId         BS.ByteString deriving (Eq, Ord, Show)
-newtype UserName          = UserName          BS.ByteString deriving (Eq, Ord, Show)
-newtype AuthMethodName    = AuthMethodName    BS.ByteString deriving (Eq, Ord, Show)
-newtype ServiceName       = ServiceName       BS.ByteString deriving (Eq, Ord, Show)
-newtype ChannelType       = ChannelType       BS.ByteString deriving (Eq, Ord, Show)
-newtype ChannelId         = ChannelId         Word32        deriving (Eq, Ord, Show)
-newtype ChannelWindowSize = ChannelWindowSize Word32        deriving (Eq, Ord, Show)
-newtype ChannelPacketSize = ChannelPacketSize Word32        deriving (Eq, Ord, Show)
+newtype Version           = Version           BS.ByteString
+    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype Algorithm         = Algorithm         BS.ByteString
+    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype Password          = Password          BS.ByteString
+    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype SessionId         = SessionId         BS.ByteString
+    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype UserName          = UserName          BS.ByteString
+    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype AuthMethodName    = AuthMethodName    BS.ByteString
+    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype ServiceName       = ServiceName       BS.ByteString
+    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype ChannelType       = ChannelType       BS.ByteString
+    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype ChannelId         = ChannelId         Word32
+    deriving (Eq, Ord, Show)
+newtype ChannelWindowSize = ChannelWindowSize Word32
+    deriving (Eq, Ord, Show)
+newtype ChannelPacketSize = ChannelPacketSize Word32
+    deriving (Eq, Ord, Show)
 
 -------------------------------------------------------------------------------
 -- Encoding instances
@@ -586,7 +598,7 @@ instance Encoding UserAuthRequest where
     get = expectWord8 50 >> UserAuthRequest <$> get <*> get <*> get
 
 instance Encoding UserAuthFailure where
-    len (UserAuthFailure ms ps) = lenWord8 + undefined
+    len (UserAuthFailure ms ps) = lenWord8 + lenNameList ms + lenBool
     put (UserAuthFailure ms ps) = do
         putWord8 51
         putNameList ((\(AuthMethodName x)->x) <$> ms)
@@ -926,7 +938,7 @@ instance Encoding Ed25519.Signature where
         CryptoFailed _ -> fail ""
 
 instance Encoding RSA.PublicKey where
-    len = undefined -- TODO
+    len x = lenBytes (runPut $ put x :: BS.ByteString)
     put (RSA.PublicKey _ n e) = do
         putInteger n
         putInteger e

@@ -7,15 +7,16 @@ import           Crypto.Error
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
-import qualified Data.Binary              as B
-import qualified Data.Binary.Get          as B
-import qualified Data.Binary.Put          as B
 import qualified Data.ByteString          as BS
+import qualified Data.Serialize           as B
+import qualified Data.Serialize.Get       as B
+import qualified Data.Serialize.Put       as B
 import           System.Exit
 
 import           Test.Tasty
 import           Test.Tasty.QuickCheck    as QC
 
+import           Network.SSH.Encoding
 import           Network.SSH.Message
 
 tests :: TestTree
@@ -54,8 +55,8 @@ tests = testGroup "Network.SSH.Message"
     ]
   ]
   where
-    parserIdentity :: (B.Binary a, Eq a, Show a) => a -> Property
-    parserIdentity x = x === B.runGet B.get (B.runPut $ B.put x)
+    parserIdentity :: (Encoding a, Eq a, Show a) => a -> Property
+    parserIdentity x = Right x === B.runGet get (B.runPut $ put x)
 
 instance Arbitrary BS.ByteString where
   arbitrary = pure mempty
@@ -88,17 +89,35 @@ instance Arbitrary Message where
     , MsgChannelSuccess          <$> arbitrary
     , MsgChannelFailure          <$> arbitrary
     , MsgUnknown                 <$> elements [ 128, 255 ]
-                                 <*> elements [ "", "unknown message payload" ]
     ]
 
 instance Arbitrary Disconnect where
   arbitrary = Disconnect <$> arbitrary <*> arbitrary <*> arbitrary
 
+instance Arbitrary DisconnectReason where
+    arbitrary = elements
+        [ DisconnectHostNotAllowedToConnect
+        , DisconnectProtocolError
+        , DisconnectKeyExchangeFailed
+        , DisconnectReserved
+        , DisconnectMacError
+        , DisconnectCompressionError
+        , DisconnectServiceNotAvailable
+        , DisconnectProtocolVersionNotSupported
+        , DisconnectHostKeyNotVerifiable
+        , DisconnectConnectionLost
+        , DisconnectByApplication
+        , DisconnectTooManyConnection
+        , DisconnectAuthCancelledByUser
+        , DisconnectNoMoreAuthMethodsAvailable
+        , DisconnectIllegalUsername
+        ]
+
 instance Arbitrary Ignore where
   arbitrary = pure Ignore
 
 instance Arbitrary Unimplemented where
-  arbitrary = pure Unimplemented
+  arbitrary = Unimplemented <$> arbitrary
 
 instance Arbitrary Debug where
   arbitrary = Debug
@@ -152,6 +171,14 @@ instance Arbitrary ChannelOpenConfirmation where
 instance Arbitrary ChannelOpenFailure where
   arbitrary = ChannelOpenFailure <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
+instance Arbitrary ChannelOpenFailureReason where
+    arbitrary = elements
+        [ ChannelOpenAdministrativelyProhibited
+        , ChannelOpenConnectFailed
+        , ChannelOpenUnknownChannelType
+        , ChannelOpenResourceShortage
+        ]
+
 instance Arbitrary ChannelData where
   arbitrary = ChannelData <$> arbitrary <*> arbitrary
 
@@ -165,12 +192,15 @@ instance Arbitrary ChannelClose where
   arbitrary = ChannelClose <$> arbitrary
 
 instance Arbitrary ChannelRequest where
+  arbitrary = ChannelRequest <$> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelRequestRequest where
   arbitrary = oneof
-    [ ChannelRequestPty        <$> arbitrary <*> arbitrary <*> arbitrary
-    , ChannelRequestShell      <$> arbitrary <*> arbitrary
-    , ChannelRequestExitStatus <$> arbitrary <*> (arbitrary >>= \i-> pure $ if i == 0 then ExitSuccess else ExitFailure (abs i))
-    , ChannelRequestExitSignal <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-    , ChannelRequestOther      <$> arbitrary <*> arbitrary
+    [ ChannelRequestPty        <$> arbitrary <*> arbitrary
+    , ChannelRequestShell      <$> arbitrary
+    , ChannelRequestExitStatus <$> (arbitrary >>= \i-> pure $ if i == 0 then ExitSuccess else ExitFailure (abs i))
+    , ChannelRequestExitSignal <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+    , ChannelRequestOther      <$> arbitrary
     ]
 
 instance Arbitrary ChannelSuccess where
@@ -194,8 +224,8 @@ instance Arbitrary PtySettings where
     <*> elements [ 480 ]
     <*> elements [ "\129\NUL\NUL\150\NUL\128\NUL\NUL\150\NUL\SOH\NUL\NUL\NUL\ETX\STX\NUL\NUL\NUL\FS\ETX\NUL\NUL\NUL\DEL\EOT\NUL\NUL\NUL\NAK\ENQ\NUL\NUL\NUL\EOT\ACK\NUL\NUL\NUL\NUL\a\NUL\NUL\NUL\NUL\b\NUL\NUL\NUL\DC1\t\NUL\NUL\NUL\DC3\n\NUL\NUL\NUL\SUB\f\NUL\NUL\NUL\DC2\r\NUL\NUL\NUL\ETB\SO\NUL\NUL\NUL\SYN\DC2\NUL\NUL\NUL\SI\RS\NUL\NUL\NUL\SOH\US\NUL\NUL\NUL\NUL \NUL\NUL\NUL\NUL!\NUL\NUL\NUL\NUL\"\NUL\NUL\NUL\NUL#\NUL\NUL\NUL\NUL$\NUL\NUL\NUL\SOH%\NUL\NUL\NUL\NUL&\NUL\NUL\NUL\SOH'\NUL\NUL\NUL\NUL(\NUL\NUL\NUL\NUL)\NUL\NUL\NUL\SOH*\NUL\NUL\NUL\SOH2\NUL\NUL\NUL\SOH3\NUL\NUL\NUL\SOH4\NUL\NUL\NUL\NUL5\NUL\NUL\NUL\SOH6\NUL\NUL\NUL\SOH7\NUL\NUL\NUL\SOH8\NUL\NUL\NUL\NUL9\NUL\NUL\NUL\NUL:\NUL\NUL\NUL\NUL;\NUL\NUL\NUL\SOH<\NUL\NUL\NUL\SOH=\NUL\NUL\NUL\SOH>\NUL\NUL\NUL\NULF\NUL\NUL\NUL\SOHG\NUL\NUL\NUL\NULH\NUL\NUL\NUL\SOHI\NUL\NUL\NUL\NULJ\NUL\NUL\NUL\NULK\NUL\NUL\NUL\NULZ\NUL\NUL\NUL\SOH[\NUL\NUL\NUL\SOH\\\NUL\NUL\NUL\NUL]\NUL\NUL\NUL\NUL\NUL" ]
 
-deriving instance Arbitrary MaxPacketSize
-deriving instance Arbitrary InitWindowSize
+deriving instance Arbitrary ChannelPacketSize
+deriving instance Arbitrary ChannelWindowSize
 deriving instance Arbitrary ChannelId
 deriving instance Arbitrary ChannelType
 
@@ -244,7 +274,7 @@ instance Arbitrary PublicKey where
   arbitrary = oneof
     [ PublicKeyEd25519           <$> x1
     , PublicKeyRSA               <$> x2
-    , PublicKeyOther "ssh-other" <$> x3
+    , PublicKeyOther             <$> x3
     ]
     where
       x1 = pure $ case Ed25519.publicKey ("$\149\229m\164\ETB\GSA\ESC\185ThTc8\212\219\158\249\CAN\202\245\133\140a\bZQ\v\234\247x" :: BS.ByteString) of
@@ -270,3 +300,4 @@ instance Arbitrary Curve25519.PublicKey where
   arbitrary = pure $ case Curve25519.publicKey ("\179g~\181\170\169\154\205\211\ft\162\&0@0dO\FS\DLEA\166@[r\150t~W\221cOF" :: BS.ByteString) of
     CryptoPassed pk -> pk
     CryptoFailed _  -> undefined
+
