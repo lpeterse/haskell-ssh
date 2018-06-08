@@ -37,6 +37,11 @@ instance Encoding ExitCode where
         0 -> pure ExitSuccess
         c -> pure (ExitFailure $ fromIntegral c)
 
+getFramed :: Get a -> Get a
+getFramed g = do
+    w <- getWord32
+    G.isolate (fromIntegral w) g
+
 lenWord8 :: Word32
 lenWord8 = 1
 
@@ -103,3 +108,6 @@ getTrue = expectWord8 1
 
 getFalse :: Get ()
 getFalse = expectWord8 0
+
+getRemaining :: Get Int
+getRemaining = G.remaining

@@ -88,8 +88,8 @@ serve config stream = do
     -- Complete the key exchange and wait for the client to confirm
     -- with a NewKeys msg.
     sendPutter stream $ packetize $ put kexEcdhReply
-    sendPutter stream $ packetize $ put NewKeys
-    (NewKeys, rem4) <- receiveGetter stream (unpacketize get) rem3
+    sendPutter stream $ packetize $ put KexNewKeys
+    (KexNewKeys, rem4) <- receiveGetter stream (unpacketize get) rem3
 
     -- Derive the required encryption/decryption keys.
     -- The integrity keys etc. are not needed with chacha20.

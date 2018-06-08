@@ -4,8 +4,10 @@
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 module Network.SSH.Message
-  ( -- * Message
-    Message (..)
+  ( -- * Packet
+    Packet (..)
+    -- * Message
+  , Message (..)
     -- ** Disconnect (1)
   , Disconnect (..)
   , DisconnectReason (..)
@@ -21,8 +23,8 @@ module Network.SSH.Message
   , ServiceAccept (..)
     -- ** KexInit (20)
   , KexInit (..)
-    -- ** NewKeys (21)
-  , NewKeys (..)
+    -- ** KexNewKeys (21)
+  , KexNewKeys (..)
     -- ** KexEcdhInit (30)
   , KexEcdhInit (..)
     -- ** KexEcdhReply (31)
@@ -98,7 +100,6 @@ import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import           Data.Foldable
 import qualified Data.List                as L
-import           Data.Monoid              ((<>))
 import           Data.Typeable
 import           Data.Word
 import           System.Exit
@@ -106,43 +107,46 @@ import           System.Exit
 import           Network.SSH.Encoding
 import           Network.SSH.Key
 
+data Packet a = Packet a Word8
+    deriving (Eq, Ord, Show)
+
 data Message
-  = MsgDisconnect              Disconnect
-  | MsgIgnore                  Ignore
-  | MsgUnimplemented           Unimplemented
-  | MsgDebug                   Debug
-  | MsgServiceRequest          ServiceRequest
-  | MsgServiceAccept           ServiceAccept
-  | MsgKexInit                 KexInit
-  | MsgNewKeys                 NewKeys
-  | MsgKexEcdhInit             KexEcdhInit
-  | MsgKexEcdhReply            KexEcdhReply
-  | MsgUserAuthRequest         UserAuthRequest
-  | MsgUserAuthFailure         UserAuthFailure
-  | MsgUserAuthSuccess         UserAuthSuccess
-  | MsgUserAuthBanner          UserAuthBanner
-  | MsgUserAuthPublicKeyOk     UserAuthPublicKeyOk
-  | MsgChannelOpen             ChannelOpen
-  | MsgChannelOpenConfirmation ChannelOpenConfirmation
-  | MsgChannelOpenFailure      ChannelOpenFailure
-  | MsgChannelWindowAdjust     ChannelWindowAdjust
-  | MsgChannelData             ChannelData
-  | MsgChannelExtendedData     ChannelExtendedData
-  | MsgChannelEof              ChannelEof
-  | MsgChannelClose            ChannelClose
-  | MsgChannelRequest          ChannelRequest
-  | MsgChannelSuccess          ChannelSuccess
-  | MsgChannelFailure          ChannelFailure
-  | MsgUnknown                 Word8
-  deriving (Eq, Show)
+    = MsgDisconnect              Disconnect
+    | MsgIgnore                  Ignore
+    | MsgUnimplemented           Unimplemented
+    | MsgDebug                   Debug
+    | MsgServiceRequest          ServiceRequest
+    | MsgServiceAccept           ServiceAccept
+    | MsgKexInit                 KexInit
+    | MsgKexNewKeys              KexNewKeys
+    | MsgKexEcdhInit             KexEcdhInit
+    | MsgKexEcdhReply            KexEcdhReply
+    | MsgUserAuthRequest         UserAuthRequest
+    | MsgUserAuthFailure         UserAuthFailure
+    | MsgUserAuthSuccess         UserAuthSuccess
+    | MsgUserAuthBanner          UserAuthBanner
+    | MsgUserAuthPublicKeyOk     UserAuthPublicKeyOk
+    | MsgChannelOpen             ChannelOpen
+    | MsgChannelOpenConfirmation ChannelOpenConfirmation
+    | MsgChannelOpenFailure      ChannelOpenFailure
+    | MsgChannelWindowAdjust     ChannelWindowAdjust
+    | MsgChannelData             ChannelData
+    | MsgChannelExtendedData     ChannelExtendedData
+    | MsgChannelEof              ChannelEof
+    | MsgChannelClose            ChannelClose
+    | MsgChannelRequest          ChannelRequest
+    | MsgChannelSuccess          ChannelSuccess
+    | MsgChannelFailure          ChannelFailure
+    | MsgUnknown                 Word8
+    deriving (Eq, Show)
 
 data Disconnect
-  = Disconnect
-  { disconnectReason      :: DisconnectReason
-  , disconnectDescription :: BS.ByteString
-  , disconnectLanguageTag :: BS.ByteString
-  }
-  deriving (Eq, Show, Typeable)
+    = Disconnect
+    { disconnectReason      :: DisconnectReason
+    , disconnectDescription :: BS.ByteString
+    , disconnectLanguageTag :: BS.ByteString
+    }
+    deriving (Eq, Show, Typeable)
 
 data DisconnectReason
     = DisconnectHostNotAllowedToConnect
@@ -160,193 +164,195 @@ data DisconnectReason
     | DisconnectAuthCancelledByUser
     | DisconnectNoMoreAuthMethodsAvailable
     | DisconnectIllegalUsername
+    | DisconnectOtherReason Word32
     deriving (Eq, Show, Typeable)
 
 instance Exception Disconnect
 
 data Ignore
-  = Ignore
-  deriving (Eq, Show)
+    = Ignore
+    deriving (Eq, Show)
 
 data Unimplemented
-  = Unimplemented Word32
-  deriving (Eq, Show)
+    = Unimplemented Word32
+    deriving (Eq, Show)
 
 data Debug
-  = Debug
-  { debugAlwaysDisplay :: Bool
-  , debugMessage       :: BS.ByteString
-  , debugLanguageTag   :: BS.ByteString
-  }
-  deriving (Eq, Show)
+    = Debug
+    { debugAlwaysDisplay :: Bool
+    , debugMessage       :: BS.ByteString
+    , debugLanguageTag   :: BS.ByteString
+    }
+    deriving (Eq, Show)
 
 data ServiceRequest
-  = ServiceRequest ServiceName
-  deriving (Eq, Show)
+    = ServiceRequest ServiceName
+    deriving (Eq, Show)
 
 data ServiceAccept
-  = ServiceAccept ServiceName
-  deriving (Eq, Show)
+    = ServiceAccept ServiceName
+    deriving (Eq, Show)
 
 data KexInit
-  = KexInit
-  { kexCookie                              :: Cookie
-  , kexAlgorithms                          :: [BS.ByteString]
-  , kexServerHostKeyAlgorithms             :: [BS.ByteString]
-  , kexEncryptionAlgorithmsClientToServer  :: [BS.ByteString]
-  , kexEncryptionAlgorithmsServerToClient  :: [BS.ByteString]
-  , kexMacAlgorithmsClientToServer         :: [BS.ByteString]
-  , kexMacAlgorithmsServerToClient         :: [BS.ByteString]
-  , kexCompressionAlgorithmsClientToServer :: [BS.ByteString]
-  , kexCompressionAlgorithmsServerToClient :: [BS.ByteString]
-  , kexLanguagesClientToServer             :: [BS.ByteString]
-  , kexLanguagesServerToClient             :: [BS.ByteString]
-  , kexFirstPacketFollows                  :: Bool
-  } deriving (Eq, Show)
+    = KexInit
+    { kexCookie                              :: Cookie
+    , kexAlgorithms                          :: [BS.ByteString]
+    , kexServerHostKeyAlgorithms             :: [BS.ByteString]
+    , kexEncryptionAlgorithmsClientToServer  :: [BS.ByteString]
+    , kexEncryptionAlgorithmsServerToClient  :: [BS.ByteString]
+    , kexMacAlgorithmsClientToServer         :: [BS.ByteString]
+    , kexMacAlgorithmsServerToClient         :: [BS.ByteString]
+    , kexCompressionAlgorithmsClientToServer :: [BS.ByteString]
+    , kexCompressionAlgorithmsServerToClient :: [BS.ByteString]
+    , kexLanguagesClientToServer             :: [BS.ByteString]
+    , kexLanguagesServerToClient             :: [BS.ByteString]
+    , kexFirstPacketFollows                  :: Bool
+    } deriving (Eq, Show)
 
-data NewKeys
-  = NewKeys
-  deriving (Eq, Show)
+data KexNewKeys
+    = KexNewKeys
+    deriving (Eq, Show)
 
 data KexEcdhInit
-  = KexEcdhInit
-  { kexClientEphemeralKey :: Curve25519.PublicKey
-  }
-  deriving (Eq, Show)
+    = KexEcdhInit
+    { kexClientEphemeralKey :: Curve25519.PublicKey
+    }
+    deriving (Eq, Show)
 
 data KexEcdhReply
-  = KexEcdhReply
-  { kexServerHostKey      :: PublicKey
-  , kexServerEphemeralKey :: Curve25519.PublicKey
-  , kexHashSignature      :: Signature
-  }
-  deriving (Eq, Show)
+    = KexEcdhReply
+    { kexServerHostKey      :: PublicKey
+    , kexServerEphemeralKey :: Curve25519.PublicKey
+    , kexHashSignature      :: Signature
+    }
+    deriving (Eq, Show)
 
 data UserAuthRequest
-  = UserAuthRequest UserName ServiceName AuthMethod
-  deriving (Eq, Show)
+    = UserAuthRequest UserName ServiceName AuthMethod
+    deriving (Eq, Show)
 
 data UserAuthFailure
-  = UserAuthFailure [AuthMethodName] Bool
-  deriving (Eq, Show)
+    = UserAuthFailure [AuthMethodName] Bool
+    deriving (Eq, Show)
 
 data UserAuthSuccess
-  = UserAuthSuccess
-  deriving (Eq, Show)
+    = UserAuthSuccess
+    deriving (Eq, Show)
 
 data UserAuthBanner
-  = UserAuthBanner BS.ByteString BS.ByteString
-  deriving (Eq, Show)
+    = UserAuthBanner BS.ByteString BS.ByteString
+    deriving (Eq, Show)
 
 data UserAuthPublicKeyOk
-  = UserAuthPublicKeyOk Algorithm PublicKey
-  deriving (Eq, Show)
+    = UserAuthPublicKeyOk Algorithm PublicKey
+    deriving (Eq, Show)
 
 data ChannelOpen
-  = ChannelOpen ChannelType ChannelId ChannelWindowSize ChannelPacketSize
-  deriving (Eq, Show)
+    = ChannelOpen ChannelType ChannelId ChannelWindowSize ChannelPacketSize
+    deriving (Eq, Show)
 
 data ChannelOpenConfirmation
-  = ChannelOpenConfirmation ChannelId ChannelId ChannelWindowSize ChannelPacketSize
-  deriving (Eq, Show)
+    = ChannelOpenConfirmation ChannelId ChannelId ChannelWindowSize ChannelPacketSize
+    deriving (Eq, Show)
 
 data ChannelOpenFailure
-  = ChannelOpenFailure ChannelId ChannelOpenFailureReason BS.ByteString BS.ByteString
-  deriving (Eq, Show)
+    = ChannelOpenFailure ChannelId ChannelOpenFailureReason BS.ByteString BS.ByteString
+    deriving (Eq, Show)
 
 data ChannelOpenFailureReason
-  = ChannelOpenAdministrativelyProhibited
-  | ChannelOpenConnectFailed
-  | ChannelOpenUnknownChannelType
-  | ChannelOpenResourceShortage
-  deriving (Eq, Show)
+    = ChannelOpenAdministrativelyProhibited
+    | ChannelOpenConnectFailed
+    | ChannelOpenUnknownChannelType
+    | ChannelOpenResourceShortage
+    | ChannelOpenOtherFailure Word32
+    deriving (Eq, Show)
 
 data ChannelWindowAdjust
-  = ChannelWindowAdjust ChannelId ChannelWindowSize
-  deriving (Eq, Show)
+    = ChannelWindowAdjust ChannelId ChannelWindowSize
+    deriving (Eq, Show)
 
 data ChannelData
-  = ChannelData ChannelId BS.ByteString
-  deriving (Eq, Show)
+    = ChannelData ChannelId BS.ByteString
+    deriving (Eq, Show)
 
 data ChannelExtendedData
-  = ChannelExtendedData ChannelId Word32 BS.ByteString
-  deriving (Eq, Show)
+    = ChannelExtendedData ChannelId Word32 BS.ByteString
+    deriving (Eq, Show)
 
 data ChannelEof
-  = ChannelEof ChannelId
-  deriving (Eq, Show)
+    = ChannelEof ChannelId
+    deriving (Eq, Show)
 
 data ChannelClose
-  = ChannelClose ChannelId
-  deriving (Eq, Show)
+    = ChannelClose ChannelId
+    deriving (Eq, Show)
 
 data ChannelRequest
     = ChannelRequest ChannelId ChannelRequestRequest
     deriving (Eq, Show)
 
 data ChannelRequestRequest
-  = ChannelRequestPty
-    { crWantReply   :: Bool
-    , crPtySettings :: PtySettings
-    }
-  | ChannelRequestShell
-    { crWantReply     :: Bool
-    }
-  | ChannelRequestExec
-    { crWantReply :: Bool
-    , crCommand   :: BS.ByteString
-    }
-  | ChannelRequestExitStatus
-    { crExitStatus    :: ExitCode
-    }
-  | ChannelRequestExitSignal
-    { crSignalName   :: BS.ByteString
-    , crCodeDumped   :: Bool
-    , crErrorMessage :: BS.ByteString
-    , crLanguageTag  :: BS.ByteString
-    }
-  | ChannelRequestEnv
-    { crWantReply     :: Bool
-    , crVariableName  :: BS.ByteString
-    , crVariableValue :: BS.ByteString
-    }
-  | ChannelRequestOther
-    { crOther     :: BS.ByteString
-    }
-  deriving (Eq, Show)
+    = ChannelRequestPty
+        { crWantReply   :: Bool
+        , crPtySettings :: PtySettings
+        }
+    | ChannelRequestShell
+        { crWantReply     :: Bool
+        }
+    | ChannelRequestExec
+        { crWantReply :: Bool
+        , crCommand   :: BS.ByteString
+        }
+    | ChannelRequestExitStatus
+        { crExitStatus    :: ExitCode
+        }
+    | ChannelRequestExitSignal
+        { crSignalName   :: BS.ByteString
+        , crCodeDumped   :: Bool
+        , crErrorMessage :: BS.ByteString
+        , crLanguageTag  :: BS.ByteString
+        }
+    | ChannelRequestEnv
+        { crWantReply     :: Bool
+        , crVariableName  :: BS.ByteString
+        , crVariableValue :: BS.ByteString
+        }
+    | ChannelRequestOther
+        { crOther     :: BS.ByteString
+        }
+    deriving (Eq, Show)
 
 data ChannelSuccess
-  = ChannelSuccess ChannelId
-  deriving (Eq, Show)
+    = ChannelSuccess ChannelId
+    deriving (Eq, Show)
 
 data ChannelFailure
-  = ChannelFailure ChannelId
-  deriving (Eq, Show)
+    = ChannelFailure ChannelId
+    deriving (Eq, Show)
 
 data AuthMethod
-  = AuthNone
-  | AuthHostBased
-  | AuthPassword  Password
-  | AuthPublicKey Algorithm PublicKey (Maybe Signature)
-  | AuthOther BS.ByteString
-  deriving (Eq, Show)
+    = AuthNone
+    | AuthHostBased
+    | AuthPassword  Password
+    | AuthPublicKey Algorithm PublicKey (Maybe Signature)
+    | AuthOther BS.ByteString
+    deriving (Eq, Show)
 
 data Signature
-  = SignatureEd25519 Ed25519.Signature
-  | SignatureRSA     BS.ByteString
-  | SignatureOther   BS.ByteString BS.ByteString
-  deriving (Eq, Show)
+    = SignatureEd25519 Ed25519.Signature
+    | SignatureRSA     BS.ByteString
+    | SignatureOther   BS.ByteString BS.ByteString
+    deriving (Eq, Show)
 
 data PtySettings
-  = PtySettings
-  { ptyEnv          :: BS.ByteString
-  , ptyWidthCols    :: Word32
-  , ptyHeightRows   :: Word32
-  , ptyWidthPixels  :: Word32
-  , ptyHeightPixels :: Word32
-  , ptyModes        :: BS.ByteString
-  } deriving (Eq, Show)
+    = PtySettings
+    { ptyEnv          :: BS.ByteString
+    , ptyWidthCols    :: Word32
+    , ptyHeightRows   :: Word32
+    , ptyWidthPixels  :: Word32
+    , ptyHeightPixels :: Word32
+    , ptyModes        :: BS.ByteString
+    } deriving (Eq, Show)
 
 newtype Cookie            = Cookie            BS.ByteString deriving (Eq, Ord, Show)
 
@@ -383,6 +389,11 @@ newtype ChannelPacketSize = ChannelPacketSize Word32
 -- Encoding instances
 -------------------------------------------------------------------------------
 
+instance Encoding a => Encoding (Packet a) where
+    len (Packet a w8) = len a + fromIntegral w8
+    put (Packet a w8) = put a >> forM_ [1..w8] (const $ putWord8 0)
+    get = Packet <$> get <*> (fromIntegral <$> getRemaining)
+
 instance Encoding Message where
     len = \case
         MsgDisconnect               x -> len x
@@ -392,7 +403,7 @@ instance Encoding Message where
         MsgServiceRequest           x -> len x
         MsgServiceAccept            x -> len x
         MsgKexInit                  x -> len x
-        MsgNewKeys                  x -> len x
+        MsgKexNewKeys               x -> len x
         MsgKexEcdhInit              x -> len x
         MsgKexEcdhReply             x -> len x
         MsgUserAuthRequest          x -> len x
@@ -420,7 +431,7 @@ instance Encoding Message where
         MsgServiceRequest           x -> put x
         MsgServiceAccept            x -> put x
         MsgKexInit                  x -> put x
-        MsgNewKeys                  x -> put x
+        MsgKexNewKeys               x -> put x
         MsgKexEcdhInit              x -> put x
         MsgKexEcdhReply             x -> put x
         MsgUserAuthRequest          x -> put x
@@ -448,7 +459,7 @@ instance Encoding Message where
         MsgServiceRequest          <$> get <|>
         MsgServiceAccept           <$> get <|>
         MsgKexInit                 <$> get <|>
-        MsgNewKeys                 <$> get <|>
+        MsgKexNewKeys              <$> get <|>
         MsgKexEcdhInit             <$> get <|>
         MsgKexEcdhReply            <$> get <|>
         MsgUserAuthRequest         <$> get <|>
@@ -470,47 +481,52 @@ instance Encoding Message where
 
 instance Encoding Disconnect where
     len (Disconnect r d l) =
-        lenWord8 + lenWord32 + lenString d + lenString l
+        lenWord8 + len r + lenString d + lenString l
     put (Disconnect r d l) = do
         putWord8 1
-        putWord32 $ case r of
-            DisconnectHostNotAllowedToConnect     -> 1
-            DisconnectProtocolError               -> 2
-            DisconnectKeyExchangeFailed           -> 3
-            DisconnectReserved                    -> 4
-            DisconnectMacError                    -> 5
-            DisconnectCompressionError            -> 6
-            DisconnectServiceNotAvailable         -> 7
-            DisconnectProtocolVersionNotSupported -> 8
-            DisconnectHostKeyNotVerifiable        -> 9
-            DisconnectConnectionLost              -> 10
-            DisconnectByApplication               -> 11
-            DisconnectTooManyConnection           -> 12
-            DisconnectAuthCancelledByUser         -> 13
-            DisconnectNoMoreAuthMethodsAvailable  -> 14
-            DisconnectIllegalUsername             -> 15
+        put r
         putString d
         putString l
     get = do
         expectWord8 1
-        reason <- getWord32 >>= \case
-            1  -> pure DisconnectHostNotAllowedToConnect
-            2  -> pure DisconnectProtocolError
-            3  -> pure DisconnectKeyExchangeFailed
-            4  -> pure DisconnectReserved
-            5  -> pure DisconnectMacError
-            6  -> pure DisconnectCompressionError
-            7  -> pure DisconnectServiceNotAvailable
-            8  -> pure DisconnectProtocolVersionNotSupported
-            9  -> pure DisconnectHostKeyNotVerifiable
-            10 -> pure DisconnectConnectionLost
-            11 -> pure DisconnectByApplication
-            12 -> pure DisconnectTooManyConnection
-            13 -> pure DisconnectAuthCancelledByUser
-            14 -> pure DisconnectNoMoreAuthMethodsAvailable
-            15 -> pure DisconnectIllegalUsername
-            _  -> fail ""
-        Disconnect reason <$> getString <*> getString
+        Disconnect <$> get <*> getString <*> getString
+
+instance Encoding DisconnectReason where
+    len _ = lenWord32
+    put r = putWord32 $ case r of
+        DisconnectHostNotAllowedToConnect     -> 1
+        DisconnectProtocolError               -> 2
+        DisconnectKeyExchangeFailed           -> 3
+        DisconnectReserved                    -> 4
+        DisconnectMacError                    -> 5
+        DisconnectCompressionError            -> 6
+        DisconnectServiceNotAvailable         -> 7
+        DisconnectProtocolVersionNotSupported -> 8
+        DisconnectHostKeyNotVerifiable        -> 9
+        DisconnectConnectionLost              -> 10
+        DisconnectByApplication               -> 11
+        DisconnectTooManyConnection           -> 12
+        DisconnectAuthCancelledByUser         -> 13
+        DisconnectNoMoreAuthMethodsAvailable  -> 14
+        DisconnectIllegalUsername             -> 15
+        DisconnectOtherReason r               -> r
+    get = (<$> getWord32) $ \case
+        1  -> DisconnectHostNotAllowedToConnect
+        2  -> DisconnectProtocolError
+        3  -> DisconnectKeyExchangeFailed
+        4  -> DisconnectReserved
+        5  -> DisconnectMacError
+        6  -> DisconnectCompressionError
+        7  -> DisconnectServiceNotAvailable
+        8  -> DisconnectProtocolVersionNotSupported
+        9  -> DisconnectHostKeyNotVerifiable
+        10 -> DisconnectConnectionLost
+        11 -> DisconnectByApplication
+        12 -> DisconnectTooManyConnection
+        13 -> DisconnectAuthCancelledByUser
+        14 -> DisconnectNoMoreAuthMethodsAvailable
+        15 -> DisconnectIllegalUsername
+        r  -> DisconnectOtherReason r
 
 instance Encoding Ignore where
     len _ = 1
@@ -576,10 +592,10 @@ instance Encoding KexInit where
         getWord32 -- reserved for future extensions
         pure kex
 
-instance Encoding NewKeys where
+instance Encoding KexNewKeys where
     len _ = lenWord8
     put _ = putWord8 21
-    get   = expectWord8 21 >> pure NewKeys
+    get   = expectWord8 21 >> pure KexNewKeys
 
 instance Encoding KexEcdhInit where
     len (KexEcdhInit key) = lenWord8 + len key
@@ -634,27 +650,31 @@ instance Encoding ChannelOpenConfirmation where
 
 instance Encoding ChannelOpenFailure where
     len (ChannelOpenFailure cid reason descr lang) =
-        lenWord8 + len cid + lenWord32 + lenString descr + lenString lang
+        lenWord8 + len cid + len reason + lenString descr + lenString lang
     put (ChannelOpenFailure cid reason descr lang) = do
         putWord8 92
         put cid
-        putWord32 $ case reason of
-            ChannelOpenAdministrativelyProhibited -> 1
-            ChannelOpenConnectFailed              -> 2
-            ChannelOpenUnknownChannelType         -> 3
-            ChannelOpenResourceShortage           -> 4
+        put reason
         putString descr
         putString lang
     get = do
         expectWord8 92
-        cid <- get
-        reason <- getWord32 >>= \case
-            1 -> pure ChannelOpenAdministrativelyProhibited
-            2 -> pure ChannelOpenConnectFailed
-            3 -> pure ChannelOpenUnknownChannelType
-            4 -> pure ChannelOpenResourceShortage
-            _ -> fail ""
-        ChannelOpenFailure cid reason <$> getString <*> getString
+        ChannelOpenFailure <$> get <*> get <*> getString <*> getString
+
+instance Encoding ChannelOpenFailureReason where
+    len _ = lenWord32
+    put r = putWord32 $ case r of
+        ChannelOpenAdministrativelyProhibited -> 1
+        ChannelOpenConnectFailed              -> 2
+        ChannelOpenUnknownChannelType         -> 3
+        ChannelOpenResourceShortage           -> 4
+        ChannelOpenOtherFailure w32           -> w32
+    get = (<$> getWord32) $ \case
+        1   -> ChannelOpenAdministrativelyProhibited
+        2   -> ChannelOpenConnectFailed
+        3   -> ChannelOpenUnknownChannelType
+        4   -> ChannelOpenResourceShortage
+        w32 -> ChannelOpenOtherFailure w32
 
 instance Encoding ChannelWindowAdjust where
     len (ChannelWindowAdjust cid ws) = lenWord8 + len cid + len ws
@@ -866,7 +886,7 @@ instance Encoding PublicKey where
             putString ("ssh-rsa" :: BS.ByteString) >> put key
         PublicKeyOther other ->
             putString other
-    get = getWord32 >> getString >>= \case
+    get = getFramed $ getString >>= \case
         "ssh-ed25519" -> PublicKeyEd25519 <$> get
         "ssh-rsa"     -> PublicKeyRSA <$> get
         other         -> PublicKeyOther <$> pure other
@@ -876,11 +896,11 @@ instance Encoding Signature where
         SignatureEd25519    sig -> lenWord32 + lenString ("ssh-ed25519" :: BS.ByteString) + len       sig
         SignatureRSA        sig -> lenWord32 + lenString ("ssh-rsa"     :: BS.ByteString) + lenString sig -- FIXME
         SignatureOther algo sig -> lenWord32 + lenString algo          + lenString sig -- FIXME
-    put s = putWord32 (len s) >> case s of
+    put s = putWord32 (len s - lenWord32) >> case s of
         SignatureEd25519    sig -> putString ("ssh-ed25519" :: BS.ByteString) >> put       sig
         SignatureRSA        sig -> putString ("ssh-rsa"     :: BS.ByteString) >> putString sig -- FIXME
         SignatureOther algo sig -> putString algo                             >> putString sig -- FIXME
-    get = getWord32 >> getString >>= \case
+    get = getFramed $ getString >>= \case
         "ssh-ed25519" -> SignatureEd25519 <$> get
         "ssh-rsa"     -> SignatureRSA <$> getString --FIXME
         other         -> SignatureOther other <$> getString
@@ -917,21 +937,21 @@ getNameList = do
     pure $ BA.convert <$> BS.split 0x2c s
 
 instance Encoding Curve25519.PublicKey where
-    len = fromIntegral . BA.length
+    len = lenString
     put = putString
     get = getString >>= \s-> case Curve25519.publicKey (s :: BA.Bytes) of
         CryptoPassed k -> pure k
         CryptoFailed _ -> fail ""
 
 instance Encoding Ed25519.PublicKey where
-    len = fromIntegral . BA.length
+    len = lenString
     put = putString
     get = getString >>= \s-> case Ed25519.publicKey (s :: BA.Bytes) of
         CryptoPassed k -> pure k
         CryptoFailed _ -> fail ""
 
 instance Encoding Ed25519.Signature where
-    len = fromIntegral . BA.length
+    len = lenString
     put = putString
     get = getString >>= \s-> case Ed25519.signature (s :: BA.Bytes) of
         CryptoPassed k -> pure k

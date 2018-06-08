@@ -47,8 +47,9 @@ sendPutter stream =
     sendAll stream . B.runPut
 
 receiveGetter :: (DuplexStream stream, BA.ByteArray ba) => stream -> B.Get a -> ba -> IO (a, ba)
-receiveGetter stream getter initial =
-    f (B.runGetPartial getter $ BA.convert initial)
+receiveGetter stream getter initial
+    | BA.null initial = f . B.runGetPartial getter =<< receive stream chunkSize
+    | otherwise       = f $ B.runGetPartial getter $ BA.convert initial
     where
         chunkSize              = 1024
         f (B.Done a remainder) = pure (a, BA.convert remainder)
