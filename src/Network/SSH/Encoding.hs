@@ -74,11 +74,17 @@ putBytes = P.putByteString . BA.convert
 getBytes :: BA.ByteArray ba => Word32 -> Get ba
 getBytes i = BA.convert <$> G.getByteString (fromIntegral i)
 
+lenByteString :: BS.ByteString -> Word32
+lenByteString = fromIntegral . BA.length
+
 putByteString :: BS.ByteString -> Put
 putByteString = P.putByteString
 
 getByteString :: Word32 -> Get BS.ByteString
 getByteString = G.getByteString . fromIntegral
+
+getRemainingByteString :: Get BS.ByteString
+getRemainingByteString = G.remaining >>= G.getBytes
 
 lenString :: BA.ByteArrayAccess ba => ba -> Word32
 lenString ba = lenWord32 + lenBytes ba

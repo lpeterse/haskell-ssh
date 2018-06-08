@@ -1,7 +1,8 @@
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE MultiWayIf        #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE MultiWayIf          #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Network.SSH.Server.Channel where
 
 import           Control.Applicative
@@ -27,6 +28,7 @@ import           System.Exit
 
 import           Network.SSH.Constants
 import qualified Network.SSH.DuplexStream     as DS
+import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
@@ -136,17 +138,32 @@ handleChannelWindowAdjust connection (ChannelWindowAdjust channelId (ChannelWind
             throwSTM $ Disconnect DisconnectProtocolError "window size overflow" mempty
         writeTVar (chanWindowSizeRemote channel) $ ChannelWindowSize (fromIntegral ws')
 
-handleChannelRequest :: Connection identity -> ChannelRequest -> IO ()
+handleChannelRequest :: forall identity. Connection identity -> ChannelRequest -> IO ()
 handleChannelRequest connection (ChannelRequest channelId request) =
     join $ atomically $ do
         channel <- getChannel connection channelId
         case chanApplication channel of
-            ChannelApplicationSession session -> case request of
+            ChannelApplicationSession session -> interpretAsSessionRequest channel session request
+            _ -> throwProtocolError "cannot dispatch channel request"
+    where
+        pass                 = pure $ pure ()
+        throwProtocolError e = throwSTM $ Disconnect DisconnectProtocolError e mempty
+        sendSuccess channel  = send connection $ MsgChannelSuccess $ ChannelSuccess (chanIdRemote channel)
+        sendFailure channel  = send connection $ MsgChannelFailure $ ChannelFailure (chanIdRemote channel)
+
+        interpretAsSessionRequest :: Channel identity -> Session -> BS.ByteString -> STM (IO ())
+        interpretAsSessionRequest channel session request = case runGet get request of
+            Nothing -> throwProtocolError "invalid session channel request"
+            Just sessionRequest -> case sessionRequest of
                 ChannelRequestEnv wantReply name value -> do
                     env <- readTVar (sessEnvironment session)
                     writeTVar (sessEnvironment session) $! M.insert name value env
                     when wantReply (sendSuccess channel)
                     pass
+                ChannelRequestPty wantReply ptySettings ->
+                    throwProtocolError "pty-req not yet implemented"
+                ChannelRequestShell wantReply ->
+                    throwProtocolError "shell req not yet implemented"
                 ChannelRequestExec wantReply command -> case onExecRequest (connConfig connection) of
                     Nothing -> do
                         when wantReply (sendFailure channel)
@@ -158,13 +175,7 @@ handleChannelRequest connection (ChannelRequest channelId request) =
                         Just identity -> do
                           when wantReply (sendSuccess channel)
                           pure (sessionExec connection channel session (\s0 s1 s2-> exec identity s0 s1 s2 command))
-                _ -> throwProtocolError "cannot dispatch channel request on session channel"
-            _ -> throwProtocolError "cannot dispatch channel request"
-    where
-        pass                 = pure $ pure ()
-        throwProtocolError e = throwSTM $ Disconnect DisconnectProtocolError e mempty
-        sendSuccess channel  = send connection $ MsgChannelSuccess $ ChannelSuccess (chanIdRemote channel)
-        sendFailure channel  = send connection $ MsgChannelFailure $ ChannelFailure (chanIdRemote channel)
+                ChannelRequestOther {} -> throwProtocolError "unexpected message type for session channel"
 
 -- Free all associated resources like threads etc.
 free :: Channel identity -> IO ()
@@ -198,9 +209,9 @@ sessionExec connection channel session handler =
           close channel
           pure True
           where
-              sendExit :: ChannelRequestRequest -> STM ()
+              sendExit :: ChannelRequestSession -> STM ()
               sendExit = send connection . MsgChannelRequest
-                  . ChannelRequest (chanIdRemote channel)
+                  . ChannelRequest (chanIdRemote channel) . runPut . put
 
       waitStdout :: STM Bool
       waitStdout = do

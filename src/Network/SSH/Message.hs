@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE DeriveDataTypeable         #-}
+{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
@@ -58,7 +59,7 @@ module Network.SSH.Message
   , ChannelClose (..)
     -- ** ChannelRequest (98)
   , ChannelRequest (..)
-  , ChannelRequestRequest (..)
+  , ChannelRequestSession (..)
     -- ** ChannelSuccess (99)
   , ChannelSuccess (..)
     -- ** ChannelFailure (100)
@@ -288,10 +289,10 @@ data ChannelClose
     deriving (Eq, Show)
 
 data ChannelRequest
-    = ChannelRequest ChannelId ChannelRequestRequest
+    = ChannelRequest ChannelId BS.ByteString
     deriving (Eq, Show)
 
-data ChannelRequestRequest
+data ChannelRequestSession
     = ChannelRequestPty
         { crWantReply   :: Bool
         , crPtySettings :: PtySettings
@@ -702,11 +703,11 @@ instance Encoding ChannelClose where
     get = expectWord8 97 >> ChannelClose <$> get
 
 instance Encoding ChannelRequest where
-    len (ChannelRequest cid req) = lenWord8 + len cid + len req
-    put (ChannelRequest cid req) = putWord8 98 >> put cid >> put req
-    get = expectWord8 98 >> ChannelRequest <$> get <*> get
+    len (ChannelRequest cid req) = lenWord8 + len cid + lenByteString req
+    put (ChannelRequest cid req) = putWord8 98 >> put cid >> putByteString req
+    get = expectWord8 98 >> ChannelRequest <$> get <*> getRemainingByteString
 
-instance Encoding ChannelRequestRequest where
+instance Encoding ChannelRequestSession where
     len = \case
         ChannelRequestEnv wantReply name value ->
             lenString ("env" :: BS.ByteString) + lenBool + lenString name + lenString value
