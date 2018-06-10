@@ -60,10 +60,10 @@ main = do
           (\(stream,_)-> Server.serve config stream)
         takeMVar token
 
-runExec :: identity -> stdin -> stdout -> stderr -> command -> IO ExitCode
+runExec :: (OutputStream stdout) => identity -> stdin -> stdout -> stderr -> command -> IO ExitCode
 runExec identity stdin stdout stderr command = do
-    print "Hallo Welt!"
-    error "ABC"
+    send stdout ("Hallo Welt!" :: BS.ByteString)
+    pure (ExitFailure 23)
 
 runShell :: identity -> Terminal -> IO ExitCode
 runShell identity term = do

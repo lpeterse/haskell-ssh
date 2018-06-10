@@ -62,8 +62,10 @@ dequeue q len = do
     writeTVar (aqTaken q) $! taken + n
     pure $ BA.convert $ BA.takeView h1 n
 
+instance DS.DuplexStream TAccountingQueue
+
 instance DS.OutputStream TAccountingQueue where
     send q ba = atomically $ enqueue q (BA.convert ba)
 
 instance DS.InputStream TAccountingQueue where
-   receive q i = atomically $ BA.convert <$> dequeue q i
+    receive q i = atomically $ BA.convert <$> dequeue q i

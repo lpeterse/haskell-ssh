@@ -40,8 +40,8 @@ data Channel identity
     , chanApplication         :: ChannelApplication
     , chanIdLocal             :: ChannelId
     , chanIdRemote            :: ChannelId
-    , chanMaxPacketSizeLocal  :: ChannelPacketSize
-    , chanMaxPacketSizeRemote :: ChannelPacketSize
+    , chanMaxPacketSizeLocal  :: ChannelMaxPacketSize
+    , chanMaxPacketSizeRemote :: ChannelMaxPacketSize
     , chanWindowSizeLocal     :: TVar ChannelWindowSize
     , chanWindowSizeRemote    :: TVar ChannelWindowSize
     , chanClosed              :: TVar Bool
@@ -49,7 +49,6 @@ data Channel identity
 
 data ChannelApplication
     = ChannelApplicationSession Session
-    | ChannelApplicationOther   BS.ByteString
 
 data Session
     = Session

@@ -13,7 +13,7 @@ import           Network.SSH.Message
 data Config identity = Config {
       hostKey         :: PrivateKey
     , onAuthRequest   :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
-    , onExecRequest   :: forall stdin stdout stderr command. (BA.ByteArrayAccess command) -- (DuplexStream stdin, DuplexStream stdout, DuplexStream stderr)
+    , onExecRequest   :: forall stdin stdout stderr command. (BA.ByteArrayAccess command, DuplexStream stdin, DuplexStream stdout, DuplexStream stderr)
                       => Maybe (identity -> stdin -> stdout -> stderr -> command -> IO ExitCode)
     , channelMaxCount :: Int
     }

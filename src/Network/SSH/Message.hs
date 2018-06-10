@@ -73,9 +73,9 @@ module Network.SSH.Message
   , AuthMethod (..)
   , AuthMethodName (..)
   , ChannelId (..)
-  , ChannelPacketSize (..)
+  , ChannelMaxPacketSize
   , ChannelType (..)
-  , ChannelWindowSize (..)
+  , ChannelWindowSize
   , Cookie (), newCookie, nilCookie
   , Password (..)
   , PtySettings (..)
@@ -83,6 +83,7 @@ module Network.SSH.Message
   , ServiceName (..)
   , SessionId (..)
   , Signature (..)
+  , Size (..)
   , UserName (..)
   , Version (..)
   ) where
@@ -108,8 +109,16 @@ import           System.Exit
 import           Network.SSH.Encoding
 import           Network.SSH.Key
 
-data Packet a = Packet a Word8
+data Packet a = Packet
+    { packetSize :: Word32
+    , packetBody :: a
+    }
     deriving (Eq, Ord, Show)
+
+newtype Size = Size Word32 deriving (Eq, Ord, Show, Num)
+
+type ChannelWindowSize = Size
+type ChannelMaxPacketSize = Size
 
 data Message
     = MsgDisconnect              Disconnect
@@ -249,11 +258,11 @@ data UserAuthPublicKeyOk
     deriving (Eq, Show)
 
 data ChannelOpen
-    = ChannelOpen ChannelType ChannelId ChannelWindowSize ChannelPacketSize
+    = ChannelOpen ChannelType ChannelId ChannelWindowSize ChannelMaxPacketSize
     deriving (Eq, Show)
 
 data ChannelOpenConfirmation
-    = ChannelOpenConfirmation ChannelId ChannelId ChannelWindowSize ChannelPacketSize
+    = ChannelOpenConfirmation ChannelId ChannelId ChannelWindowSize ChannelMaxPacketSize
     deriving (Eq, Show)
 
 data ChannelOpenFailure
@@ -320,6 +329,7 @@ data ChannelRequestSession
         }
     | ChannelRequestOther
         { crOther     :: BS.ByteString
+        , crWantReply :: Bool
         }
     deriving (Eq, Show)
 
@@ -381,19 +391,10 @@ newtype ChannelType       = ChannelType       BS.ByteString
     deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype ChannelId         = ChannelId         Word32
     deriving (Eq, Ord, Show)
-newtype ChannelWindowSize = ChannelWindowSize Word32
-    deriving (Eq, Ord, Show)
-newtype ChannelPacketSize = ChannelPacketSize Word32
-    deriving (Eq, Ord, Show)
 
 -------------------------------------------------------------------------------
 -- Encoding instances
 -------------------------------------------------------------------------------
-
-instance Encoding a => Encoding (Packet a) where
-    len (Packet a w8) = len a + fromIntegral w8
-    put (Packet a w8) = put a >> forM_ [1..w8] (const $ putWord8 0)
-    get = Packet <$> get <*> (fromIntegral <$> getRemaining)
 
 instance Encoding Message where
     len = \case
@@ -722,8 +723,8 @@ instance Encoding ChannelRequestSession where
         ChannelRequestExitSignal signame _ errmsg lang ->
             lenString ("exit-signal" :: BS.ByteString) + lenBool + lenString signame +
             lenBool + lenString errmsg + lenString lang
-        ChannelRequestOther other ->
-            lenString other
+        ChannelRequestOther other _ ->
+            lenString other + lenBool
     put = \case
         ChannelRequestEnv wantReply name value ->
             putString ("env" :: BS.ByteString) >> putBool wantReply >> putString name >> putString value
@@ -738,8 +739,8 @@ instance Encoding ChannelRequestSession where
         ChannelRequestExitSignal signame coredump errmsg lang ->
             putString ("exit-signal" :: BS.ByteString) >> putBool False >> putString signame >>
             putBool coredump >> putString errmsg >> putString lang
-        ChannelRequestOther other ->
-            putString other
+        ChannelRequestOther other wantReply ->
+            putString other >> putBool wantReply
     get = getString >>= \case
         "env" ->
             ChannelRequestEnv <$> getBool <*> getString <*> getString
@@ -754,7 +755,7 @@ instance Encoding ChannelRequestSession where
         "exit-signal" ->
             getFalse >> ChannelRequestExitSignal <$> getString <*> getBool <*> getString <*> getString
         other ->
-            pure (ChannelRequestOther other)
+            ChannelRequestOther other <$> getBool
 
 instance Encoding ChannelSuccess where
     len (ChannelSuccess cid) = lenWord8 + len cid
@@ -781,15 +782,10 @@ instance Encoding ChannelId where
     put (ChannelId x) = putWord32 x
     get = ChannelId <$> getWord32
 
-instance Encoding ChannelWindowSize where
-    len (ChannelWindowSize _) = lenWord32
-    put (ChannelWindowSize x) = putWord32 x
-    get = ChannelWindowSize <$> getWord32
-
-instance Encoding ChannelPacketSize where
-    len (ChannelPacketSize x) = lenWord32
-    put (ChannelPacketSize x) = putWord32 x
-    get = ChannelPacketSize <$> getWord32
+instance Encoding Size where
+    len (Size _) = lenWord32
+    put (Size x) = putWord32 x
+    get = Size <$> getWord32
 
 instance Encoding ChannelType where
     len (ChannelType x) = lenString x
