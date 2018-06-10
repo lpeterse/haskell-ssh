@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 6d2654cf0f29de3d8601853db131a27d9956df49558afc04e6c283a4ecfe009a
+-- hash: aec9d4398289787e65b8e410a64d37bf6ea109ae7482a11ff08cb76b22367ef7
 
 name:           hssh
 version:        0.1.0.0
@@ -32,15 +32,15 @@ flag demo
 
 library
   exposed-modules:
+      Data.Count
+      Data.Stream
       Network.SSH.Constants
-      Network.SSH.DuplexStream
       Network.SSH.Encoding
       Network.SSH.Exception
       Network.SSH.Key
       Network.SSH.Message
       Network.SSH.Server
       Network.SSH.Server.Channel
-      Network.SSH.Server.Config
       Network.SSH.Server.Connection
       Network.SSH.Server.Service
       Network.SSH.Server.Transport

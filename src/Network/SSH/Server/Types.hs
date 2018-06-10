@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes        #-}
 module Network.SSH.Server.Types where
 
 import           Control.Applicative
@@ -12,15 +13,20 @@ import           Control.Exception
 import           Control.Monad                (forever, unless, when)
 import           Control.Monad.STM
 import           Control.Monad.Terminal
+import qualified Crypto.PubKey.Ed25519        as Ed25519
+import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
+import qualified Data.Count                   as Count
 import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
 import           Data.Maybe
+import           Data.Stream
 import           Data.Typeable
+import           Data.Word
 import           System.Exit
 
+import           Network.SSH.Key
 import           Network.SSH.Message
-import           Network.SSH.Server.Config
 import           Network.SSH.TAccountingQueue
 
 data Connection identity
@@ -40,10 +46,9 @@ data Channel identity
     , chanApplication         :: ChannelApplication
     , chanIdLocal             :: ChannelId
     , chanIdRemote            :: ChannelId
-    , chanMaxPacketSizeLocal  :: ChannelMaxPacketSize
-    , chanMaxPacketSizeRemote :: ChannelMaxPacketSize
-    , chanWindowSizeLocal     :: TVar ChannelWindowSize
-    , chanWindowSizeRemote    :: TVar ChannelWindowSize
+    , chanMaxPacketSizeRemote :: Count.Count Word8
+    , chanWindowSizeLocal     :: TVar (Count.Count Word8)
+    , chanWindowSizeRemote    :: TVar (Count.Count Word8)
     , chanClosed              :: TVar Bool
     }
 
@@ -59,3 +64,25 @@ data Session
     , sessStdout      :: TAccountingQueue
     , sessStderr      :: TAccountingQueue
     }
+
+data Config identity = Config {
+    hostKey                :: PrivateKey
+    , onAuthRequest        :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
+    , onExecRequest        :: forall stdin stdout stderr command. (BA.ByteArrayAccess command, DuplexStream stdin, DuplexStream stdout, DuplexStream stderr)
+                            => Maybe (identity -> stdin -> stdout -> stderr -> command -> IO ExitCode)
+    , channelMaxCount      :: Count.Count (Channel identity)
+    , channelMaxWindowSize :: Count.Count Word8
+    , channelMaxPacketSize :: Count.Count Word8
+    }
+
+newDefaultConfig :: IO (Config identity)
+newDefaultConfig = do
+    sk <- Ed25519.generateSecretKey
+    pure Config {
+        hostKey              = Ed25519PrivateKey (Ed25519.toPublic sk) sk
+        , onAuthRequest        = \_ _ _ -> pure Nothing
+        , onExecRequest        = Nothing
+        , channelMaxCount      = Count.Count 256
+        , channelMaxWindowSize = Count.Count $ 256 * 1024
+        , channelMaxPacketSize = Count.Count $ 32 * 1024
+        }

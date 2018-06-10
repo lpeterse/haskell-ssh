@@ -18,22 +18,26 @@ import           Data.Bits
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Lazy          as LBS
+import qualified Data.Count                    as Count
 import           Data.Monoid                   ((<>))
+import qualified Data.Serialize                as B
+import qualified Data.Serialize.Get            as B
 import qualified Data.Serialize.Get            as C
+import qualified Data.Serialize.Put            as B
 import qualified Data.Serialize.Put            as C
+import           Data.Stream
 import           Data.Typeable
 import           Data.Word
 
 import           Network.SSH.Constants
-import           Network.SSH.DuplexStream
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Key
 import           Network.SSH.Message
-import           Network.SSH.Server.Config
-import qualified Network.SSH.Server.Config     as Config
 import           Network.SSH.Server.Connection
 import qualified Network.SSH.Server.Connection as Connection
+import           Network.SSH.Server.Types
+import qualified Network.SSH.Server.Types      as Config
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = do
@@ -104,7 +108,7 @@ serve config stream = do
                 f (DecoderDone p c) = pure (p, c)
                 f (DecoderFail e)   = throwIO (SshCryptoErrorException e)
                 f (DecoderMore c)   = do
-                    cipher <- receive stream 1024
+                    cipher <- receive stream (Count.Count 1024)
                     when (BA.null cipher) (throwIO SshUnexpectedEndOfInputException)
                     f (c cipher)
 
@@ -318,3 +322,17 @@ putMpint xs = zs
             | otherwise = a:as
         ys = BS.pack $ prepend $ dropWhile (==0) xs
         zs = C.putWord32be (fromIntegral $ BS.length ys) <> C.putByteString ys
+
+sendPutter :: (DuplexStream stream) => stream -> B.Put -> IO ()
+sendPutter stream =
+    sendAll stream . B.runPut
+
+receiveGetter :: (DuplexStream stream, BA.ByteArray ba) => stream -> B.Get a -> ba -> IO (a, ba)
+receiveGetter stream getter initial
+    | BA.null initial = f . B.runGetPartial getter =<< receive stream chunkSize
+    | otherwise       = f $ B.runGetPartial getter $ BA.convert initial
+    where
+        chunkSize              = Count.Count 1024
+        f (B.Done a remainder) = pure (a, BA.convert remainder)
+        f (B.Fail e _        ) = throwIO (SshSyntaxErrorException e)
+        f (B.Partial continue) = f =<< (continue <$> receive stream chunkSize)

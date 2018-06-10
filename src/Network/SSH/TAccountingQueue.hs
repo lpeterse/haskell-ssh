@@ -6,8 +6,8 @@ import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Monad.STM
 import qualified Data.ByteArray               as BA
-
-import qualified Network.SSH.DuplexStream     as DS
+import qualified Data.Count                   as Count
+import qualified Data.Stream                  as S
 
 data TAccountingQueue
     = TAccountingQueue
@@ -62,10 +62,10 @@ dequeue q len = do
     writeTVar (aqTaken q) $! taken + n
     pure $ BA.convert $ BA.takeView h1 n
 
-instance DS.DuplexStream TAccountingQueue
+instance S.DuplexStream TAccountingQueue
 
-instance DS.OutputStream TAccountingQueue where
-    send q ba = atomically $ enqueue q (BA.convert ba)
+instance S.OutputStream TAccountingQueue where
+    send q ba = Count.Count . fromIntegral <$> atomically (enqueue q (BA.convert ba))
 
-instance DS.InputStream TAccountingQueue where
-    receive q i = atomically $ BA.convert <$> dequeue q i
+instance S.InputStream TAccountingQueue where
+    receive q i = atomically $ BA.convert <$> dequeue q (Count.toIntDefault maxBound i)

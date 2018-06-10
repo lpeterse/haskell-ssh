@@ -17,9 +17,11 @@ import           Control.Monad                (forever, join, unless, void,
 import           Control.Monad.STM
 import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
+import qualified Data.Count                   as Count
 import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
 import           Data.Maybe
+import qualified Data.Stream                  as DS
 import           Data.Text                    as T
 import           Data.Text.Encoding           as T
 import           Data.Typeable
@@ -27,16 +29,14 @@ import           Data.Word
 import           System.Exit
 
 import           Network.SSH.Constants
-import qualified Network.SSH.DuplexStream     as DS
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Message
-import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
 import qualified Network.SSH.TAccountingQueue as AQ
 
-handleChannelOpen :: Connection identity -> ChannelOpen -> IO ()
+handleChannelOpen :: forall identity. Connection identity -> ChannelOpen -> IO ()
 handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) = atomically $ do
     channels <- readTVar (connChannels connection)
     case selectLocalChannelId channels of
@@ -63,7 +63,7 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
     where
         selectLocalChannelId :: M.Map ChannelId a -> Maybe ChannelId
         selectLocalChannelId m
-            | M.size m >= channelMaxCount (connConfig connection) = Nothing
+            | Count.fromIntDefault maxCount (M.size m) >= maxCount = Nothing
             | otherwise = f (ChannelId 1) $ M.keys m
             where
                 f i [] = Just i
@@ -71,6 +71,7 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
                     | i == maxBound = Nothing
                     | i == k        = f (ChannelId $ i+1) ks
                     | otherwise     = Just (ChannelId i)
+                maxCount = channelMaxCount (connConfig connection)
 
         sendOpenFailure :: ChannelOpenFailureReason -> STM ()
         sendOpenFailure reason = send connection $ MsgChannelOpenFailure $
@@ -82,7 +83,7 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
         openApplicationChannel :: ChannelId -> ChannelApplication -> STM ()
         openApplicationChannel localChannelId application = do
             channels <- readTVar (connChannels connection)
-            wsLocal  <- newTVar initialWindowSize
+            wsLocal  <- newTVar (channelMaxWindowSize $ connConfig connection)
             wsRemote <- newTVar initialWindowSize
             closed   <- newTVar False
             let channel = Channel {
@@ -90,7 +91,6 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
                   , chanApplication         = application
                   , chanIdLocal             = localChannelId
                   , chanIdRemote            = remoteChannelId
-                  , chanMaxPacketSizeLocal  = maxPacketSize
                   , chanMaxPacketSizeRemote = maxPacketSize
                   , chanWindowSizeLocal     = wsLocal
                   , chanWindowSizeRemote    = wsRemote
@@ -100,8 +100,8 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
             sendOpenConfirmation $ ChannelOpenConfirmation
                 remoteChannelId
                 localChannelId
-                initialWindowSize
-                maxPacketSize
+                (channelMaxWindowSize $ connConfig connection)
+                (channelMaxPacketSize $ connConfig connection)
 
 handleChannelClose :: Connection identtiy -> ChannelClose -> IO ()
 handleChannelClose connection (ChannelClose localChannelId) = atomically $ do
@@ -137,15 +137,14 @@ getChannel connection channelId = do
         Nothing      -> throwSTM (Disconnect DisconnectProtocolError "invalid channel id" "")
 
 handleChannelWindowAdjust :: Connection identity -> ChannelWindowAdjust -> IO ()
-handleChannelWindowAdjust connection (ChannelWindowAdjust channelId (Size increase)) =
+handleChannelWindowAdjust connection (ChannelWindowAdjust channelId (Count.Count increase)) =
     atomically $ do
         channel <- getChannel connection channelId
-        Size ws <- readTVar (chanWindowSizeRemote channel)
+        Count.Count windowSize <- readTVar (chanWindowSizeRemote channel)
         -- Conversion to Word64 necessary for overflow check.
-        let ws' = fromIntegral ws + fromIntegral increase :: Word64
-        when (ws' > 2 ^ 32 - 1) $
+        when (windowSize + increase > 2 ^ 32 - 1) $
             throwSTM $ Disconnect DisconnectProtocolError "window size overflow" mempty
-        writeTVar (chanWindowSizeRemote channel) $ Size (fromIntegral ws')
+        writeTVar (chanWindowSizeRemote channel) $! Count.Count (windowSize + increase)
 
 handleChannelRequest :: forall identity. Connection identity -> ChannelRequest -> IO ()
 handleChannelRequest connection (ChannelRequest channelId request) =
@@ -200,10 +199,10 @@ close channel = do
 sessionExec :: Connection identity -> Channel identity -> Session
             -> (AQ.TAccountingQueue -> AQ.TAccountingQueue -> AQ.TAccountingQueue -> IO ExitCode) -> IO ()
 sessionExec connection channel session handler =
-    void $ forkIO $ Async.withAsync thread wait
+    void $ forkIO $ Async.withAsync action wait
     where
-        thread :: IO ExitCode
-        thread = handler (sessStdin session) (sessStdout session) (sessStderr session)
+        action :: IO ExitCode
+        action = handler (sessStdin session) (sessStdout session) (sessStderr session)
 
         -- Waits for several event sources simultaneously, handles them and
         -- loops until the session thread has terminated and exit has been signaled.
@@ -226,32 +225,32 @@ sessionExec connection channel session handler =
 
         waitStdout :: STM Bool
         waitStdout = do
-            window <- getWindow
-            ba <- AQ.dequeue (sessStdout session) window
-            decWindow (BA.length ba)
+            Count.Count window <- getWindow
+            ba <- AQ.dequeue (sessStdout session) (fromIntegral window)
+            decWindow $ Count.Count $ fromIntegral $ BA.length ba
             send connection $ MsgChannelData $ ChannelData (chanIdRemote channel) (BA.convert ba)
             pure False
 
         waitStderr :: STM Bool
         waitStderr = do
-            window <- getWindow
-            ba <- AQ.dequeue (sessStderr session) window
-            decWindow (BA.length ba)
+            Count.Count window <- getWindow
+            ba <- AQ.dequeue (sessStderr session) (fromIntegral window)
+            decWindow $ Count.Count $ fromIntegral $ BA.length ba
             send connection $ MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 (BA.convert ba)
             pure False
 
-        getWindow :: STM Int
+        getWindow :: STM (Count.Count Word8)
         getWindow = do
             -- The standard (RFC 4254) is a bit vague about window size calculation.
             -- See https://marc.info/?l=openssh-unix-dev&m=118466419618541&w=2
             -- for a clarification.
-            Size windowSize <- readTVar (chanWindowSizeRemote channel)
-            Size maxPacketSize <- pure (chanMaxPacketSizeRemote channel)
+            Count.Count windowSize <- readTVar (chanWindowSizeRemote channel)
+            Count.Count maxPacketSize <- pure (chanMaxPacketSizeRemote channel)
             let window = min windowSize maxPacketSize
             check (window > 0) -- transaction fails here if no window space is available
-            pure $ fromIntegral window
+            pure (Count.Count window)
 
-        decWindow :: Int -> STM ()
-        decWindow i = do
-            Size windowSize <- readTVar (chanWindowSizeRemote channel)
-            writeTVar (chanWindowSizeRemote channel) (Size $ windowSize - fromIntegral i)
+        decWindow :: Count.Count Word8 -> STM ()
+        decWindow (Count.Count i) = do
+            Count.Count windowSize <- readTVar (chanWindowSizeRemote channel)
+            writeTVar (chanWindowSizeRemote channel) $! Count.Count $ windowSize - fromIntegral i
