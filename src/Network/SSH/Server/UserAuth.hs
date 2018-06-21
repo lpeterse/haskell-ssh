@@ -9,6 +9,7 @@ import           Control.Monad                (forever, unless, when)
 import           Control.Monad.STM
 
 import           Network.SSH.Message
+import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
 

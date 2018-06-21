@@ -6,7 +6,6 @@ import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Monad.STM
 import qualified Data.ByteArray               as BA
-import qualified Data.Count                   as Count
 import qualified Data.Stream                  as S
 
 data TAccountingQueue
@@ -65,7 +64,7 @@ dequeue q len = do
 instance S.DuplexStream TAccountingQueue
 
 instance S.OutputStream TAccountingQueue where
-    send q ba = Count.Count . fromIntegral <$> atomically (enqueue q (BA.convert ba))
+    send q ba = atomically (enqueue q (BA.convert ba))
 
 instance S.InputStream TAccountingQueue where
-    receive q i = atomically $ BA.convert <$> dequeue q (Count.toIntDefault maxBound i)
+    receive q i = atomically $ BA.convert <$> dequeue q i

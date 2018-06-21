@@ -53,13 +53,13 @@ testParserIdentity = testGroup "put . get == id"
     , QC.testProperty ":: ChannelEof"               (parserIdentity :: ChannelEof               -> Property)
     , QC.testProperty ":: ChannelClose"             (parserIdentity :: ChannelClose             -> Property)
     , QC.testProperty ":: ChannelRequest"           (parserIdentity :: ChannelRequest           -> Property)
+    , QC.testProperty ":: ChannelRequestSession"    (parserIdentity :: ChannelRequestSession    -> Property)
     , QC.testProperty ":: ChannelSuccess"           (parserIdentity :: ChannelSuccess           -> Property)
     , QC.testProperty ":: ChannelFailure"           (parserIdentity :: ChannelFailure           -> Property)
     , QC.testProperty ":: Version"                  (parserIdentity :: Version                  -> Property)
     , QC.testProperty ":: PublicKey"                (parserIdentity :: PublicKey                -> Property)
     , QC.testProperty ":: Signature"                (parserIdentity :: Signature                -> Property)
     , QC.testProperty ":: Message"                  (parserIdentity :: Message                  -> Property)
-    , QC.testProperty ":: Packet"                   (parserIdentity :: Packet Message           -> Property)
     ]
     where
         parserIdentity :: (Encoding a, Eq a, Show a) => a -> Property
@@ -93,13 +93,13 @@ testLengthProperty = testGroup "length (put x) == len x"
     , QC.testProperty ":: ChannelEof"               (lengthProperty :: ChannelEof               -> Property)
     , QC.testProperty ":: ChannelClose"             (lengthProperty :: ChannelClose             -> Property)
     , QC.testProperty ":: ChannelRequest"           (lengthProperty :: ChannelRequest           -> Property)
+    , QC.testProperty ":: ChannelRequestSession"    (lengthProperty :: ChannelRequestSession    -> Property)
     , QC.testProperty ":: ChannelSuccess"           (lengthProperty :: ChannelSuccess           -> Property)
     , QC.testProperty ":: ChannelFailure"           (lengthProperty :: ChannelFailure           -> Property)
     , QC.testProperty ":: Version"                  (lengthProperty :: Version                  -> Property)
     , QC.testProperty ":: PublicKey"                (lengthProperty :: PublicKey                -> Property)
     , QC.testProperty ":: Signature"                (lengthProperty :: Signature                -> Property)
     , QC.testProperty ":: Message"                  (lengthProperty :: Message                  -> Property)
-    , QC.testProperty ":: Packet"                   (lengthProperty :: Packet Message           -> Property)
     ]
     where
         lengthProperty :: (Encoding a, Eq a, Show a) => a -> Property
@@ -107,9 +107,6 @@ testLengthProperty = testGroup "length (put x) == len x"
 
 instance Arbitrary BS.ByteString where
     arbitrary = pure mempty
-
-instance Arbitrary a => Arbitrary (Packet a) where
-    arbitrary = Packet <$> arbitrary <*> arbitrary
 
 instance Arbitrary Message where
     arbitrary = oneof
@@ -247,13 +244,13 @@ instance Arbitrary ChannelClose where
 instance Arbitrary ChannelRequest where
     arbitrary = ChannelRequest <$> arbitrary <*> arbitrary
 
-instance Arbitrary ChannelRequestRequest where
+instance Arbitrary ChannelRequestSession where
     arbitrary = oneof
         [ ChannelRequestPty        <$> arbitrary <*> arbitrary
         , ChannelRequestShell      <$> arbitrary
         , ChannelRequestExitStatus <$> (arbitrary >>= \i-> pure $ if i == 0 then ExitSuccess else ExitFailure (abs i))
         , ChannelRequestExitSignal <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-        , ChannelRequestOther      <$> arbitrary
+        , ChannelRequestOther      <$> arbitrary <*> arbitrary
         ]
 
 instance Arbitrary ChannelSuccess where
@@ -277,8 +274,6 @@ instance Arbitrary PtySettings where
         <*> elements [ 480 ]
         <*> elements [ "\129\NUL\NUL\150\NUL\128\NUL\NUL\150\NUL\SOH\NUL\NUL\NUL\ETX\STX\NUL\NUL\NUL\FS\ETX\NUL\NUL\NUL\DEL\EOT\NUL\NUL\NUL\NAK\ENQ\NUL\NUL\NUL\EOT\ACK\NUL\NUL\NUL\NUL\a\NUL\NUL\NUL\NUL\b\NUL\NUL\NUL\DC1\t\NUL\NUL\NUL\DC3\n\NUL\NUL\NUL\SUB\f\NUL\NUL\NUL\DC2\r\NUL\NUL\NUL\ETB\SO\NUL\NUL\NUL\SYN\DC2\NUL\NUL\NUL\SI\RS\NUL\NUL\NUL\SOH\US\NUL\NUL\NUL\NUL \NUL\NUL\NUL\NUL!\NUL\NUL\NUL\NUL\"\NUL\NUL\NUL\NUL#\NUL\NUL\NUL\NUL$\NUL\NUL\NUL\SOH%\NUL\NUL\NUL\NUL&\NUL\NUL\NUL\SOH'\NUL\NUL\NUL\NUL(\NUL\NUL\NUL\NUL)\NUL\NUL\NUL\SOH*\NUL\NUL\NUL\SOH2\NUL\NUL\NUL\SOH3\NUL\NUL\NUL\SOH4\NUL\NUL\NUL\NUL5\NUL\NUL\NUL\SOH6\NUL\NUL\NUL\SOH7\NUL\NUL\NUL\SOH8\NUL\NUL\NUL\NUL9\NUL\NUL\NUL\NUL:\NUL\NUL\NUL\NUL;\NUL\NUL\NUL\SOH<\NUL\NUL\NUL\SOH=\NUL\NUL\NUL\SOH>\NUL\NUL\NUL\NULF\NUL\NUL\NUL\SOHG\NUL\NUL\NUL\NULH\NUL\NUL\NUL\SOHI\NUL\NUL\NUL\NULJ\NUL\NUL\NUL\NULK\NUL\NUL\NUL\NULZ\NUL\NUL\NUL\SOH[\NUL\NUL\NUL\SOH\\\NUL\NUL\NUL\NUL]\NUL\NUL\NUL\NUL\NUL" ]
 
-deriving instance Arbitrary ChannelPacketSize
-deriving instance Arbitrary ChannelWindowSize
 deriving instance Arbitrary ChannelId
 deriving instance Arbitrary ChannelType
 

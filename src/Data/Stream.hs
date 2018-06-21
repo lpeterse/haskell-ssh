@@ -4,9 +4,7 @@ import           Control.Arrow     (second)
 import           Control.Exception
 import           Control.Monad     (unless, when)
 import           Control.Monad.STM
-import qualified Data.ByteArray    as BA
-import           Data.Count        (Count (..))
-import qualified Data.Count        as Count
+import qualified Data.ByteString   as BS
 import           Data.Monoid       ((<>))
 
 import           Data.Typeable
@@ -16,29 +14,28 @@ import           System.IO.Error
 class (InputStream stream, OutputStream stream) => DuplexStream stream where
 
 class OutputStream stream where
-    send    :: BA.ByteArrayAccess ba => stream -> ba -> IO (Count Word8)
+    send    :: stream -> BS.ByteString -> IO Int
 
 class InputStream stream where
-    receive :: BA.ByteArray ba => stream -> Count Word8 -> IO ba
+    receive :: stream -> Int -> IO BS.ByteString
 
-sendAll :: (DuplexStream stream, BA.ByteArray ba) => stream -> ba -> IO ()
-sendAll stream ba = sendAll' 0
+sendAll :: (DuplexStream stream) => stream -> BS.ByteString -> IO ()
+sendAll stream bs = sendAll' 0
     where
-        len = fromIntegral (BA.length ba) :: Word64
+        len = BS.length bs
         sendAll' offset
             | offset >= len = pure ()
             | otherwise = do
-                Count sent <- send stream (BA.dropView ba $ fromIntegral offset)
+                sent <- send stream (BS.drop offset bs)
                 sendAll' (offset + sent)
 
-receiveAll :: (DuplexStream stream, BA.ByteArray ba) => stream -> Count Word8 -> IO ba
-receiveAll stream (Count len) =
-    receive stream (Count len) >>= loop
+receiveAll :: (DuplexStream stream) => stream -> Int -> IO BS.ByteString
+receiveAll stream len =
+    receive stream len >>= loop
     where
-        loop ba
-            | fromIntegral (BA.length ba) >= len = pure ba
+        loop bs
+            | fromIntegral (BS.length bs) >= len = pure bs
             | otherwise = do
-                  ba' <- receive stream $ Count $ len - fromIntegral (BA.length ba)
-                  when (BA.null ba') (throwIO $ userError "unexpected end of input")
-                  loop (ba <> ba')
-
+                  bs' <- receive stream $ len - fromIntegral (BS.length bs)
+                  when (BS.null bs') (throwIO $ userError "unexpected end of input")
+                  loop (bs <> bs')

@@ -97,7 +97,6 @@ import qualified Crypto.PubKey.RSA.PKCS15 as RSA.PKCS15
 import           Crypto.Random
 import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
-import qualified Data.Count               as Count
 import           Data.Foldable
 import qualified Data.List                as L
 import           Data.Typeable
@@ -106,9 +105,6 @@ import           System.Exit
 
 import           Network.SSH.Encoding
 import           Network.SSH.Key
-
-type ChannelWindowSize = Count.Count Word8
-type ChannelMaxPacketSize = Count.Count Word8
 
 data Message
     = MsgDisconnect              Disconnect
@@ -362,6 +358,9 @@ newCookie  = Cookie <$> getRandomBytes 16
 
 nilCookie :: Cookie
 nilCookie  = Cookie  $  BS.replicate 16 0
+
+type ChannelWindowSize = Word32
+type ChannelMaxPacketSize = Word32
 
 newtype Version           = Version           BS.ByteString
     deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
@@ -632,35 +631,35 @@ instance Encoding UserAuthPublicKeyOk where
 
 instance Encoding ChannelOpen where
     len (ChannelOpen ct cid _ _) = lenWord8 + len ct + len cid + lenWord32 + lenWord32
-    put (ChannelOpen ct cid (Count.Count ws) (Count.Count ps)) = do
+    put (ChannelOpen ct cid ws ps) = do
         putWord8 90
         put ct
         put cid
-        putWord32 (fromIntegral ws)
-        putWord32 (fromIntegral ps)
+        putWord32 ws
+        putWord32 ps
     get = do
         expectWord8 90
         ChannelOpen
             <$> get
             <*> get
-            <*> (Count.Count . fromIntegral <$> getWord32)
-            <*> (Count.Count . fromIntegral <$> getWord32)
+            <*> getWord32
+            <*> getWord32
 
 instance Encoding ChannelOpenConfirmation where
     len (ChannelOpenConfirmation a b _ _) = lenWord8 + len a + len b + lenWord32 + lenWord32
-    put (ChannelOpenConfirmation a b (Count.Count ws) (Count.Count ps)) = do
+    put (ChannelOpenConfirmation a b ws ps) = do
         putWord8 91
         put a
         put b
-        putWord32 (fromIntegral ws)
-        putWord32 (fromIntegral ps)
+        putWord32 ws
+        putWord32 ps
     get = do
         expectWord8 91
         ChannelOpenConfirmation
             <$> get
             <*> get
-            <*> (Count.Count . fromIntegral <$> getWord32)
-            <*> (Count.Count . fromIntegral <$> getWord32)
+            <*> getWord32
+            <*> getWord32
 
 instance Encoding ChannelOpenFailure where
     len (ChannelOpenFailure cid reason descr lang) =
@@ -692,8 +691,8 @@ instance Encoding ChannelOpenFailureReason where
 
 instance Encoding ChannelWindowAdjust where
     len (ChannelWindowAdjust cid _) = lenWord8 + len cid + lenWord32
-    put (ChannelWindowAdjust cid (Count.Count ws)) = putWord8 93 >> put cid >> putWord32 (fromIntegral ws)
-    get = expectWord8 93 >> ChannelWindowAdjust <$> get <*> (Count.Count . fromIntegral <$> getWord32)
+    put (ChannelWindowAdjust cid ws) = putWord8 93 >> put cid >> putWord32 ws
+    get = expectWord8 93 >> ChannelWindowAdjust <$> get <*> getWord32
 
 instance Encoding ChannelData where
     len (ChannelData cid ba) = lenWord8 + len cid + lenString ba
@@ -1006,3 +1005,5 @@ verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey s
             putWord8      1
             put           algorithm
             put           publicKey
+
+

@@ -15,11 +15,11 @@ import           System.Exit
 type Put = P.Put
 type Get = G.Get
 
-runPut :: BA.ByteArray ba => Put -> ba
-runPut = BA.convert . P.runPut
+runPut :: Put -> BS.ByteString
+runPut = P.runPut
 
-runGet :: (Fail.MonadFail m, BA.ByteArray ba) => Get a -> ba -> m a
-runGet g ba = case G.runGet g (BA.convert ba) of
+runGet :: (Fail.MonadFail m) => Get a -> BS.ByteString -> m a
+runGet g bs = case G.runGet g bs of
     Left e  -> Fail.fail e
     Right a -> pure a
 
@@ -117,3 +117,36 @@ getFalse = expectWord8 0
 
 getRemaining :: Get Int
 getRemaining = G.remaining
+
+isolate :: Int -> Get a -> Get a
+isolate = G.isolate
+
+skip :: Int -> Get ()
+skip = G.skip
+
+putPacked :: Encoding a => a -> Put
+putPacked payload = do
+    putWord32 packetLen
+    putWord8 (fromIntegral paddingLen)
+    put payload
+    putByteString padding
+    where
+        payloadLen = len payload :: Word32
+        paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8 :: Word32
+        packetLen  = 1 + payloadLen + paddingLen :: Word32
+        padding    = BS.replicate (fromIntegral paddingLen) 0 :: BS.ByteString
+
+getUnpacked :: Encoding a => Get a
+getUnpacked = do
+    packetLen <- fromIntegral <$> getWord32
+    isolate packetLen $ do
+        paddingLen <- getWord8
+        x <- get
+        skip (fromIntegral paddingLen)
+        pure x
+
+putAsMPInt :: (BA.ByteArrayAccess ba) => ba -> Put
+putAsMPInt ba
+    | BA.null ba           = fail ""
+    | BA.index ba 0 >= 128 = putWord32 (lenBytes ba + 1) >> putWord8 0 >> putBytes ba
+    | otherwise            = putWord32 (lenBytes ba) >> putBytes ba

@@ -29,6 +29,7 @@ import           Network.SSH.Constants
 import           Network.SSH.Exception
 import           Network.SSH.Message
 import qualified Network.SSH.Server.Channel   as Channel
+import           Network.SSH.Server.Config
 import qualified Network.SSH.Server.Service   as Service
 import           Network.SSH.Server.Types
 import qualified Network.SSH.Server.UserAuth  as UserAuth

@@ -12,7 +12,6 @@ import           Control.Monad                  (forever)
 import           Control.Monad.STM
 import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
-import qualified Data.Count                     as Count
 import           Data.Stream
 import qualified Data.Text                      as T
 import qualified Data.Text.Encoding             as T
@@ -28,6 +27,7 @@ import           Control.Monad.Terminal
 import           Network.SSH.Constants
 import           Network.SSH.Key
 import qualified Network.SSH.Server             as Server
+import qualified Network.SSH.Server.Config      as Server
 import qualified Network.SSH.Server.Types       as Server
 
 main :: IO ()
@@ -81,7 +81,7 @@ repl = readLine "ssh % " >>= \case
 instance DuplexStream (S.Socket f S.Stream p) where
 
 instance InputStream  (S.Socket f S.Stream p) where
-    receive stream len = BA.convert <$> S.receive stream (Count.toIntDefault maxBound len) S.msgNoSignal
+    receive stream len = BA.convert <$> S.receive stream len S.msgNoSignal
 
 instance OutputStream  (S.Socket f S.Stream p)  where
-    send stream bytes = Count.Count . fromIntegral <$> S.send stream (BA.convert bytes) S.msgNoSignal
+    send stream bytes = S.send stream (BA.convert bytes) S.msgNoSignal

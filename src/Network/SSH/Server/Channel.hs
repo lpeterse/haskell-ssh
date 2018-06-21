@@ -17,7 +17,6 @@ import           Control.Monad                (forever, join, unless, void,
 import           Control.Monad.STM
 import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
-import qualified Data.Count                   as Count
 import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
 import           Data.Maybe
@@ -32,6 +31,7 @@ import           Network.SSH.Constants
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Message
+import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
 import qualified Network.SSH.TAccountingQueue as AQ
@@ -63,7 +63,7 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
     where
         selectLocalChannelId :: M.Map ChannelId a -> Maybe ChannelId
         selectLocalChannelId m
-            | Count.fromIntDefault maxCount (M.size m) >= maxCount = Nothing
+            | M.size m >= fromIntegral maxCount = Nothing
             | otherwise = f (ChannelId 1) $ M.keys m
             where
                 f i [] = Just i
@@ -137,14 +137,16 @@ getChannel connection channelId = do
         Nothing      -> throwSTM (Disconnect DisconnectProtocolError "invalid channel id" "")
 
 handleChannelWindowAdjust :: Connection identity -> ChannelWindowAdjust -> IO ()
-handleChannelWindowAdjust connection (ChannelWindowAdjust channelId (Count.Count increase)) =
+handleChannelWindowAdjust connection (ChannelWindowAdjust channelId increase) =
     atomically $ do
         channel <- getChannel connection channelId
-        Count.Count windowSize <- readTVar (chanWindowSizeRemote channel)
+        windowSize <- readTVar (chanWindowSizeRemote channel)
+        let windowSize' = fromIntegral windowSize + fromIntegral increase :: Word64
         -- Conversion to Word64 necessary for overflow check.
-        when (windowSize + increase > 2 ^ 32 - 1) $
+        when (windowSize' > 2 ^ 32 - 1) $
             throwSTM $ Disconnect DisconnectProtocolError "window size overflow" mempty
-        writeTVar (chanWindowSizeRemote channel) $! Count.Count (windowSize + increase)
+        -- Conversion from Word64 to Word32 never undefined as guaranteed by previous check.
+        writeTVar (chanWindowSizeRemote channel) (fromIntegral windowSize')
 
 handleChannelRequest :: forall identity. Connection identity -> ChannelRequest -> IO ()
 handleChannelRequest connection (ChannelRequest channelId request) =
@@ -225,32 +227,37 @@ sessionExec connection channel session handler =
 
         waitStdout :: STM Bool
         waitStdout = do
-            Count.Count window <- getWindow
+            window <- getWindow
             ba <- AQ.dequeue (sessStdout session) (fromIntegral window)
-            decWindow $ Count.Count $ fromIntegral $ BA.length ba
+            decWindow $ BA.length ba
             send connection $ MsgChannelData $ ChannelData (chanIdRemote channel) (BA.convert ba)
             pure False
 
         waitStderr :: STM Bool
         waitStderr = do
-            Count.Count window <- getWindow
+            window <- getWindow
             ba <- AQ.dequeue (sessStderr session) (fromIntegral window)
-            decWindow $ Count.Count $ fromIntegral $ BA.length ba
+            decWindow $ BA.length ba
             send connection $ MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 (BA.convert ba)
             pure False
 
-        getWindow :: STM (Count.Count Word8)
+        getWindow :: STM Int
         getWindow = do
             -- The standard (RFC 4254) is a bit vague about window size calculation.
             -- See https://marc.info/?l=openssh-unix-dev&m=118466419618541&w=2
             -- for a clarification.
-            Count.Count windowSize <- readTVar (chanWindowSizeRemote channel)
-            Count.Count maxPacketSize <- pure (chanMaxPacketSizeRemote channel)
+            windowSize <- fromIntegral <$> readTVar (chanWindowSizeRemote channel) :: STM Word64
+            maxPacketSize <- fromIntegral <$> pure (chanMaxPacketSizeRemote channel) :: STM Word64
             let window = min windowSize maxPacketSize
-            check (window > 0) -- transaction fails here if no window space is available
-            pure (Count.Count window)
+            -- Transaction fails here if no window space is available.
+            check (window > 0)
+            -- Int is only guaranteed up to 2^29-1. Conversion to Word64 and comparison
+            -- with maxBound shall rule out undefined behaviour induced by
+            -- integer overflow.
+            pure $ fromIntegral $ min (fromIntegral (maxBound :: Int)) window
 
-        decWindow :: Count.Count Word8 -> STM ()
-        decWindow (Count.Count i) = do
-            Count.Count windowSize <- readTVar (chanWindowSizeRemote channel)
-            writeTVar (chanWindowSizeRemote channel) $! Count.Count $ windowSize - fromIntegral i
+        -- Decrement the outbound window by the specified number of bytes.
+        decWindow :: Int -> STM ()
+        decWindow i = do
+            windowSize <- readTVar (chanWindowSizeRemote channel)
+            writeTVar (chanWindowSizeRemote channel) $! windowSize - fromIntegral i
