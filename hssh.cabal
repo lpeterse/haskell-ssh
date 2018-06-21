@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: e4f19453546b031abb8e9a682e1dc7d057b1861d0e78b9fcad78976d8f57d7d7
+-- hash: 4e696f9e916d8819b4c254012259393a5f6729e3b075efa22d173e6e30cad570
 
 name:           hssh
 version:        0.1.0.0
@@ -33,6 +33,7 @@ flag demo
 library
   hs-source-dirs:
       src
+  ghc-options: -Wall
   build-depends:
       async
     , base >=4.7 && <5

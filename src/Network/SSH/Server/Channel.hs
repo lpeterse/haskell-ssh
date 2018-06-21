@@ -252,12 +252,12 @@ sessionExec connection channel session handler =
             -- Transaction fails here if no window space is available.
             check (window > 0)
             -- Int is only guaranteed up to 2^29-1. Conversion to Word64 and comparison
-            -- with maxBound shall rule out undefined behaviour induced by
-            -- integer overflow.
+            -- with maxBound shall rule out undefined behaviour by potential integer overflow.
             pure $ fromIntegral $ min (fromIntegral (maxBound :: Int)) window
 
         -- Decrement the outbound window by the specified number of bytes.
         decWindow :: Int -> STM ()
         decWindow i = do
             windowSize <- readTVar (chanWindowSizeRemote channel)
+            when (fromIntegral i > windowSize) $ error "decrement smaller than available window size"
             writeTVar (chanWindowSizeRemote channel) $! windowSize - fromIntegral i

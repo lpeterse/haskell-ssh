@@ -42,14 +42,6 @@ import qualified Network.SSH.Server.Types      as Config
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = do
-    let serverPrivateKey = hostKey config
-        serverPublicKey  = case serverPrivateKey of
-            Ed25519PrivateKey pk __ -> PublicKeyEd25519 pk
-    -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
-    -- key exchange.
-    serverEphemeralSecretKey <- Curve25519.generateSecretKey
-    serverEphemeralPublicKey <- pure (Curve25519.toPublic serverEphemeralSecretKey)
-
     -- The maximum length of the version string is 255 chars including CR+LF.
     -- Parsing in chunks of 32 bytes in order to not allocate unnecessarly
     -- much memory. The version string is usually short and transmitted within
@@ -66,39 +58,16 @@ serve config stream = do
     -- Receive KexInit from client.
     (clientKexInit, rem2) <- recvGetter getUnpacked rem1
 
-    -- Receive KexEcdhInit from client.
-    (KexEcdhInit clientEphemeralPublicKey, rem3) <- recvGetter getUnpacked rem2
-
-    -- Compute and perform the Diffie-Helman key exchange.
-    let dhSecret = Curve25519.dh clientEphemeralPublicKey serverEphemeralSecretKey
-        hash = exchangeHash
-            clientVersion
-            version
-            clientKexInit
-            serverKexInit
-            serverPublicKey
-            clientEphemeralPublicKey
-            serverEphemeralPublicKey
-            dhSecret
-        session = SessionId (BS.pack $ BA.unpack hash)
-        signature = case serverPrivateKey of
-            Ed25519PrivateKey pk sk -> SignatureEd25519 $ Ed25519.sign sk pk hash
-        kexEcdhReply = KexEcdhReply {
-              kexServerHostKey      = serverPublicKey
-            , kexServerEphemeralKey = serverEphemeralPublicKey
-            , kexHashSignature      = signature
-            }
-
-    -- Complete the key exchange and wait for the client to confirm
-    -- with a NewKeys msg.
-    sendPutter $ putPacked kexEcdhReply
-    sendPutter $ putPacked KexNewKeys
-    (KexNewKeys, rem4) <- recvGetter getUnpacked rem3
+    keys <- exchangeKeys
+                config stream
+                serverKexInit version
+                clientKexInit clientVersion
 
     -- Derive the required encryption/decryption keys.
     -- The integrity keys etc. are not needed with chacha20.
-    let mainKeyCS:headerKeyCS:_ = deriveKeys dhSecret hash "C" session
-        mainKeySC:headerKeySC:_ = deriveKeys dhSecret hash "D" session
+    let session                 = keysSession keys
+    let mainKeyCS:headerKeyCS:_ = keysClientToServer keys
+        mainKeySC:headerKeySC:_ = keysServerToClient keys
 
     -- Initialize cryptographic encoder/decoder.
     let encode = chacha20Poly1305Encode headerKeySC mainKeySC
@@ -146,7 +115,7 @@ serve config stream = do
                         receiver (seqnr + 1) remainder
 
         -- Exactly two threads are necessary to process input and output concurrently.
-        sender 3 `race_` receiver 3 rem4
+        sender 3 `race_` receiver 3 mempty -- rem4
 
     where
         recvGetter :: B.Get a -> BS.ByteString -> IO (a, BS.ByteString)
@@ -161,3 +130,75 @@ serve config stream = do
 
         sendPutter :: Put -> IO ()
         sendPutter = sendAll stream . runPut
+
+data Keys
+    = Keys
+    { keysSession        :: SessionId
+    , keysClientToServer :: [BA.ScrubbedBytes]
+    , keysServerToClient :: [BA.ScrubbedBytes]
+    }
+
+exchangeKeys :: (DuplexStream stream)
+    => Config identity
+    -> stream
+    -> KexInit -> Version
+    -> KexInit -> Version
+    -> IO Keys
+exchangeKeys config stream serverKexInit serverVersion clientKexInit clientVersion
+    = curve25519sh256atLibSshOrg
+    -- | "curve25519-sha256@libssh.org" ->
+    -- | _                              -> error "FIXME"
+    where
+        serverPrivateKey = case hostKey config of
+            Ed25519PrivateKey _ sk -> sk
+        serverPublicKey  = case hostKey config of
+            Ed25519PrivateKey pk _ -> pk
+
+        curve25519sh256atLibSshOrg = do
+            -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
+            -- key exchange.
+            serverEphemeralSecretKey <- Curve25519.generateSecretKey
+            serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
+            -- Receive KexEcdhInit from client.
+            KexEcdhInit clientEphemeralPublicKey <- receivePacket stream
+            -- Compute and perform the Diffie-Helman key exchange.
+            let dhSecret = Curve25519.dh
+                        clientEphemeralPublicKey
+                        serverEphemeralSecretKey
+            let hash = exchangeHash
+                        clientVersion
+                        serverVersion
+                        clientKexInit
+                        serverKexInit
+                        (PublicKeyEd25519 serverPublicKey)
+                        clientEphemeralPublicKey
+                        serverEphemeralPublicKey
+                        dhSecret
+            let signature = SignatureEd25519 $ Ed25519.sign
+                        serverPrivateKey
+                        serverPublicKey
+                        hash
+            let kexEcdhReply = KexEcdhReply {
+                        kexServerHostKey      = PublicKeyEd25519 serverPublicKey
+                    ,   kexServerEphemeralKey = serverEphemeralPublicKey
+                    ,   kexHashSignature      = signature
+                    }
+            let session = SessionId $ BA.convert hash
+
+            -- Complete the key exchange and wait for the client to confirm
+            -- with a KexNewKeys msg.
+            sendPacket stream kexEcdhReply
+            sendPacket stream KexNewKeys
+            KexNewKeys <- receivePacket stream
+
+            pure Keys {
+                    keysSession        = session
+                ,   keysClientToServer = deriveKeys dhSecret hash "C" session
+                ,   keysServerToClient = deriveKeys dhSecret hash "D" session
+                }
+
+receivePacket :: (InputStream stream, Encoding a) => stream -> IO a
+receivePacket = undefined
+
+sendPacket :: (OutputStream stream, Encoding a) => stream -> a -> IO ()
+sendPacket = undefined

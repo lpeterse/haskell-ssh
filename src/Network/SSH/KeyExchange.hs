@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.KeyExchange where
 
 import           Control.Concurrent.Async
@@ -29,6 +30,22 @@ import           Data.Word
 import           Network.SSH.Encoding
 import           Network.SSH.Key
 import           Network.SSH.Message
+
+kexInit :: Cookie -> KexInit
+kexInit cookie = KexInit
+    { kexCookie                              = cookie
+    , kexAlgorithms                          = ["curve25519-sha256@libssh.org"]
+    , kexServerHostKeyAlgorithms             = ["ssh-ed25519"]
+    , kexEncryptionAlgorithmsClientToServer  = ["chacha20-poly1305@openssh.com"]
+    , kexEncryptionAlgorithmsServerToClient  = ["chacha20-poly1305@openssh.com"]
+    , kexMacAlgorithmsClientToServer         = []
+    , kexMacAlgorithmsServerToClient         = []
+    , kexCompressionAlgorithmsClientToServer = ["none"]
+    , kexCompressionAlgorithmsServerToClient = ["none"]
+    , kexLanguagesClientToServer             = []
+    , kexLanguagesServerToClient             = []
+    , kexFirstPacketFollows                  = False
+    }
 
 exchangeHash ::
     Version ->               -- client version string
