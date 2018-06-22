@@ -19,7 +19,7 @@ class OutputStream stream where
 class InputStream stream where
     receive :: stream -> Int -> IO BS.ByteString
 
-sendAll :: (DuplexStream stream) => stream -> BS.ByteString -> IO ()
+sendAll :: (OutputStream stream) => stream -> BS.ByteString -> IO ()
 sendAll stream bs = sendAll' 0
     where
         len = BS.length bs
@@ -29,7 +29,7 @@ sendAll stream bs = sendAll' 0
                 sent <- send stream (BS.drop offset bs)
                 sendAll' (offset + sent)
 
-receiveAll :: (DuplexStream stream) => stream -> Int -> IO BS.ByteString
+receiveAll :: (InputStream stream) => stream -> Int -> IO BS.ByteString
 receiveAll stream len =
     receive stream len >>= loop
     where

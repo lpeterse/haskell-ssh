@@ -9,6 +9,7 @@ data SshException
   | SshSyntaxErrorException String
   | SshProtocolErrorException String
   | SshUnexpectedEndOfInputException
+  | SshMaxPacketLengthExceededException
   | SshDisconnectException
   | SshUnimplementedException
   deriving (Eq, Ord, Show, Typeable)

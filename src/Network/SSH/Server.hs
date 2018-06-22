@@ -42,22 +42,19 @@ import qualified Network.SSH.Server.Types      as Config
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = do
-    -- The maximum length of the version string is 255 chars including CR+LF.
-    -- Parsing in chunks of 32 bytes in order to not allocate unnecessarly
-    -- much memory. The version string is usually short and transmitted within
-    -- a single TCP segment.
-    (clientVersion, rem1) <- recvGetter get BS.empty
-
-    -- Reply by sending the server version string.
+    -- Receive the client version string and immediately reply
+    -- with the server server version string if the client version string is valid.
+    clientVersion <- receiveVersion stream
     sendPutter $ put version
 
-    -- Send KexInit to client.
+    print clientVersion
+
+    -- Send KexInit to client and expect KexInit reply.
     serverKexInit <- kexInit <$> newCookie
     sendPutter $ putPacked serverKexInit
+    clientKexInit <- receivePacket stream
 
-    -- Receive KexInit from client.
-    (clientKexInit, rem2) <- recvGetter getUnpacked rem1
-
+    -- Perform a key exchange based on the algorithm negotiation.
     keys <- exchangeKeys
                 config stream
                 serverKexInit version
@@ -197,8 +194,28 @@ exchangeKeys config stream serverKexInit serverVersion clientKexInit clientVersi
                 ,   keysServerToClient = deriveKeys dhSecret hash "D" session
                 }
 
-receivePacket :: (InputStream stream, Encoding a) => stream -> IO a
-receivePacket = undefined
+-- The maximum length of the version string is 255 chars including CR+LF.
+-- The version string is usually short and transmitted within
+-- a single TCP segment. The concatenation is therefore unlikely to happen
+-- for regular use cases, but nonetheless required for correctness.
+-- It is furthermore assumed that the client does not send any more data
+-- after the version string before having received a response from the server;
+-- otherwise parsing will fail. This is done in order to not having to deal with leftovers.
+receiveVersion :: (InputStream stream) => stream -> IO Version
+receiveVersion stream = receive stream 255 >>= f
+    where
+        f bs
+            | BS.last bs == 0x0a  = runGet get bs
+            | BS.length bs == 255 = throwIO $ SshSyntaxErrorException "invalid version string"
+            | otherwise           = receive stream (255 - BS.length bs) >>= f . (bs <>)
 
-sendPacket :: (OutputStream stream, Encoding a) => stream -> a -> IO ()
-sendPacket = undefined
+receivePacket :: (InputStream stream, Encoding msg) => stream -> IO msg
+receivePacket stream = do
+    len <- runGet getWord32 =<< receiveAll stream 4
+    when (len > maxPacketLength) $
+        throwIO SshMaxPacketLengthExceededException
+    runGet (skip 1 >> get) =<< receiveAll stream (fromIntegral len)
+
+sendPacket :: (OutputStream stream, Encoding msg) => stream -> msg -> IO ()
+sendPacket stream msg = do
+    sendAll stream $ runPut $ putPacked msg
