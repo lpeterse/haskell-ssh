@@ -1,10 +1,9 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server.Connection
     ( Connection ()
     , withConnection
     , pushMessage
     , pullMessage
+    , pullMessageSTM
     ) where
 
 import           Control.Applicative
@@ -49,7 +48,10 @@ withConnection cfg sid = bracket before after
             pure ()
 
 pullMessage :: Connection identity -> IO Message
-pullMessage connection = atomically $ disconnectMessage <|> nextMessage
+pullMessage connection = atomically $ pullMessageSTM connection
+
+pullMessageSTM :: Connection identity -> STM Message
+pullMessageSTM connection = disconnectMessage <|> nextMessage
     where
         disconnectMessage = MsgDisconnect <$> readTMVar (connDisconnected connection)
         nextMessage = readTChan (connOutput connection)

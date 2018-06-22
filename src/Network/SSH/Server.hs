@@ -1,8 +1,10 @@
 {-# LANGUAGE ExplicitForAll    #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes        #-}
 module Network.SSH.Server ( serve ) where
 
+import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TChan
@@ -75,6 +77,15 @@ newTransportState stream = do
     putMVar r (receivePlain state)
     pure state
 
+rekey :: (DuplexStream stream) => Config identity -> TransportState stream -> IO ()
+rekey config state = do
+    modifyMVar_ (transportKeyExchange state) $ \case
+        -- When rekeying is already in progress, there's nothing to do.
+        Just x -> pure (Just x)
+        -- Otherwise, a KexInit message shall be sent to the client and
+        -- server goes into expecting state.
+        Nothing -> pure Nothing
+
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = do
     -- Receive the client version string and immediately reply
@@ -127,23 +138,30 @@ serve config stream = do
                     _                -> sender
 
         -- The receiver is an infinite loop that waits for input on the stream,
-        -- decodes and parses it and pushes it into the connection state object.
-        let receiver = do
-                plain <- join $ readMVar (transportReceiver state)
-                case C.runGet get plain of
-                    -- There is nothing that can be done but stop when the input received
-                    -- from the client is syntactically invalid.
-                    Left e -> pure ()
-                    -- Stop reading input when the client sends disconnect.
-                    Right (MsgDisconnect x) ->
-                        onDisconnect config x
-                    -- Pass the message to the connection handler and proceed.
-                    Right msg -> do
-                        pushMessage connection msg
-                        receiver
+        -- parses it and pushes it into the connection state object.
+        let receiver = loop =<< readMVar (transportReceiver state)
+                where
+                    loop r = r >>= runGet get >>= \case
+                        MsgDisconnect x -> onDisconnect config x
+                        MsgKexNewKeys KexNewKeys -> do
+                            loop =<< readMVar (transportReceiver state)
+                        msg -> do
+                            pushMessage connection msg
+                            loop r
 
-        -- Exactly two threads are necessary to process input and output concurrently.
-        sender `race_` receiver
+        let rekeyingWatchdog = countDown interval
+                where
+                    interval = 3600
+                    countDown 0 = do
+                        rekey config state
+                        countDown interval
+                    countDown t = do
+                        threadDelay 1000000
+                        countDown (t - 1)
+
+        -- Two threads are necessary to process input and output concurrently.
+        -- A third thread is used to initiate a rekeying after a certain amount of time.
+        sender `race_` receiver `race_` rekeyingWatchdog
 
 data Keys
     = Keys
