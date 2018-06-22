@@ -19,12 +19,12 @@ class OutputStream stream where
 class InputStream stream where
     receive :: stream -> Int -> IO BS.ByteString
 
-sendAll :: (OutputStream stream) => stream -> BS.ByteString -> IO ()
+sendAll :: (OutputStream stream) => stream -> BS.ByteString -> IO Int
 sendAll stream bs = sendAll' 0
     where
         len = BS.length bs
         sendAll' offset
-            | offset >= len = pure ()
+            | offset >= len = pure len
             | otherwise = do
                 sent <- send stream (BS.drop offset bs)
                 sendAll' (offset + sent)
