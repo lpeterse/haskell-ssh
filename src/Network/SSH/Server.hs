@@ -1,4 +1,6 @@
+{-# LANGUAGE ExplicitForAll    #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes        #-}
 module Network.SSH.Server ( serve ) where
 
 import           Control.Concurrent.Async
@@ -34,7 +36,6 @@ import           Network.SSH.Exception
 import           Network.SSH.Key
 import           Network.SSH.KeyExchange
 import           Network.SSH.Message
-import           Network.SSH.Server.Coding
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Connection
 import qualified Network.SSH.Server.Connection as Connection
@@ -43,12 +44,13 @@ import qualified Network.SSH.Server.Types      as Config
 
 data TransportState stream
     = TransportState
-    {   transportBytesReceived   :: MVar Word64
+    {   transportStream          :: stream
+    ,   transportBytesReceived   :: MVar Word64
     ,   transportPacketsReceived :: MVar Word64
     ,   transportBytesSent       :: MVar Word64
     ,   transportPacketsSent     :: MVar Word64
-    ,   transportDecoder         :: MVar (Decoder2 stream)
-    ,   transportEncoder         :: MVar (Encoder2 stream)
+    ,   transportSender          :: MVar (BS.ByteString -> IO ())
+    ,   transportReceiver        :: MVar (IO BS.ByteString)
     ,   transportKeyExchange     :: MVar (Maybe KeyExchangeState)
     }
 
@@ -57,18 +59,21 @@ data KeyExchangeState
     | WaitingForKexEcdhInit  (KexEcdhInit -> IO KeyExchangeState)
     | WaitingForKexNewKeys   (IO ())
 
-type Encoder2 stream = ()
-type Decoder2 stream = ()
-
-newTransportState :: IO (TransportState stream)
-newTransportState = TransportState
-    <$> newMVar 0
-    <*> newMVar 0
-    <*> newMVar 0
-    <*> newMVar 0
-    <*> newMVar ()
-    <*> newMVar ()
-    <*> newMVar Nothing
+newTransportState :: DuplexStream stream => stream -> IO (TransportState stream)
+newTransportState stream = do
+    s <- newEmptyMVar
+    r <- newEmptyMVar
+    state <- TransportState stream
+        <$> newMVar 0
+        <*> newMVar 0
+        <*> newMVar 0
+        <*> newMVar 0
+        <*> pure s
+        <*> pure r
+        <*> newMVar Nothing
+    putMVar s (sendPlain state)
+    putMVar r (receivePlain state)
+    pure state
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = do
@@ -79,16 +84,16 @@ serve config stream = do
 
     -- Initialize a new transport state object to keep track of
     -- packet sequence numbers and encryption contexts.
-    state <- newTransportState
+    state <- newTransportState stream
 
     -- Send KexInit to client and expect KexInit reply.
     serverKexInit <- kexInit <$> newCookie
-    sendPacket state stream serverKexInit
-    clientKexInit <- receivePacket state stream
+    sendPlain state serverKexInit
+    clientKexInit <- receivePlain state
 
     -- Perform a key exchange based on the algorithm negotiation.
     keys <- exchangeKeys
-        config state stream
+        config state
         serverKexInit version
         clientKexInit clientVersion
 
@@ -98,16 +103,11 @@ serve config stream = do
     let mainKeyCS:headerKeyCS:_ = keysClientToServer keys
         mainKeySC:headerKeySC:_ = keysServerToClient keys
 
-    -- Initialize cryptographic encoder/decoder.
-    let encode = chacha20Poly1305Encode headerKeySC mainKeySC
-        decode = (f .) . chacha20Poly1305Decoder headerKeyCS mainKeyCS
-            where
-                f (DecoderDone p c) = pure (p, c)
-                f (DecoderFail e)   = throwIO (SshCryptoErrorException e)
-                f (DecoderMore c)   = do
-                    cipher <- receive stream (fromIntegral $ transportBufferSize config)
-                    when (BA.null cipher) (throwIO SshUnexpectedEndOfInputException)
-                    f (c cipher)
+    swapMVar (transportSender state) $
+        sendEncrypted state headerKeySC mainKeySC
+
+    swapMVar (transportReceiver state) $ do
+        receiveEncrypted state headerKeyCS mainKeyCS
 
     -- The connection is essentially a state machine.
     -- It also contains resources that need to be freed on termination
@@ -116,13 +116,9 @@ serve config stream = do
         -- The sender is an infinite loop that pulls messages from the connection
         -- object. Produced messages are encoded and sent.
         let sender = do
-                seqnr <- modifyMVar
-                    (transportPacketsSent state)
-                    (\i-> let j=i+1 in j `seq` pure (j,j - 1 .&. 0xffffffff))
+                s <- readMVar (transportSender state)
                 msg <- pullMessage connection
-                let plain  = C.runPut $ put msg
-                    cipher = encode seqnr (plain `asTypeOf` cipher)
-                sendAll stream cipher
+                s $ C.runPut $ put msg
                 -- This thread shall terminate gracefully in case the
                 -- message was a disconnect message. Per specification
                 -- no other messages may follow after a disconnect message.
@@ -132,16 +128,8 @@ serve config stream = do
 
         -- The receiver is an infinite loop that waits for input on the stream,
         -- decodes and parses it and pushes it into the connection state object.
-        let receiver initial = do
-                -- The sequence number is always the lower 32 bits of the number of
-                -- packets received - 1. By specification, it wraps around every 2^32 packets.
-                -- Special care must be taken wrt to rekeying as the sequence number
-                -- is used as nonce in the ChaCha20Poly1305 encryption mode.
-                seqnr <- modifyMVar
-                    (transportPacketsReceived state)
-                    (\i-> let j=i+1 in j `seq` pure (j,j - 1 .&. 0xffffffff))
-                print seqnr
-                (plain, remainder) <- decode seqnr initial
+        let receiver = do
+                plain <- join $ readMVar (transportReceiver state)
                 case C.runGet get plain of
                     -- There is nothing that can be done but stop when the input received
                     -- from the client is syntactically invalid.
@@ -152,21 +140,10 @@ serve config stream = do
                     -- Pass the message to the connection handler and proceed.
                     Right msg -> do
                         pushMessage connection msg
-                        receiver remainder
+                        receiver
 
         -- Exactly two threads are necessary to process input and output concurrently.
-        sender `race_` receiver mempty
-
-    where
-        recvGetter :: B.Get a -> BS.ByteString -> IO (a, BS.ByteString)
-        recvGetter getter initial
-            | BA.null initial = f . B.runGetPartial getter =<< receive stream bufferSize
-            | otherwise       = f $ B.runGetPartial getter initial
-            where
-                bufferSize             = fromIntegral $ transportBufferSize config
-                f (B.Done a remainder) = pure (a, remainder)
-                f (B.Fail e _        ) = throwIO (SshSyntaxErrorException e)
-                f (B.Partial continue) = f =<< (continue <$> receive stream bufferSize)
+        sender `race_` receiver
 
 data Keys
     = Keys
@@ -178,11 +155,10 @@ data Keys
 exchangeKeys :: (DuplexStream stream)
     => Config identity
     -> TransportState stream
-    -> stream
     -> KexInit -> Version
     -> KexInit -> Version
     -> IO Keys
-exchangeKeys config state stream serverKexInit serverVersion clientKexInit clientVersion
+exchangeKeys config state serverKexInit serverVersion clientKexInit clientVersion
     = curve25519sh256atLibSshOrg
     -- | "curve25519-sha256@libssh.org" ->
     -- | _                              -> error "FIXME"
@@ -198,7 +174,7 @@ exchangeKeys config state stream serverKexInit serverVersion clientKexInit clien
             serverEphemeralSecretKey <- Curve25519.generateSecretKey
             serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
             -- Receive KexEcdhInit from client.
-            KexEcdhInit clientEphemeralPublicKey <- receivePacket state stream
+            KexEcdhInit clientEphemeralPublicKey <- receivePlain state
             -- Compute and perform the Diffie-Helman key exchange.
             let dhSecret = Curve25519.dh
                         clientEphemeralPublicKey
@@ -225,9 +201,9 @@ exchangeKeys config state stream serverKexInit serverVersion clientKexInit clien
 
             -- Complete the key exchange and wait for the client to confirm
             -- with a KexNewKeys msg.
-            sendPacket state stream kexEcdhReply
-            sendPacket state stream KexNewKeys
-            KexNewKeys <- receivePacket state stream
+            sendPlain state kexEcdhReply
+            sendPlain state KexNewKeys
+            KexNewKeys <- receivePlain state
 
             pure Keys {
                     keysSession        = session
@@ -250,8 +226,9 @@ receiveVersion stream = receive stream 255 >>= f
             | BS.length bs == 255 = throwIO $ SshSyntaxErrorException "invalid version string"
             | otherwise           = receive stream (255 - BS.length bs) >>= f . (bs <>)
 
-receivePacket :: (InputStream stream, Encoding msg) => TransportState stream -> stream -> IO msg
-receivePacket state stream = do
+receivePlain :: (InputStream stream, Encoding msg) => TransportState stream -> IO msg
+receivePlain state = do
+    let stream = transportStream state
     len <- runGet getWord32 =<< receiveAll stream 4
     when (len > maxPacketLength) $
         throwIO SshMaxPacketLengthExceededException
@@ -260,8 +237,95 @@ receivePacket state stream = do
     modifyMVar_ (transportPacketsReceived state) (\i-> pure $! i + 1)
     pure msg
 
-sendPacket :: (OutputStream stream, Encoding msg) => TransportState stream -> stream -> msg -> IO ()
-sendPacket state stream msg = do
-    sent <- sendAll stream $ runPut $ putPacked msg
+sendPlain :: (OutputStream stream, Encoding msg) => TransportState stream -> msg -> IO ()
+sendPlain state msg = do
+    sent <- sendAll (transportStream state) $ runPut $ putPacked msg
     modifyMVar_ (transportBytesSent state) (\i-> pure $! i + fromIntegral sent)
     modifyMVar_ (transportPacketsSent state) (\i-> pure $! i + 1)
+
+sendEncrypted :: (OutputStream stream, BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
+    => TransportState stream -> headerKey -> mainKey -> BS.ByteString -> IO ()
+sendEncrypted state headerKey mainKey plain = do
+    seqnr <- readMVar (transportPacketsSent state)
+    sent  <- sendAll (transportStream state) (encode seqnr)
+    modifyMVar_ (transportBytesSent state) (\i-> pure $! i + fromIntegral sent)
+    modifyMVar_ (transportPacketsSent state) (\i-> pure $! i + 1)
+    where
+        encode seqnr = ciph3 <> mac
+            where
+                plainlen      = BA.length plain                :: Int
+                padlen        = let p = 8 - ((1 + plainlen) `mod` 8)
+                                in  if p < 4 then p + 8 else p :: Int
+                paclen        = 1 + plainlen + padlen          :: Int
+                padding       = BA.replicate padlen 0
+                padlenBA      = BA.singleton (fromIntegral padlen)
+                paclenBA      = BA.pack
+                    [ fromIntegral $ paclen `shiftR` 24
+                    , fromIntegral $ paclen `shiftR` 16
+                    , fromIntegral $ paclen `shiftR`  8
+                    , fromIntegral $ paclen `shiftR`  0
+                    ]
+                nonceBA = BA.pack
+                    [ 0
+                    , 0
+                    , 0
+                    , 0
+                    , fromIntegral $ seqnr  `shiftR` 24
+                    , fromIntegral $ seqnr  `shiftR` 16
+                    , fromIntegral $ seqnr  `shiftR`  8
+                    , fromIntegral $ seqnr  `shiftR`  0
+                    ] :: BA.Bytes
+                st1           = ChaCha.initialize 20 mainKey nonceBA
+                st2           = ChaCha.initialize 20 headerKey nonceBA
+                (poly, st3)   = ChaCha.generate st1 64
+                ciph1         = fst $ ChaCha.combine st2 paclenBA
+                ciph2         = fst $ ChaCha.combine st3 $ padlenBA <> plain <> padding
+                ciph3         = ciph1 <> ciph2
+                mac           = BA.convert (Poly1305.auth (BS.take 32 poly) ciph3)
+
+receiveEncrypted :: (InputStream stream, BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
+    => TransportState stream -> headerKey -> mainKey -> IO BS.ByteString
+receiveEncrypted state headerKey mainKey = do
+    -- The sequence number is always the lower 32 bits of the number of
+    -- packets received - 1. By specification, it wraps around every 2^32 packets.
+    -- Special care must be taken wrt to rekeying as the sequence number
+    -- is used as nonce in the ChaCha20Poly1305 encryption mode.
+    seqnr <- readMVar (transportPacketsReceived state)
+    let nonce = BA.pack
+            [ 0
+            , 0
+            , 0
+            , 0
+            , fromIntegral $ seqnr  `shiftR` 24
+            , fromIntegral $ seqnr  `shiftR` 16
+            , fromIntegral $ seqnr  `shiftR`  8
+            , fromIntegral $ seqnr  `shiftR`  0
+            ] :: BA.Bytes
+
+    paclenCiph <- receiveAll (transportStream state) 4
+    let ccMain          = ChaCha.initialize 20 mainKey   nonce
+    let ccHeader        = ChaCha.initialize 20 headerKey nonce
+    let (poly, ccMain') = ChaCha.generate ccMain 64
+    let paclenPlain = fst $ ChaCha.combine ccHeader paclenCiph
+    let maclen = 16
+    let paclen = fromIntegral (BA.index paclenPlain 0) `shiftL` 24
+            .|.  fromIntegral (BA.index paclenPlain 1) `shiftL` 16
+            .|.  fromIntegral (BA.index paclenPlain 2) `shiftL`  8
+            .|.  fromIntegral (BA.index paclenPlain 3) `shiftL`  0
+
+    pac <- receiveAll (transportStream state) paclen
+    mac <- receiveAll (transportStream state) maclen
+
+    modifyMVar_ (transportBytesReceived state) (\i-> pure $! i + 4 + fromIntegral paclen + fromIntegral maclen)
+    modifyMVar_ (transportPacketsReceived state) (\i-> pure $! i + 1)
+
+    let authTagReceived = Poly1305.Auth $ BA.convert mac
+    let authTagExpected = Poly1305.auth (BS.take 32 poly) (paclenCiph <> pac)
+
+    if authTagReceived /= authTagExpected
+        then throwIO $ SshCryptoErrorException "mac mismatch"
+        else do
+            let plain = fst (ChaCha.combine ccMain' pac)
+            case BS.uncons plain of
+                Nothing    -> throwIO $ SshSyntaxErrorException "packet structure"
+                Just (h,t) -> pure $ BS.take (BS.length t - fromIntegral h) t

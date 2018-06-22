@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 4e696f9e916d8819b4c254012259393a5f6729e3b075efa22d173e6e30cad570
+-- hash: 17cb90888d4b9144b9a65a3d2427cd61117ff1b5d76cea942f21bd6ab8dcfe07
 
 name:           hssh
 version:        0.1.0.0
@@ -55,7 +55,6 @@ library
       Network.SSH.Message
       Network.SSH.Server
       Network.SSH.Server.Channel
-      Network.SSH.Server.Coding
       Network.SSH.Server.Config
       Network.SSH.Server.Connection
       Network.SSH.Server.Service

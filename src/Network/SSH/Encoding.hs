@@ -37,6 +37,11 @@ instance Encoding ExitCode where
         0 -> pure ExitSuccess
         c -> pure (ExitFailure $ fromIntegral c)
 
+instance Encoding BS.ByteString where
+    len = lenByteString
+    put = putByteString
+    get = G.getBytes =<< G.remaining
+
 getFramed :: Get a -> Get a
 getFramed g = do
     w <- getWord32
@@ -140,9 +145,9 @@ getUnpacked :: Encoding a => Get a
 getUnpacked = do
     packetLen <- fromIntegral <$> getWord32
     isolate packetLen $ do
-        paddingLen <- getWord8
-        x <- get
-        skip (fromIntegral paddingLen)
+        paddingLen <- fromIntegral <$> getWord8
+        x <- isolate (packetLen - 1 - paddingLen) get
+        skip paddingLen
         pure x
 
 putAsMPInt :: (BA.ByteArrayAccess ba) => ba -> Put
