@@ -63,9 +63,6 @@ module Network.SSH.Message
     -- ** ChannelFailure (100)
   , ChannelFailure (..)
 
-    -- * verifyAuthSignature
-  , verifyAuthSignature
-
     -- * Misc
   , Algorithm (..)
   , AuthMethod (..)
@@ -89,11 +86,9 @@ import           Control.Applicative
 import           Control.Exception
 import           Control.Monad            (unless, void)
 import           Crypto.Error
-import qualified Crypto.Hash.Algorithms   as Hash
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
-import qualified Crypto.PubKey.RSA.PKCS15 as RSA.PKCS15
 import           Crypto.Random
 import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
@@ -987,23 +982,3 @@ instance Encoding RSA.PublicKey where
             getIntegerAndSize = do
               ws <- dropWhile (== 0) . (BA.unpack :: BS.ByteString -> [Word8]) <$> getString -- eventually remove leading 0 byte
               pure (foldl' (\acc w8-> acc * 256 + fromIntegral w8) 0 ws, length ws * 8)
-
-verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
-verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =
-    case (publicKey,signature) of
-        (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
-        (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
-        _                                        -> False
-    where
-        signedData :: BS.ByteString
-        signedData = runPut $ do
-            put           sessionIdentifier
-            putWord8      50
-            put           userName
-            put           serviceName
-            putString     ("publickey" :: BS.ByteString)
-            putWord8      1
-            put           algorithm
-            put           publicKey
-
-

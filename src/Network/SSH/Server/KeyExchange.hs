@@ -135,41 +135,41 @@ newKexStepHandler config state sendMsg msid = do
                 _ -> throwIO $ Disconnect DisconnectKeyExchangeFailed "kex algorithm not implemented" ""
 
         completeCurve25519KeyExchange ski cki clientEphemeralPublicKey = do
-            -- Generate a Curve25519 keypair for elliptic curve Diffie-Hellman
-            -- key exchange.
+            -- Generate a Curve25519 keypair for elliptic curve Diffie-Hellman key exchange.
             serverEphemeralSecretKey <- Curve25519.generateSecretKey
             serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
 
-            let serverPrivateKey = case NEL.head (hostKeys config) of
-                    KeyPairEd25519 _ sk -> sk
-            let serverPublicKey  = case NEL.head (hostKeys config) of
-                    KeyPairEd25519 pk _ -> pk
+            KeyPairEd25519 pubKey secKey <- do
+                let isEd25519 KeyPairEd25519 {} = True
+                    isEd25519 _                 = False
+                case NEL.filter isEd25519 (hostKeys config) of
+                    (x:_) -> pure x
+                    _     -> undefined -- impossible
 
-            -- Compute and perform the Diffie-Helman key exchange.
             let secret = Curve25519.dh
                     clientEphemeralPublicKey
                     serverEphemeralSecretKey
+
             let hash = exchangeHash
                     (transportClientVersion state)
                     (transportServerVersion state)
                     cki
                     ski
-                    (PublicKeyEd25519 serverPublicKey)
+                    (PublicKeyEd25519 pubKey)
                     clientEphemeralPublicKey
                     serverEphemeralPublicKey
                     secret
-            let signature = SignatureEd25519 $ Ed25519.sign
-                    serverPrivateKey
-                    serverPublicKey
-                    hash
 
             -- The reply is shall be sent with the old encryption context.
             -- This is the case as long as the KexNewKeys message has not
             -- been transmitted.
             sendMsg $ MsgKexEcdhReply KexEcdhReply {
-                        kexServerHostKey      = PublicKeyEd25519 serverPublicKey
+                        kexServerHostKey      = PublicKeyEd25519 pubKey
                     ,   kexServerEphemeralKey = serverEphemeralPublicKey
-                    ,   kexHashSignature      = signature
+                    ,   kexHashSignature      = SignatureEd25519 $ Ed25519.sign
+                                                    secKey
+                                                    pubKey
+                                                    hash
                     }
 
             session <- tryReadMVar msid >>= \case
