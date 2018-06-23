@@ -28,7 +28,6 @@ dependencies:
 - cryptonite
 - memory
 - stm
-- text
 
 library:
   source-dirs: src

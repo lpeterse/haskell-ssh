@@ -11,8 +11,6 @@ import           Control.Monad                  (forM_, forever)
 import           Control.Monad.STM
 import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
-import qualified Data.Text                      as T
-import qualified Data.Text.Encoding             as T
 import           System.Exit
 import qualified System.Socket                  as S
 import qualified System.Socket.Family.Inet6     as S

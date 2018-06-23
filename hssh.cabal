@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: b6e41a005333f64d00170f86d902839d3ad9810f5c1c918542aca20049042a05
+-- hash: 39dfffdcbcfe0e119c7cdc2f15ec91f323ac694fa2585d7a6aa13360862e462b
 
 name:           hssh
 version:        0.1.0.0
@@ -63,7 +63,6 @@ library
     , cryptonite
     , memory
     , stm
-    , text
   default-language: Haskell2010
 
 executable hssh-demo
@@ -84,7 +83,6 @@ executable hssh-demo
     , memory
     , socket
     , stm
-    , text
   if flag(demo)
     buildable: True
   else
@@ -114,5 +112,4 @@ test-suite hssh-test
     , tasty
     , tasty-hunit
     , tasty-quickcheck
-    , text
   default-language: Haskell2010
