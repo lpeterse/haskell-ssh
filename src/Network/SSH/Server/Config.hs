@@ -1,8 +1,6 @@
 {-# LANGUAGE RankNTypes #-}
 module Network.SSH.Server.Config where
 
-import           Control.Monad          (forever, unless, when)
-import           Control.Monad.Terminal
 import qualified Crypto.PubKey.Ed25519  as Ed25519
 import qualified Data.ByteString        as BS
 import           Data.List.NonEmpty     (NonEmpty)
@@ -10,7 +8,6 @@ import           Data.Word
 import           System.Exit
 
 import           Network.SSH.Algorithms
-import           Network.SSH.Constants
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Stream

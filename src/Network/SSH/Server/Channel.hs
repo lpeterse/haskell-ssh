@@ -8,30 +8,20 @@ module Network.SSH.Server.Channel where
 import           Control.Applicative
 import           Control.Concurrent
 import qualified Control.Concurrent.Async     as Async
-import           Control.Concurrent.STM.TChan
-import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.STM.TVar
-import           Control.Exception
-import           Control.Monad                (forever, join, unless, void,
-                                               when)
+import           Control.Monad                (join, unless, void, when)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
 import qualified Data.Map.Strict              as M
-import           Data.Maybe
-import           Data.Text                    as T
-import           Data.Text.Encoding           as T
 import           Data.Word
 import           System.Exit
 
-import           Network.SSH.Constants
 import           Network.SSH.Encoding
-import           Network.SSH.Exception
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
-import qualified Network.SSH.Stream           as DS
 import qualified Network.SSH.TAccountingQueue as AQ
 
 handleChannelOpen :: forall identity. Connection identity -> ChannelOpen -> IO ()
@@ -141,7 +131,7 @@ handleChannelWindowAdjust connection (ChannelWindowAdjust channelId increase) =
         windowSize <- readTVar (chanWindowSizeRemote channel)
         let windowSize' = fromIntegral windowSize + fromIntegral increase :: Word64
         -- Conversion to Word64 necessary for overflow check.
-        when (windowSize' > 2 ^ 32 - 1) $
+        when (windowSize' > 2 ^ (32 :: Word64) - 1) $
             throwSTM $ Disconnect DisconnectProtocolError "window size overflow" mempty
         -- Conversion from Word64 to Word32 never undefined as guaranteed by previous check.
         writeTVar (chanWindowSizeRemote channel) (fromIntegral windowSize')
@@ -159,7 +149,7 @@ handleChannelRequest connection (ChannelRequest channelId request) =
         sendFailure channel  = send connection $ MsgChannelFailure $ ChannelFailure (chanIdRemote channel)
 
         interpretAsSessionRequest :: Channel identity -> Session -> BS.ByteString -> STM (IO ())
-        interpretAsSessionRequest channel session request = case runGet get request of
+        interpretAsSessionRequest channel session req = case runGet get req of
             Nothing -> throwProtocolError "invalid session channel request"
             Just sessionRequest -> case sessionRequest of
                 ChannelRequestEnv wantReply name value -> do
@@ -167,9 +157,9 @@ handleChannelRequest connection (ChannelRequest channelId request) =
                     writeTVar (sessEnvironment session) $! M.insert name value env
                     when wantReply (sendSuccess channel)
                     pass
-                ChannelRequestPty wantReply ptySettings ->
+                ChannelRequestPty _wantReply _ptySettings ->
                     throwProtocolError "pty-req not yet implemented"
-                ChannelRequestShell wantReply ->
+                ChannelRequestShell _wantReply ->
                     throwProtocolError "shell req not yet implemented"
                 ChannelRequestExec wantReply command -> case onExecRequest (connConfig connection) of
                     Nothing -> do
@@ -185,10 +175,8 @@ handleChannelRequest connection (ChannelRequest channelId request) =
                 ChannelRequestOther _ wantReply -> do
                     when wantReply (sendFailure channel)
                     pass
-
--- Free all associated resources like threads etc.
-free :: Channel identity -> IO ()
-free channel = pure ()
+                ChannelRequestExitStatus {} -> pass
+                ChannelRequestExitSignal {} -> pass
 
 close :: Channel identity -> STM ()
 close channel = do

@@ -4,8 +4,8 @@ import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TMVar
 import           Control.Exception            (throwIO)
-import           Control.Monad                (forever, unless, when)
-import           Control.Monad.STM            (STM, atomically, orElse)
+import           Control.Monad                (when)
+import           Control.Monad.STM            (STM, orElse)
 import qualified Data.ByteString              as BS
 import           Data.Word
 
@@ -57,11 +57,11 @@ sendPlain state msg = do
 receivePlain :: (InputStream stream, Encoding msg) => TransportState stream -> IO msg
 receivePlain state = do
     let stream = transportStream state
-    len <- runGet getWord32 =<< receiveAll stream 4
-    when (len > maxPacketLength) $
+    paclen <- runGet getWord32 =<< receiveAll stream 4
+    when (paclen > maxPacketLength) $
         throwIO SshMaxPacketLengthExceededException
-    msg <- runGet (skip 1 >> get) =<< receiveAll stream (fromIntegral len)
-    modifyMVar_ (transportBytesReceived state) (\i-> pure $! i + 4 + fromIntegral len)
+    msg <- runGet (skip 1 >> get) =<< receiveAll stream (fromIntegral paclen)
+    modifyMVar_ (transportBytesReceived state) (\i-> pure $! i + 4 + fromIntegral paclen)
     modifyMVar_ (transportPacketsReceived state) (\i-> pure $! i + 1)
     pure msg
 

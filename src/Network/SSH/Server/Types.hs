@@ -5,16 +5,12 @@ import           Control.Concurrent           (ThreadId)
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.STM.TVar
-import           Control.Monad.Terminal
 import qualified Data.ByteString              as BS
 import qualified Data.Map.Strict              as M
 import           Data.Word
-import           System.Exit
 
-import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
-import           Network.SSH.Stream
 import           Network.SSH.TAccountingQueue
 
 data Connection identity
@@ -46,7 +42,7 @@ data ChannelApplication
 data Session
     = Session
     { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
-    , sessTerminal    :: TVar (Maybe Terminal)
+    , sessTerminal    :: TVar (Maybe ())
     , sessThread      :: TVar (Maybe ThreadId)
     , sessStdin       :: TAccountingQueue
     , sessStdout      :: TAccountingQueue

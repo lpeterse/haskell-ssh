@@ -6,7 +6,6 @@ module Network.SSH.Server.KeyExchange where
 import           Control.Concurrent           (threadDelay)
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TChan
-import           Control.Concurrent.STM.TMVar
 import           Control.Exception            (throwIO)
 import           Control.Monad                (void)
 import           Control.Monad.STM            (STM, atomically)
@@ -21,17 +20,14 @@ import qualified Data.ByteString              as BS
 import           Data.List
 import qualified Data.List.NonEmpty           as NEL
 import           Data.Monoid                  ((<>))
-import           Data.Word
 
 import           Network.SSH.Algorithms
-import           Network.SSH.Constants
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
-import           Network.SSH.Server.Types
 import           Network.SSH.Stream
 
 data KexStep
@@ -132,7 +128,6 @@ newKexStepHandler config state sendMsg msid = do
             case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
                 (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
                     completeCurve25519KeyExchange ski cki clientEphemeralPublicKey
-                _ -> throwIO $ Disconnect DisconnectKeyExchangeFailed "kex algorithm not implemented" ""
 
         completeCurve25519KeyExchange ski cki clientEphemeralPublicKey = do
             -- Generate a Curve25519 keypair for elliptic curve Diffie-Hellman key exchange.
@@ -141,7 +136,8 @@ newKexStepHandler config state sendMsg msid = do
 
             KeyPairEd25519 pubKey secKey <- do
                 let isEd25519 KeyPairEd25519 {} = True
-                    isEd25519 _                 = False
+                    -- TODO: Required when more algorithms are implemented.
+                    -- isEd25519 _                 = False
                 case NEL.filter isEd25519 (hostKeys config) of
                     (x:_) -> pure x
                     _     -> undefined -- impossible

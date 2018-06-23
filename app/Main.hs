@@ -1,6 +1,5 @@
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
@@ -19,9 +18,6 @@ import qualified System.Socket                  as S
 import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
-
-import           Control.Monad.Replique
-import           Control.Monad.Terminal
 
 import           Network.SSH.Constants
 import           Network.SSH.Key
@@ -67,18 +63,6 @@ runExec identity stdin stdout stderr command = do
         send stdout (BS.pack (map (fromIntegral . fromEnum) (show i)) `mappend` "\n" :: BS.ByteString)
         threadDelay 100000
     pure (ExitFailure 23)
-
-runShell :: identity -> Terminal -> IO ExitCode
-runShell identity term = do
-    runTerminalT (runRepliqueT repl 0) term
-    pure (ExitFailure 1)
-
-repl :: RepliqueT Int (TerminalT IO) ()
-repl = readLine "ssh % " >>= \case
-    ""           -> pure ()
-    "quit"       -> quit
-    "fail"       -> fail "Failure is not an option."
-    line         -> putStringLn (show (line :: String))
 
 instance DuplexStream (S.Socket f S.Stream p) where
 

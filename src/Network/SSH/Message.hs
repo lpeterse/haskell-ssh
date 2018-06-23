@@ -84,7 +84,7 @@ module Network.SSH.Message
 
 import           Control.Applicative
 import           Control.Exception
-import           Control.Monad            (unless, void)
+import           Control.Monad            (void)
 import           Crypto.Error
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
@@ -495,7 +495,7 @@ instance Encoding DisconnectReason where
         DisconnectAuthCancelledByUser         -> 13
         DisconnectNoMoreAuthMethodsAvailable  -> 14
         DisconnectIllegalUsername             -> 15
-        DisconnectOtherReason r               -> r
+        DisconnectOtherReason n               -> n
     get = (<$> getWord32) $ \case
         1  -> DisconnectHostNotAllowedToConnect
         2  -> DisconnectProtocolError
@@ -525,7 +525,7 @@ instance Encoding Unimplemented where
     get = expectWord8 3 >> Unimplemented <$> getWord32
 
 instance Encoding Debug where
-    len (Debug ad msg lang) = lenWord8 + lenBool + lenString msg + lenString lang
+    len (Debug _ msg lang) = lenWord8 + lenBool + lenString msg + lenString lang
     put (Debug ad msg lang) = putWord8 4 >> putBool ad >> putString msg >> putString lang
     get = expectWord8 4 >> Debug <$> getBool <*> getString <*> getString
 
@@ -575,7 +575,7 @@ instance Encoding KexInit where
             <*> getNameList <*> getNameList <*> getNameList <*> getNameList
             <*> getNameList <*> getNameList <*> getNameList <*> getNameList
             <*> getNameList <*> getNameList <*> getBool
-        getWord32 -- reserved for future extensions
+        void getWord32 -- reserved for future extensions
         pure kex
 
 instance Encoding KexNewKeys where
@@ -600,7 +600,7 @@ instance Encoding UserAuthRequest where
     get = expectWord8 50 >> UserAuthRequest <$> get <*> get <*> get
 
 instance Encoding UserAuthFailure where
-    len (UserAuthFailure ms ps) = lenWord8 + lenNameList ms + lenBool
+    len (UserAuthFailure ms _) = lenWord8 + lenNameList ms + lenBool
     put (UserAuthFailure ms ps) = do
         putWord8 51
         putNameList ((\(AuthMethodName x)->x) <$> ms)
@@ -716,15 +716,15 @@ instance Encoding ChannelRequest where
 
 instance Encoding ChannelRequestSession where
     len = \case
-        ChannelRequestEnv wantReply name value ->
+        ChannelRequestEnv _ name value ->
             lenString ("env" :: BS.ByteString) + lenBool + lenString name + lenString value
-        ChannelRequestPty wantReply ts ->
+        ChannelRequestPty _ ts ->
             lenString ("pty-req" :: BS.ByteString) + lenBool + len ts
-        ChannelRequestShell wantReply ->
+        ChannelRequestShell _ ->
             lenString ("shell" :: BS.ByteString) + lenBool
-        ChannelRequestExec wantReply command ->
+        ChannelRequestExec _ command ->
             lenString ("exec" :: BS.ByteString) + lenBool + lenString command
-        ChannelRequestExitStatus status ->
+        ChannelRequestExitStatus _ ->
             lenString ("exit-status" :: BS.ByteString) + lenBool + lenWord32
         ChannelRequestExitSignal signame _ errmsg lang ->
             lenString ("exit-signal" :: BS.ByteString) + lenBool + lenString signame +

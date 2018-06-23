@@ -11,15 +11,8 @@ import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.STM.TVar
 import           Control.Exception            (bracket)
-import           Control.Monad                (forever, unless, when)
 import           Control.Monad.STM            (STM, atomically)
-import qualified Data.ByteString              as BS
-import qualified Data.Map.Strict              as M
-import           Data.Text                    as T
-import           Data.Text.Encoding           as T
 
-import           Network.SSH.Constants
-import           Network.SSH.Exception
 import           Network.SSH.Message
 import qualified Network.SSH.Server.Channel   as Channel
 import           Network.SSH.Server.Config
@@ -30,6 +23,7 @@ import qualified Network.SSH.Server.UserAuth  as UserAuth
 withConnection :: Config identity -> SessionId -> (Connection identity -> IO ()) -> IO ()
 withConnection cfg sid = bracket before after
     where
+        -- FIXME: Why is there a bracket at all?
         before = Connection
             <$> pure cfg
             <*> pure sid
@@ -38,8 +32,7 @@ withConnection cfg sid = bracket before after
             <*> newTChanIO
             <*> newTChanIO
             <*> newEmptyTMVarIO
-        after connection = do
-            pure ()
+        after = const $ pure ()
 
 pullMessage :: Connection identity -> IO Message
 pullMessage connection = atomically $ pullMessageSTM connection

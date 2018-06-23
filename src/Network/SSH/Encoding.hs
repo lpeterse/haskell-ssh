@@ -4,7 +4,6 @@ module Network.SSH.Encoding where
 import           Control.Applicative
 import           Control.Monad       (when)
 import qualified Control.Monad.Fail  as Fail
-import           Data.Bits
 import qualified Data.ByteArray      as BA
 import qualified Data.ByteString     as BS
 import qualified Data.Serialize.Get  as G
@@ -101,8 +100,7 @@ putString ba = do
 
 getString :: BA.ByteArray ba => Get ba
 getString = do
-    len <- getWord32
-    getBytes len
+    getBytes =<< getWord32
 
 lenBool :: Word32
 lenBool = 1

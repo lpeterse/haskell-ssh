@@ -28,12 +28,11 @@ dependencies:
 - cryptonite
 - memory
 - stm
-- terminal
 - text
 
 library:
   source-dirs: src
-  ghc-options: -Wall
+  ghc-options: -Wall -fno-warn-orphans
 
 tests:
   hssh-test:
@@ -60,7 +59,6 @@ executables:
     dependencies:
     - hssh
     - socket
-    - replique
     when:
       - condition: flag(demo)
         then:

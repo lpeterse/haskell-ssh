@@ -6,6 +6,7 @@ import           Control.Applicative            ((<|>))
 import           Control.Concurrent.Async       (race_)
 import           Control.Concurrent.MVar        (readMVar)
 import           Control.Exception              (throwIO)
+import           Control.Monad                  (void)
 import           Control.Monad.STM              (atomically)
 import qualified Data.ByteString                as BS
 import           Data.Monoid                    ((<>))
@@ -18,7 +19,6 @@ import           Network.SSH.Server.Config
 import           Network.SSH.Server.Connection
 import           Network.SSH.Server.KeyExchange
 import           Network.SSH.Server.Transport
-import           Network.SSH.Server.Types
 import           Network.SSH.Stream
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
@@ -26,7 +26,7 @@ serve config stream = do
     -- Receive the client version string and immediately reply
     -- with the server version string if the client version string is valid.
     clientVersion <- receiveVersion stream
-    sendAll stream $ runPut $ put version
+    void $ sendAll stream $ runPut $ put version
 
     -- Initialize a new transport state object to keep track of
     -- packet sequence numbers and encryption contexts.

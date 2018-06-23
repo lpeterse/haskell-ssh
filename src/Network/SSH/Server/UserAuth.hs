@@ -4,12 +4,9 @@ module Network.SSH.Server.UserAuth where
 
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
-import           Control.Monad                (forever, unless, when)
 import           Control.Monad.STM
 import qualified Crypto.Hash.Algorithms       as Hash
-import qualified Crypto.PubKey.Curve25519     as Curve25519
 import qualified Crypto.PubKey.Ed25519        as Ed25519
-import qualified Crypto.PubKey.RSA            as RSA
 import qualified Crypto.PubKey.RSA.PKCS15     as RSA.PKCS15
 import qualified Data.ByteString              as BS
 

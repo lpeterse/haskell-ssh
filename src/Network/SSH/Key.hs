@@ -9,14 +9,11 @@ module Network.SSH.Key
     ) where
 
 import           Control.Applicative    (many, (<|>))
-import           Control.Monad          (forM, replicateM, when)
+import           Control.Monad          (replicateM, void, when)
 import           Control.Monad.Fail     (MonadFail)
 import qualified Crypto.Cipher.AES      as Cipher
-import qualified Crypto.Cipher.Blowfish as Cipher
 import qualified Crypto.Cipher.Types    as Cipher
 import           Crypto.Error
-import qualified Crypto.Hash            as Hash
-import qualified Crypto.Hash.Algorithms as Hash
 import qualified Crypto.KDF.BCryptPBKDF as BCryptPBKDF
 import qualified Crypto.PubKey.Ed25519  as Ed25519
 import qualified Crypto.PubKey.RSA      as RSA
@@ -51,11 +48,11 @@ parsePrivateKeyFile :: ( BA.ByteArray input, IsString input, Show input
                     => passphrase -> BP.Parser input [(KeyPair, comment)]
 parsePrivateKeyFile passphrase = do
     BP.bytes "-----BEGIN OPENSSH PRIVATE KEY-----"
-    many space
+    void $ many space
     bs <- parseBase64
-    many space
+    void $ many space
     BP.bytes "-----END OPENSSH PRIVATE KEY-----"
-    many space
+    void $ many space
     BP.hasMore >>= flip when syntaxError
     case BP.parse parseKeys bs of
         BP.ParseOK _ keys -> pure keys
@@ -139,17 +136,18 @@ parsePrivateKeyFile passphrase = do
         BP.skip 4 -- size of the kdf section
         deriveKey <- case kdfAlgo of
             "none" ->
-                pure $ \keyLen-> CryptoFailed CryptoError_KeySizeInvalid
+                pure $ \_-> CryptoFailed CryptoError_KeySizeInvalid
             "bcrypt" -> do
                 salt   <- getString
                 rounds <- fromIntegral <$> getWord32be
                 pure $ \case
                     Cipher.KeySizeFixed len ->
                       CryptoPassed $ BCryptPBKDF.generate (BCryptPBKDF.Parameters rounds len) passphrase salt
+                    _ -> undefined -- impossible
             _ -> fail $ "Unsupported key derivation function " ++ show (convert kdfAlgo :: BA.Bytes)
 
         numberOfKeys <- fromIntegral <$> getWord32be
-        publicKeysRaw <- getString -- not used
+        _publicKeysRaw <- getString -- not used
         privateKeysRawEncrypted <- getString
         privateKeysRawDecrypted <- BA.convert <$> case cipherAlgo of
             "none"       -> pure privateKeysRawEncrypted

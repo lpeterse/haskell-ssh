@@ -1,15 +1,9 @@
 module Network.SSH.Stream where
 
-import           Control.Arrow     (second)
 import           Control.Exception
-import           Control.Monad     (unless, when)
-import           Control.Monad.STM
+import           Control.Monad     (when)
 import qualified Data.ByteString   as BS
 import           Data.Monoid       ((<>))
-
-import           Data.Typeable
-import           Data.Word
-import           System.IO.Error
 
 class (InputStream stream, OutputStream stream) => DuplexStream stream where
 
