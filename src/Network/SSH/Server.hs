@@ -49,6 +49,8 @@ import qualified Network.SSH.Server.Types      as Config
 data TransportState stream
     = TransportState
     {   transportStream          :: stream
+    ,   transportClientVersion   :: Version
+    ,   transportServerVersion   :: Version
     ,   transportBytesReceived   :: MVar Word64
     ,   transportPacketsReceived :: MVar Word64
     ,   transportBytesSent       :: MVar Word64
@@ -62,11 +64,11 @@ data KeyExchangeState
     | WaitingForKexInit      (KexInit -> IO KeyExchangeState)
     | WaitingForKexEcdhInit  (KexEcdhInit -> IO KeyExchangeState)
 
-newTransportState :: DuplexStream stream => stream -> IO (TransportState stream)
-newTransportState stream = do
+newTransportState :: DuplexStream stream => stream -> Version -> Version -> IO (TransportState stream)
+newTransportState stream clientVersion serverVersion = do
     s <- newEmptyMVar
     r <- newEmptyMVar
-    state <- TransportState stream
+    state <- TransportState stream clientVersion serverVersion
         <$> newMVar 0
         <*> newMVar 0
         <*> newMVar 0
@@ -86,7 +88,7 @@ serve config stream = do
 
     -- Initialize a new transport state object to keep track of
     -- packet sequence numbers and encryption contexts.
-    state <- newTransportState stream
+    state <- newTransportState stream clientVersion version
 
     -- Send KexInit to client and expect KexInit reply.
     serverKexInit <- kexInit <$> newCookie
@@ -123,7 +125,7 @@ serve config stream = do
         -- running key exchanges and all required context.
         -- Key re-exchanges may be interleaved with regular traffic and
         -- therefore cannot be performed synchronously.
-        handleKexStep <- newKexStepHandler config state (atomically . putTMVar priorityOutput)
+        handleKexStep <- newKexStepHandler config (keysSession keys) state (atomically . putTMVar priorityOutput)
 
         -- The sender is an infinite loop that pulls messages from the connection
         -- object. Produced messages are encoded and sent.
@@ -162,7 +164,7 @@ serve config stream = do
 
         let rekeyingWatchdog = countDown interval
                 where
-                    interval = 3600
+                    interval = 5
                     countDown 0 = do
                         handleKexStep KexStart
                         countDown interval
@@ -179,8 +181,8 @@ data KexStep
     | KexProcessInit KexInit
     | KexProcessEcdhInit KexEcdhInit
 
-newKexStepHandler :: Config identity -> TransportState stream -> (Message -> IO ()) -> IO (KexStep -> IO ())
-newKexStepHandler config state sendMsg = do
+newKexStepHandler :: (DuplexStream stream) => Config identity -> SessionId -> TransportState stream -> (Message -> IO ()) -> IO (KexStep -> IO ())
+newKexStepHandler config session state sendMsg = do
     continuation <- newEmptyMVar
 
     let noKexInProgress = \case
@@ -208,13 +210,69 @@ newKexStepHandler config state sendMsg = do
                 pure () -- already in progress
             KexProcessInit {} ->
                 throwIO $ SshProtocolErrorException "unexpected KexInit"
-            KexProcessEcdhInit ecdhi ->
-                undefined
+            KexProcessEcdhInit (KexEcdhInit clientEphemeralPublicKey) -> do
+                completeEcdhExchange ski cki clientEphemeralPublicKey
+                void $ swapMVar continuation noKexInProgress
 
     putMVar continuation noKexInProgress
     pure $ \step-> do
         handle <- readMVar continuation
         handle step
+
+    where
+        completeEcdhExchange serverKexInit clientKexInit clientEphemeralPublicKey = do
+            -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
+            -- key exchange.
+            serverEphemeralSecretKey <- Curve25519.generateSecretKey
+            serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
+
+            let serverPrivateKey = case hostKey config of
+                    Ed25519PrivateKey _ sk -> sk
+            let serverPublicKey  = case hostKey config of
+                    Ed25519PrivateKey pk _ -> pk
+
+            -- Compute and perform the Diffie-Helman key exchange.
+            let secret = Curve25519.dh
+                    clientEphemeralPublicKey
+                    serverEphemeralSecretKey
+            let hash = exchangeHash
+                    (transportClientVersion state)
+                    (transportServerVersion state)
+                    clientKexInit
+                    serverKexInit
+                    (PublicKeyEd25519 serverPublicKey)
+                    clientEphemeralPublicKey
+                    serverEphemeralPublicKey
+                    secret
+            let signature = SignatureEd25519 $ Ed25519.sign
+                    serverPrivateKey
+                    serverPublicKey
+                    hash
+
+            -- The reply is shall be sent with the old encryption context.
+            -- This is the case as long as the KexNewKeys message has not
+            -- been transmitted.
+            sendMsg $ MsgKexEcdhReply KexEcdhReply {
+                    kexServerHostKey      = PublicKeyEd25519 serverPublicKey
+                ,   kexServerEphemeralKey = serverEphemeralPublicKey
+                ,   kexHashSignature      = signature
+                }
+
+            -- Derive the required encryption/decryption keys.
+            -- The integrity keys etc. are not needed with chacha20.
+            let mainKeyCS:headerKeyCS:_ = deriveKeys secret hash "C" session
+                mainKeySC:headerKeySC:_ = deriveKeys secret hash "D" session
+
+            swapMVar (transportSender state) $
+                sendEncrypted state headerKeySC mainKeySC
+
+            swapMVar (transportReceiver state) $ do
+                receiveEncrypted state headerKeyCS mainKeyCS
+
+            -- The encryption context shall be switched no earlier than
+            -- before the new keys message has been transmitted.
+            -- It's the sender's thread responsibility to switch the context.
+            sendMsg (MsgKexNewKeys KexNewKeys)
 
 data Keys
     = Keys

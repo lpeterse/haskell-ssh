@@ -63,7 +63,9 @@ main = do
 
 runExec :: (OutputStream stdout) => identity -> stdin -> stdout -> stderr -> command -> IO ExitCode
 runExec identity stdin stdout stderr command = do
-    send stdout ("Hallo Welt!" :: BS.ByteString)
+    forever $ do
+        send stdout ("Hallo Welt!" :: BS.ByteString)
+        threadDelay 100000
     pure (ExitFailure 23)
 
 runShell :: identity -> Terminal -> IO ExitCode
