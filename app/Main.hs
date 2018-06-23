@@ -8,7 +8,7 @@ import           Control.Concurrent             (forkIO, threadDelay)
 import           Control.Concurrent.MVar
 import           Control.Exception              (SomeException, bracket, catch,
                                                  finally)
-import           Control.Monad                  (forever)
+import           Control.Monad                  (forM_, forever)
 import           Control.Monad.STM
 import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
@@ -63,8 +63,8 @@ main = do
 
 runExec :: (OutputStream stdout) => identity -> stdin -> stdout -> stderr -> command -> IO ExitCode
 runExec identity stdin stdout stderr command = do
-    forever $ do
-        send stdout ("Hallo Welt!" :: BS.ByteString)
+    forM_ [1..] $ \i-> do
+        send stdout (BS.pack (map (fromIntegral . fromEnum) (show i)) `mappend` "\n" :: BS.ByteString)
         threadDelay 100000
     pure (ExitFailure 23)
 

@@ -51,6 +51,7 @@ data TransportState stream
     {   transportStream          :: stream
     ,   transportClientVersion   :: Version
     ,   transportServerVersion   :: Version
+    ,   transportSession         :: MVar SessionId
     ,   transportBytesReceived   :: MVar Word64
     ,   transportPacketsReceived :: MVar Word64
     ,   transportBytesSent       :: MVar Word64
@@ -69,7 +70,8 @@ newTransportState stream clientVersion serverVersion = do
     s <- newEmptyMVar
     r <- newEmptyMVar
     state <- TransportState stream clientVersion serverVersion
-        <$> newMVar 0
+        <$> newEmptyMVar
+        <*> newMVar 0
         <*> newMVar 0
         <*> newMVar 0
         <*> newMVar 0
@@ -90,49 +92,45 @@ serve config stream = do
     -- packet sequence numbers and encryption contexts.
     state <- newTransportState stream clientVersion version
 
-    -- Send KexInit to client and expect KexInit reply.
-    serverKexInit <- kexInit <$> newCookie
-    sendPlain state serverKexInit
+    -- This queue shall be used to interleave the sending
+    -- of transport messages with high priority with the regular output
+    -- from other/higher protocol layers.
+    transportOutputQueue <- newTChanIO
+
+    -- The kex handler is a state machine that keeps track of
+    -- running key exchanges and all required context.
+    -- Key re-exchanges may be interleaved with regular traffic and
+    -- therefore cannot be performed synchronously.
+    performKexStep <- newKexStepHandler config state (atomically . writeTChan transportOutputQueue)
+
+    -- Perform the initial key exchange.
+    -- This key exchange is handled separately as the key exchange protocol
+    -- shall be followed strictly and no other messages shall be accepted
+    -- until the connection is authenticated and encrypted.
+    performKexStep KexStart
+    sendPlain state =<< atomically (readTChan transportOutputQueue)
     clientKexInit <- receivePlain state
-
-    -- Perform a key exchange based on the algorithm negotiation.
-    keys <- exchangeKeys
-        config state
-        serverKexInit version
-        clientKexInit clientVersion
-
-    -- Derive the required encryption/decryption keys.
-    -- The integrity keys etc. are not needed with chacha20.
-    let session                 = keysSession keys
-    let mainKeyCS:headerKeyCS:_ = keysClientToServer keys
-        mainKeySC:headerKeySC:_ = keysServerToClient keys
-
-    swapMVar (transportSender state) $
-        sendEncrypted state headerKeySC mainKeySC
-
-    swapMVar (transportReceiver state) $ do
-        receiveEncrypted state headerKeyCS mainKeyCS
+    performKexStep (KexProcessInit clientKexInit)
+    clientKexEcdhInit <- receivePlain state
+    performKexStep (KexProcessEcdhInit clientKexEcdhInit)
+    sendPlain state =<< atomically (readTChan transportOutputQueue) -- KexEcdhReply
+    sendPlain state =<< atomically (readTChan transportOutputQueue) -- KexNewKeys
+    KexNewKeys <- receivePlain state
+    session <- readMVar (transportSession state)
 
     -- The connection is essentially a state machine.
     -- It also contains resources that need to be freed on termination
     -- (like running threads), therefore the bracket pattern.
     withConnection config session $ \connection-> do
-        -- This variable shall be used to interleave the sending
-        -- of transport messages with high priority with the regular output
-        -- from higher layers.
-        priorityOutput <- newEmptyTMVarIO
-        -- The kex handler is a state machine that keeps track of
-        -- running key exchanges and all required context.
-        -- Key re-exchanges may be interleaved with regular traffic and
-        -- therefore cannot be performed synchronously.
-        handleKexStep <- newKexStepHandler config (keysSession keys) state (atomically . putTMVar priorityOutput)
 
-        -- The sender is an infinite loop that pulls messages from the connection
-        -- object. Produced messages are encoded and sent.
+        -- The sender is an infinite loop that waits for messages to be sent
+        -- from either the transport or the connection layer.
+        -- The sender is also aware of switching the encryption context
+        -- when encountering KexNewKeys messages.
         let sender = loop =<< readMVar (transportSender state)
                 where
                     loop s = do
-                        msg <- atomically $ takeTMVar priorityOutput <|> pullMessageSTM connection
+                        msg <- atomically $ readTChan transportOutputQueue <|> pullMessageSTM connection
                         s $ runPut $ put msg
                         -- This thread shall terminate gracefully in case the
                         -- message was a disconnect message. By specification
@@ -142,31 +140,35 @@ serve config stream = do
                             MsgKexNewKeys {} -> loop =<< readMVar (transportSender state)
                             _                -> loop s
 
-        -- The receiver is an infinite loop that waits for input on the stream,
-        -- parses it and pushes it into the connection state object.
+        -- The receiver is an infinite loop that waits for incoming messages
+        -- and dispatches it either to the transport layer handling functions
+        -- or to the connection layer.
         let receiver = loop =<< readMVar (transportReceiver state)
                 where
                     loop r = r >>= runGet get >>= \case
                         MsgDisconnect x -> onDisconnect config x
                         MsgKexInit kexInit -> do
-                            handleKexStep (KexProcessInit kexInit)
+                            performKexStep (KexProcessInit kexInit)
                             loop r
                         MsgKexEcdhInit kexEcdhInit -> do
-                            handleKexStep (KexProcessEcdhInit kexEcdhInit)
+                            performKexStep (KexProcessEcdhInit kexEcdhInit)
                             loop r
                         MsgKexNewKeys {} -> do
-                            print "NEW"
                             loop =<< readMVar (transportReceiver state)
                         msg -> do
                             print msg
                             pushMessage connection msg
                             loop r
 
+        -- The rekeying watchdog is an inifinite loop that initiates
+        -- a key re-exchange if either a certain amount of time has passed or
+        -- if the any of the input or output stream has exceeded a threshold
+        -- of bytes sent/received.
         let rekeyingWatchdog = countDown interval
                 where
                     interval = 5
                     countDown 0 = do
-                        handleKexStep KexStart
+                        performKexStep KexStart
                         countDown interval
                     countDown t = do
                         threadDelay 1000000
@@ -181,8 +183,8 @@ data KexStep
     | KexProcessInit KexInit
     | KexProcessEcdhInit KexEcdhInit
 
-newKexStepHandler :: (DuplexStream stream) => Config identity -> SessionId -> TransportState stream -> (Message -> IO ()) -> IO (KexStep -> IO ())
-newKexStepHandler config session state sendMsg = do
+newKexStepHandler :: (DuplexStream stream) => Config identity -> TransportState stream -> (Message -> IO ()) -> IO (KexStep -> IO ())
+newKexStepHandler config state sendMsg = do
     continuation <- newEmptyMVar
 
     let noKexInProgress = \case
@@ -258,6 +260,13 @@ newKexStepHandler config session state sendMsg = do
                 ,   kexHashSignature      = signature
                 }
 
+            session <- tryReadMVar (transportSession state) >>= \case
+                Just s -> pure s
+                Nothing -> do
+                    let s = SessionId $ BA.convert hash
+                    putMVar (transportSession state) s
+                    pure s
+
             -- Derive the required encryption/decryption keys.
             -- The integrity keys etc. are not needed with chacha20.
             let mainKeyCS:headerKeyCS:_ = deriveKeys secret hash "C" session
@@ -273,72 +282,6 @@ newKexStepHandler config session state sendMsg = do
             -- before the new keys message has been transmitted.
             -- It's the sender's thread responsibility to switch the context.
             sendMsg (MsgKexNewKeys KexNewKeys)
-
-data Keys
-    = Keys
-    { keysSession        :: SessionId
-    , keysClientToServer :: [BA.ScrubbedBytes]
-    , keysServerToClient :: [BA.ScrubbedBytes]
-    }
-
-exchangeKeys :: (DuplexStream stream)
-    => Config identity
-    -> TransportState stream
-    -> KexInit -> Version
-    -> KexInit -> Version
-    -> IO Keys
-exchangeKeys config state serverKexInit serverVersion clientKexInit clientVersion
-    = curve25519sh256atLibSshOrg
-    -- | "curve25519-sha256@libssh.org" ->
-    -- | _                              -> error "FIXME"
-    where
-        serverPrivateKey = case hostKey config of
-            Ed25519PrivateKey _ sk -> sk
-        serverPublicKey  = case hostKey config of
-            Ed25519PrivateKey pk _ -> pk
-
-        curve25519sh256atLibSshOrg = do
-            -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
-            -- key exchange.
-            serverEphemeralSecretKey <- Curve25519.generateSecretKey
-            serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
-            -- Receive KexEcdhInit from client.
-            KexEcdhInit clientEphemeralPublicKey <- receivePlain state
-            -- Compute and perform the Diffie-Helman key exchange.
-            let dhSecret = Curve25519.dh
-                        clientEphemeralPublicKey
-                        serverEphemeralSecretKey
-            let hash = exchangeHash
-                        clientVersion
-                        serverVersion
-                        clientKexInit
-                        serverKexInit
-                        (PublicKeyEd25519 serverPublicKey)
-                        clientEphemeralPublicKey
-                        serverEphemeralPublicKey
-                        dhSecret
-            let signature = SignatureEd25519 $ Ed25519.sign
-                        serverPrivateKey
-                        serverPublicKey
-                        hash
-            let kexEcdhReply = KexEcdhReply {
-                        kexServerHostKey      = PublicKeyEd25519 serverPublicKey
-                    ,   kexServerEphemeralKey = serverEphemeralPublicKey
-                    ,   kexHashSignature      = signature
-                    }
-            let session = SessionId $ BA.convert hash
-
-            -- Complete the key exchange and wait for the client to confirm
-            -- with a KexNewKeys msg.
-            sendPlain state kexEcdhReply
-            sendPlain state KexNewKeys
-            MsgKexNewKeys {} <- receivePlain state
-
-            pure Keys {
-                    keysSession        = session
-                ,   keysClientToServer = deriveKeys dhSecret hash "C" session
-                ,   keysServerToClient = deriveKeys dhSecret hash "D" session
-                }
 
 -- The maximum length of the version string is 255 chars including CR+LF.
 -- The version string is usually short and transmitted within
