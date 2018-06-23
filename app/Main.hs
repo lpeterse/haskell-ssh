@@ -12,7 +12,6 @@ import           Control.Monad                  (forM_, forever)
 import           Control.Monad.STM
 import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
-import           Data.Stream
 import qualified Data.Text                      as T
 import qualified Data.Text.Encoding             as T
 import           System.Exit
@@ -29,19 +28,19 @@ import           Network.SSH.Key
 import qualified Network.SSH.Server             as Server
 import qualified Network.SSH.Server.Config      as Server
 import qualified Network.SSH.Server.Types       as Server
+import           Network.SSH.Stream
 
 main :: IO ()
 main = do
     print version
     file <- BS.readFile "./resources/id_ed25519"
-    (privateKey, _):_ <- decodePrivateKeyFile BS.empty file :: IO [(PrivateKey, BA.Bytes)]
+    (privateKey, _):_ <- decodePrivateKeyFile BS.empty file :: IO [(KeyPair, BA.Bytes)]
 
     c <- Server.newDefaultConfig
     let config = c {
-          Server.hostKey        = privateKey
+          Server.hostKeys       = pure privateKey
         , Server.onAuthRequest  = \username _ _ -> pure (Just username)
         , Server.onExecRequest  = Just runExec
-        , Server.rekeyingAfterSeconds = 10
         }
     bracket open close (accept config)
   where

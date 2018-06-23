@@ -19,19 +19,3 @@ version  = Version ("SSH-2.0-hssh_" <> v)
 
 maxPacketLength :: Word32
 maxPacketLength = 35000
-
-kexInit :: Cookie -> KexInit
-kexInit cookie = KexInit
-    { kexCookie                              = cookie
-    , kexAlgorithms                          = ["curve25519-sha256@libssh.org"]
-    , kexServerHostKeyAlgorithms             = ["ssh-ed25519"]
-    , kexEncryptionAlgorithmsClientToServer  = ["chacha20-poly1305@openssh.com"]
-    , kexEncryptionAlgorithmsServerToClient  = ["chacha20-poly1305@openssh.com"]
-    , kexMacAlgorithmsClientToServer         = []
-    , kexMacAlgorithmsServerToClient         = []
-    , kexCompressionAlgorithmsClientToServer = ["none"]
-    , kexCompressionAlgorithmsServerToClient = ["none"]
-    , kexLanguagesClientToServer             = []
-    , kexLanguagesServerToClient             = []
-    , kexFirstPacketFollows                  = False
-    }

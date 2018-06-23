@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies      #-}
 module Network.SSH.Key
-    (   PrivateKey (..)
+    (   KeyPair (..)
     ,   PublicKey (..)
     ,   decodePrivateKeyFile
     ) where
@@ -27,8 +27,8 @@ import qualified Data.ByteArray.Parse   as BP
 import           Data.String
 import           Data.Word
 
-data PrivateKey
-    = Ed25519PrivateKey Ed25519.PublicKey Ed25519.SecretKey
+data KeyPair
+    = KeyPairEd25519 Ed25519.PublicKey Ed25519.SecretKey
     deriving (Eq, Show)
 
 data PublicKey
@@ -39,7 +39,7 @@ data PublicKey
 
 decodePrivateKeyFile :: ( MonadFail m, BA.ByteArray input, IsString input, Show input
                         , BA.ByteArray passphrase, BA.ByteArray comment )
-                     => passphrase -> input -> m [(PrivateKey, comment)]
+                     => passphrase -> input -> m [(KeyPair, comment)]
 decodePrivateKeyFile passphrase = f . BP.parse (parsePrivateKeyFile passphrase)
     where
         f (BP.ParseOK _ a) = pure a
@@ -48,7 +48,7 @@ decodePrivateKeyFile passphrase = f . BP.parse (parsePrivateKeyFile passphrase)
 
 parsePrivateKeyFile :: ( BA.ByteArray input, IsString input, Show input
                        , BA.ByteArray passphrase, BA.ByteArray comment )
-                    => passphrase -> BP.Parser input [(PrivateKey, comment)]
+                    => passphrase -> BP.Parser input [(KeyPair, comment)]
 parsePrivateKeyFile passphrase = do
     BP.bytes "-----BEGIN OPENSSH PRIVATE KEY-----"
     many space
@@ -131,7 +131,7 @@ parsePrivateKeyFile passphrase = do
     getString = BP.take =<< (fromIntegral <$> getWord32be)
 
     parseKeys :: (BA.ByteArray input, IsString input, Show input, BA.ByteArray comment)
-                  => BP.Parser input [(PrivateKey, comment)]
+                  => BP.Parser input [(KeyPair, comment)]
     parseKeys = do
         BP.bytes "openssh-key-v1\NUL"
         cipherAlgo <- getString
@@ -187,7 +187,7 @@ parsePrivateKeyFile passphrase = do
           BP.ParseFail e    -> fail e
           BP.ParseMore _    -> syntaxError
 
-    parsePrivateKeys :: (BA.ByteArray comment) => Int -> BP.Parser BA.ScrubbedBytes [(PrivateKey, comment)]
+    parsePrivateKeys :: (BA.ByteArray comment) => Int -> BP.Parser BA.ScrubbedBytes [(KeyPair, comment)]
     parsePrivateKeys count = do
         check1 <- getWord32be
         check2 <- getWord32be
@@ -202,7 +202,7 @@ parsePrivateKeyFile passphrase = do
                     BP.byte 64 -- length field (is always 64 for ssh-ed25519)
                     secretKeyRaw <- BP.take 32
                     publicKeyRaw <- BP.take 32
-                    let key = Ed25519PrivateKey
+                    let key = KeyPairEd25519
                           <$> Ed25519.publicKey publicKeyRaw
                           <*> Ed25519.secretKey secretKeyRaw
                     case key of

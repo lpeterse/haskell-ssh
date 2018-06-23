@@ -18,9 +18,12 @@ import qualified Crypto.PubKey.Ed25519        as Ed25519
 import           Data.Bits
 import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
+import           Data.List
+import qualified Data.List.NonEmpty           as NEL
 import           Data.Monoid                  ((<>))
 import           Data.Word
 
+import           Network.SSH.Algorithms
 import           Network.SSH.Constants
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
@@ -43,8 +46,8 @@ performInitialKeyExchange config state = do
     handle <- newKexStepHandler config state (atomically . writeTChan out) msid
     handle KexStart
     sendPlain state =<< atomically (readTChan out)
-    clientKexInit <- receivePlain state
-    handle (KexProcessInit clientKexInit)
+    cki <- receivePlain state
+    handle (KexProcessInit cki)
     clientKexEcdhInit <- receivePlain state
     handle (KexProcessEcdhInit clientKexEcdhInit)
     sendPlain state =<< atomically (readTChan out) -- KexEcdhReply
@@ -88,11 +91,11 @@ newKexStepHandler config state sendMsg msid = do
 
   let noKexInProgress = \case
           KexStart -> do
-              ski <- kexInit <$> newCookie
+              ski <- newKexInit config
               sendMsg (MsgKexInit ski)
               void $ swapMVar continuation (waitingForKexInit ski)
           KexProcessInit cki -> do
-              ski <- kexInit <$> newCookie
+              ski <- newKexInit config
               sendMsg (MsgKexInit ski)
               void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
           KexProcessEcdhInit {} ->
@@ -117,73 +120,120 @@ newKexStepHandler config state sendMsg msid = do
 
   putMVar continuation noKexInProgress
   pure $ \step-> do
-      handle <- readMVar continuation
-      handle step
+        handle <- readMVar continuation
+        handle step
+    where
+        completeEcdhExchange ski cki clientEphemeralPublicKey = do
+            kexAlgorithm   <- commonKexAlgorithm   ski cki
+            encAlgorithmCS <- commonEncAlgorithmCS ski cki
+            encAlgorithmSC <- commonEncAlgorithmSC ski cki
 
-  where
-      completeEcdhExchange serverKexInit clientKexInit clientEphemeralPublicKey = do
-          -- Generate an Ed25519 keypair for elliptic curve Diffie-Hellman
-          -- key exchange.
-          serverEphemeralSecretKey <- Curve25519.generateSecretKey
-          serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
+            -- TODO: Dispatch here when implementing support for more algorithms.
+            case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
+                (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
+                    completeCurve25519KeyExchange ski cki clientEphemeralPublicKey
+                _ -> throwIO $ Disconnect DisconnectKeyExchangeFailed "kex algorithm not implemented" ""
 
-          let serverPrivateKey = case hostKey config of
-                  Ed25519PrivateKey _ sk -> sk
-          let serverPublicKey  = case hostKey config of
-                  Ed25519PrivateKey pk _ -> pk
+        completeCurve25519KeyExchange ski cki clientEphemeralPublicKey = do
+            -- Generate a Curve25519 keypair for elliptic curve Diffie-Hellman
+            -- key exchange.
+            serverEphemeralSecretKey <- Curve25519.generateSecretKey
+            serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
 
-          -- Compute and perform the Diffie-Helman key exchange.
-          let secret = Curve25519.dh
-                  clientEphemeralPublicKey
-                  serverEphemeralSecretKey
-          let hash = exchangeHash
-                  (transportClientVersion state)
-                  (transportServerVersion state)
-                  clientKexInit
-                  serverKexInit
-                  (PublicKeyEd25519 serverPublicKey)
-                  clientEphemeralPublicKey
-                  serverEphemeralPublicKey
-                  secret
-          let signature = SignatureEd25519 $ Ed25519.sign
-                  serverPrivateKey
-                  serverPublicKey
-                  hash
+            let serverPrivateKey = case NEL.head (hostKeys config) of
+                    KeyPairEd25519 _ sk -> sk
+            let serverPublicKey  = case NEL.head (hostKeys config) of
+                    KeyPairEd25519 pk _ -> pk
 
-          -- The reply is shall be sent with the old encryption context.
-          -- This is the case as long as the KexNewKeys message has not
-          -- been transmitted.
-          sendMsg $ MsgKexEcdhReply KexEcdhReply {
-                  kexServerHostKey      = PublicKeyEd25519 serverPublicKey
-              ,   kexServerEphemeralKey = serverEphemeralPublicKey
-              ,   kexHashSignature      = signature
-              }
+            -- Compute and perform the Diffie-Helman key exchange.
+            let secret = Curve25519.dh
+                    clientEphemeralPublicKey
+                    serverEphemeralSecretKey
+            let hash = exchangeHash
+                    (transportClientVersion state)
+                    (transportServerVersion state)
+                    cki
+                    ski
+                    (PublicKeyEd25519 serverPublicKey)
+                    clientEphemeralPublicKey
+                    serverEphemeralPublicKey
+                    secret
+            let signature = SignatureEd25519 $ Ed25519.sign
+                    serverPrivateKey
+                    serverPublicKey
+                    hash
 
-          session <- tryReadMVar msid >>= \case
-              Just s -> pure s
-              Nothing -> do
-                  let s = SessionId $ BA.convert hash
-                  putMVar msid s
-                  pure s
+            -- The reply is shall be sent with the old encryption context.
+            -- This is the case as long as the KexNewKeys message has not
+            -- been transmitted.
+            sendMsg $ MsgKexEcdhReply KexEcdhReply {
+                        kexServerHostKey      = PublicKeyEd25519 serverPublicKey
+                    ,   kexServerEphemeralKey = serverEphemeralPublicKey
+                    ,   kexHashSignature      = signature
+                    }
 
-          -- Derive the required encryption/decryption keys.
-          -- The integrity keys etc. are not needed with chacha20.
-          let mainKeyCS:headerKeyCS:_ = deriveKeys secret hash "C" session
-              mainKeySC:headerKeySC:_ = deriveKeys secret hash "D" session
+            session <- tryReadMVar msid >>= \case
+                Just s -> pure s
+                Nothing -> do
+                    let s = SessionId $ BA.convert hash
+                    putMVar msid s
+                    pure s
 
-          void $ swapMVar (transportSender state) $
-              sendEncrypted state headerKeySC mainKeySC
+            -- Derive the required encryption/decryption keys.
+            -- The integrity keys etc. are not needed with chacha20.
+            let mainKeyCS:headerKeyCS:_ = deriveKeys secret hash "C" session
+                mainKeySC:headerKeySC:_ = deriveKeys secret hash "D" session
 
-          void $ swapMVar (transportReceiver state) $ do
-              receiveEncrypted state headerKeyCS mainKeyCS
+            void $ swapMVar (transportSender state) $
+                sendEncrypted state headerKeySC mainKeySC
 
-          void $ swapMVar (transportBytesSentOnLastRekeying state) =<< readMVar (transportBytesSent state)
-          void $ swapMVar (transportBytesReceivedOnLastRekeying state) =<< readMVar (transportBytesReceived state)
+            void $ swapMVar (transportReceiver state) $ do
+                receiveEncrypted state headerKeyCS mainKeyCS
 
-          -- The encryption context shall be switched no earlier than
-          -- before the new keys message has been transmitted.
-          -- It's the sender's thread responsibility to switch the context.
-          sendMsg (MsgKexNewKeys KexNewKeys)
+            void $ swapMVar (transportBytesSentOnLastRekeying state) =<< readMVar (transportBytesSent state)
+            void $ swapMVar (transportBytesReceivedOnLastRekeying state) =<< readMVar (transportBytesReceived state)
+
+            -- The encryption context shall be switched no earlier than
+            -- before the new keys message has been transmitted.
+            -- It's the sender's thread responsibility to switch the context.
+            sendMsg (MsgKexNewKeys KexNewKeys)
+
+commonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
+commonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
+    ("curve25519-sha256@libssh.org":_) -> pure Curve25519Sha256AtLibsshDotOrg
+    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common kex algorithm" "")
+
+commonEncAlgorithmCS :: KexInit -> KexInit -> IO EncryptionAlgorithm
+commonEncAlgorithmCS ski cki = case kexEncryptionAlgorithmsClientToServer cki `intersect` kexEncryptionAlgorithmsClientToServer ski of
+    ("chacha20-poly1305@openssh.com":_) -> pure Chacha20Poly1305AtOpensshDotCom
+    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (client to server)" "")
+
+commonEncAlgorithmSC :: KexInit -> KexInit -> IO EncryptionAlgorithm
+commonEncAlgorithmSC ski cki = case kexEncryptionAlgorithmsServerToClient cki `intersect` kexEncryptionAlgorithmsServerToClient ski of
+    ("chacha20-poly1305@openssh.com":_) -> pure Chacha20Poly1305AtOpensshDotCom
+    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (server to client)" "")
+
+newKexInit :: Config identity -> IO KexInit
+newKexInit config = do
+    cookie <- newCookie
+    pure KexInit
+        {   kexCookie                              = cookie
+        ,   kexAlgorithms                          = NEL.toList $ fmap f (keyExchangeAlgorithms config)
+        ,   kexServerHostKeyAlgorithms             = NEL.toList $ NEL.nub $ fmap g (hostKeys config)
+        ,   kexEncryptionAlgorithmsClientToServer  = NEL.toList $ fmap h (encryptionAlgorithms config)
+        ,   kexEncryptionAlgorithmsServerToClient  = NEL.toList $ fmap h (encryptionAlgorithms config)
+        ,   kexMacAlgorithmsClientToServer         = []
+        ,   kexMacAlgorithmsServerToClient         = []
+        ,   kexCompressionAlgorithmsClientToServer = ["none"]
+        ,   kexCompressionAlgorithmsServerToClient = ["none"]
+        ,   kexLanguagesClientToServer             = []
+        ,   kexLanguagesServerToClient             = []
+        ,   kexFirstPacketFollows                  = False
+        }
+    where
+        f Curve25519Sha256AtLibsshDotOrg  = "curve25519-sha256@libssh.org"
+        g KeyPairEd25519 {}               = "ssh-ed25519"
+        h Chacha20Poly1305AtOpensshDotCom = "chacha20-poly1305@openssh.com"
 
 exchangeHash ::
     Version ->               -- client version string
