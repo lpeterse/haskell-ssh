@@ -41,6 +41,7 @@ main = do
           Server.hostKey        = privateKey
         , Server.onAuthRequest  = \username _ _ -> pure (Just username)
         , Server.onExecRequest  = Just runExec
+        , Server.rekeyingAfterSeconds = 10
         }
     bracket open close (accept config)
   where

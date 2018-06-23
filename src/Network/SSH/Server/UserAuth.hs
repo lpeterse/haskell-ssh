@@ -3,7 +3,6 @@
 module Network.SSH.Server.UserAuth where
 
 import           Control.Concurrent.STM.TChan
-import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.STM.TVar
 import           Control.Monad                (forever, unless, when)
 import           Control.Monad.STM

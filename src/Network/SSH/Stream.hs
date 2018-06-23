@@ -1,4 +1,4 @@
-module Data.Stream where
+module Network.SSH.Stream where
 
 import           Control.Arrow     (second)
 import           Control.Exception

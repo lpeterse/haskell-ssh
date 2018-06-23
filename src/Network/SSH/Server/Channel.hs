@@ -14,16 +14,13 @@ import           Control.Concurrent.STM.TVar
 import           Control.Exception
 import           Control.Monad                (forever, join, unless, void,
                                                when)
-import           Control.Monad.STM
+import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
-import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
 import           Data.Maybe
-import qualified Data.Stream                  as DS
 import           Data.Text                    as T
 import           Data.Text.Encoding           as T
-import           Data.Typeable
 import           Data.Word
 import           System.Exit
 
@@ -34,6 +31,7 @@ import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
+import qualified Network.SSH.Stream           as DS
 import qualified Network.SSH.TAccountingQueue as AQ
 
 handleChannelOpen :: forall identity. Connection identity -> ChannelOpen -> IO ()

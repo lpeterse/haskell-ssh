@@ -1,28 +1,16 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes        #-}
+{-# LANGUAGE RankNTypes #-}
 module Network.SSH.Server.Config where
 
-import           Control.Applicative
-import           Control.Concurrent
-import           Control.Concurrent.Async
-import           Control.Concurrent.STM.TChan
-import           Control.Concurrent.STM.TMVar
-import           Control.Concurrent.STM.TVar
-import           Control.Exception
-import           Control.Monad                (forever, unless, when)
-import           Control.Monad.STM
+import           Control.Monad          (forever, unless, when)
 import           Control.Monad.Terminal
-import qualified Crypto.PubKey.Ed25519        as Ed25519
-import qualified Data.ByteArray               as BA
-import qualified Data.ByteString              as BS
-import           Data.Function                (fix)
-import           Data.Stream
+import qualified Crypto.PubKey.Ed25519  as Ed25519
+import qualified Data.ByteString        as BS
 import           Data.Word
 import           System.Exit
 
 import           Network.SSH.Key
 import           Network.SSH.Message
+import           Network.SSH.Stream
 
 type Command = BS.ByteString
 
@@ -36,6 +24,8 @@ data Config identity = Config {
     , channelMaxCount      :: Word16
     , channelMaxWindowSize :: Word32
     , channelMaxPacketSize :: Word32
+    , rekeyingAfterSeconds :: Word32
+    , rekeyingAfterBytes   :: Word32
     }
 
 newDefaultConfig :: IO (Config identity)
@@ -50,4 +40,6 @@ newDefaultConfig = do
         , channelMaxCount      = 256
         , channelMaxWindowSize = 256 * 1024
         , channelMaxPacketSize = 32 * 1024
+        , rekeyingAfterSeconds = 3600
+        , rekeyingAfterBytes   = 1024 * 1024 * 1024
         }

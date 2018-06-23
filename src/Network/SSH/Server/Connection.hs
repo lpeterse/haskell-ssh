@@ -6,23 +6,17 @@ module Network.SSH.Server.Connection
     , pullMessageSTM
     ) where
 
-import           Control.Applicative
-import           Control.Concurrent
-import           Control.Concurrent.Async
+import           Control.Applicative          ((<|>))
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.STM.TVar
-import           Control.Exception
+import           Control.Exception            (bracket)
 import           Control.Monad                (forever, unless, when)
-import           Control.Monad.STM
+import           Control.Monad.STM            (STM, atomically)
 import qualified Data.ByteString              as BS
-import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
-import           Data.Maybe
 import           Data.Text                    as T
 import           Data.Text.Encoding           as T
-import           Data.Typeable
-import           System.Exit
 
 import           Network.SSH.Constants
 import           Network.SSH.Exception

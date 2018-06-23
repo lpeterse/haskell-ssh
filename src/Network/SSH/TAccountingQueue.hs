@@ -6,7 +6,8 @@ import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Monad.STM
 import qualified Data.ByteArray               as BA
-import qualified Data.Stream                  as S
+
+import qualified Network.SSH.Stream           as S
 
 data TAccountingQueue
     = TAccountingQueue

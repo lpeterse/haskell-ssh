@@ -1,32 +1,20 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes        #-}
+{-# LANGUAGE RankNTypes #-}
 module Network.SSH.Server.Types where
 
-import           Control.Applicative
-import           Control.Concurrent
-import           Control.Concurrent.Async
+import           Control.Concurrent           (ThreadId)
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.STM.TVar
-import           Control.Exception
-import           Control.Monad                (forever, unless, when)
-import           Control.Monad.STM
 import           Control.Monad.Terminal
-import qualified Crypto.PubKey.Ed25519        as Ed25519
-import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
-import           Data.Function                (fix)
 import qualified Data.Map.Strict              as M
-import           Data.Maybe
-import           Data.Stream
-import           Data.Typeable
 import           Data.Word
 import           System.Exit
 
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
+import           Network.SSH.Stream
 import           Network.SSH.TAccountingQueue
 
 data Connection identity
