@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 39dfffdcbcfe0e119c7cdc2f15ec91f323ac694fa2585d7a6aa13360862e462b
+-- hash: 0bba3cd0b6972cc6258fad862750418ecf7a2c0d7264e11cae2c538666ef8ead
 
 name:           hssh
 version:        0.1.0.0
@@ -35,7 +35,6 @@ library
       Network.SSH.Algorithms
       Network.SSH.Constants
       Network.SSH.Encoding
-      Network.SSH.Exception
       Network.SSH.Key
       Network.SSH.Message
       Network.SSH.Server
@@ -59,6 +58,7 @@ library
     , base >=4.7 && <5
     , bytestring
     , cereal
+    , clock
     , containers
     , cryptonite
     , memory
@@ -77,6 +77,7 @@ executable hssh-demo
     , base >=4.7 && <5
     , bytestring
     , cereal
+    , clock
     , containers
     , cryptonite
     , hssh
@@ -104,6 +105,7 @@ test-suite hssh-test
     , base >=4.7 && <5
     , bytestring
     , cereal
+    , clock
     , containers
     , cryptonite
     , hssh

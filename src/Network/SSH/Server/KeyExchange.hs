@@ -3,7 +3,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server.KeyExchange where
 
-import           Control.Concurrent           (threadDelay)
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TChan
 import           Control.Exception            (throwIO)
@@ -20,10 +19,10 @@ import qualified Data.ByteString              as BS
 import           Data.List
 import qualified Data.List.NonEmpty           as NEL
 import           Data.Monoid                  ((<>))
+import           System.Clock
 
 import           Network.SSH.Algorithms
 import           Network.SSH.Encoding
-import           Network.SSH.Exception
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
@@ -41,45 +40,46 @@ performInitialKeyExchange config state = do
     msid <- newEmptyMVar
     handle <- newKexStepHandler config state (atomically . writeTChan out) msid
     handle KexStart
-    sendPlain state =<< atomically (readTChan out)
-    cki <- receivePlain state
+    sendPlain state =<< hookSend =<< atomically (readTChan out)
+    MsgKexInit cki <- hookRecv =<< receivePlain state
     handle (KexProcessInit cki)
-    clientKexEcdhInit <- receivePlain state
+    MsgKexEcdhInit clientKexEcdhInit <- hookRecv =<< receivePlain state
     handle (KexProcessEcdhInit clientKexEcdhInit)
-    sendPlain state =<< atomically (readTChan out) -- KexEcdhReply
-    sendPlain state =<< atomically (readTChan out) -- KexNewKeys
-    KexNewKeys <- receivePlain state
+    sendPlain state =<< hookSend =<< atomically (readTChan out) -- KexEcdhReply
+    sendPlain state =<< hookSend =<< atomically (readTChan out) -- KexNewKeys
+    MsgKexNewKeys _ <- hookRecv =<< receivePlain state
     session <- readMVar msid
     pure (session, readTChan out, handle)
+    where
+        hookSend msg = onSend config msg >> pure msg
+        hookRecv msg = onReceive config msg >> pure msg
 
 -- The rekeying watchdog is an inifinite loop that initiates
 -- a key re-exchange when either a certain amount of time has passed or
 -- when either the input or output stream has exceeded its threshold
 -- of bytes sent/received.
-runRekeyingWatchdog :: Config identity -> TransportState stream -> IO () -> IO ()
-runRekeyingWatchdog config state rekey = countDown interval
+askRekeyingRequired :: Config identity -> TransportState stream -> IO Bool
+askRekeyingRequired config state = do
+    t  <- fromIntegral . sec <$> getTime Monotonic
+    t0 <- readMVar (transportLastRekeyingTime state)
+    s  <- readMVar (transportBytesSent state)
+    s0 <- readMVar (transportLastRekeyingDataSent state)
+    r  <- readMVar (transportBytesReceived state)
+    r0 <- readMVar (transportLastRekeyingDataReceived state)
+    pure $ if   | intervalExceeded  t t0 -> True
+                | thresholdExceeded s s0 -> True
+                | thresholdExceeded r r0 -> True
+                | otherwise              -> False
     where
         -- For reasons of fool-proofness the rekeying interval/threshold
         -- shall never be greater than 1 hour or 1GB.
         -- NB: This is security critical as some algorithms like ChaCha20
         -- use the packet counter as nonce and an overflow will lead to
         -- nonce reuse!
-        interval = min (maxTimeBeforeRekey config) 3600
-        threshold = min (fromIntegral $ maxDataBeforeRekey config) (1024 * 1024 * 1024)
-        countDown 0 = do
-            rekey
-            countDown interval
-        countDown t = do
-            threadDelay 1000000
-            s  <- readMVar (transportBytesSent state)
-            s0 <- readMVar (transportBytesSentOnLastRekeying state)
-            r  <- readMVar (transportBytesReceived state)
-            r0 <- readMVar (transportBytesReceivedOnLastRekeying state)
-            if | thresholdExceeded s s0 -> rekey >> countDown interval
-               | thresholdExceeded r r0 -> rekey >> countDown interval
-               | otherwise              -> countDown (t - 1)
-            where
-                thresholdExceeded x x0 = x > x0 && x - x0 > threshold
+        interval  = min (maxTimeBeforeRekey config) 3600
+        threshold = min (maxDataBeforeRekey config) (1024 * 1024 * 1024)
+        intervalExceeded  t t0 = t > t0 && t - t0 > interval
+        thresholdExceeded x x0 = x > x0 && x - x0 > threshold
 
 newKexStepHandler :: (DuplexStream stream) => Config identity -> TransportState stream -> (Message -> IO ()) -> MVar SessionId -> IO (KexStep -> IO ())
 newKexStepHandler config state sendMsg msid = do
@@ -95,7 +95,7 @@ newKexStepHandler config state sendMsg msid = do
               sendMsg (MsgKexInit ski)
               void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
           KexProcessEcdhInit {} ->
-              throwIO $ SshProtocolErrorException "unexpected KexEcdhInit"
+              throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
 
       waitingForKexInit ski = \case
           KexStart ->
@@ -103,13 +103,13 @@ newKexStepHandler config state sendMsg msid = do
           KexProcessInit cki ->
               void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
           KexProcessEcdhInit {} ->
-              throwIO $ SshProtocolErrorException "unexpected KexEcdhInit"
+              throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
 
       waitingForKexEcdhInit ski cki = \case
           KexStart ->
               pure () -- already in progress
           KexProcessInit {} ->
-              throwIO $ SshProtocolErrorException "unexpected KexInit"
+              throwIO $ Disconnect DisconnectProtocolError "unexpected KexInit" ""
           KexProcessEcdhInit (KexEcdhInit clientEphemeralPublicKey) -> do
               completeEcdhExchange ski cki clientEphemeralPublicKey
               void $ swapMVar continuation noKexInProgress
@@ -186,8 +186,9 @@ newKexStepHandler config state sendMsg msid = do
             void $ swapMVar (transportReceiver state) $ do
                 receiveEncrypted state headerKeyCS mainKeyCS
 
-            void $ swapMVar (transportBytesSentOnLastRekeying state) =<< readMVar (transportBytesSent state)
-            void $ swapMVar (transportBytesReceivedOnLastRekeying state) =<< readMVar (transportBytesReceived state)
+            void $ swapMVar (transportLastRekeyingTime         state) =<< fromIntegral . sec <$> getTime Monotonic
+            void $ swapMVar (transportLastRekeyingDataSent     state) =<< readMVar (transportBytesSent     state)
+            void $ swapMVar (transportLastRekeyingDataReceived state) =<< readMVar (transportBytesReceived state)
 
             -- The encryption context shall be switched no earlier than
             -- before the new keys message has been transmitted.
@@ -255,7 +256,7 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
         putAsMPInt k
 
 deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> BS.ByteString -> SessionId -> [BA.ScrubbedBytes]
-deriveKeys sec hash i (SessionId sess) = BA.convert <$> k1 : f [k1]
+deriveKeys secret hash i (SessionId sess) = BA.convert <$> k1 : f [k1]
     where
     k1   = Hash.hashFinalize    $
         flip Hash.hashUpdate sess $
@@ -265,7 +266,7 @@ deriveKeys sec hash i (SessionId sess) = BA.convert <$> k1 : f [k1]
         kx = Hash.hashFinalize (foldl Hash.hashUpdate st ks)
     st =
         flip Hash.hashUpdate hash $
-        Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt sec)
+        Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
 
 sendEncrypted :: (OutputStream stream, BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
               => TransportState stream -> headerKey -> mainKey -> BS.ByteString -> IO ()
@@ -347,9 +348,9 @@ receiveEncrypted state headerKey mainKey = do
     let authTagExpected = Poly1305.auth (BS.take 32 poly) (paclenCiph <> pac)
 
     if authTagReceived /= authTagExpected
-        then throwIO $ SshCryptoErrorException "mac mismatch"
+        then throwIO $ Disconnect DisconnectMacError "" ""
         else do
             let plain = fst (ChaCha.combine ccMain' pac)
             case BS.uncons plain of
-                Nothing    -> throwIO $ SshSyntaxErrorException "packet structure"
+                Nothing    -> throwIO $ Disconnect DisconnectProtocolError "packet structure" ""
                 Just (h,t) -> pure $ BS.take (BS.length t - fromIntegral h) t

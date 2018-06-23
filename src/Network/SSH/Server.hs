@@ -3,17 +3,18 @@
 module Network.SSH.Server ( serve ) where
 
 import           Control.Applicative            ((<|>))
-import           Control.Concurrent.Async       (race_)
+import           Control.Concurrent.Async       (waitCatchSTM, withAsync)
 import           Control.Concurrent.MVar        (readMVar)
+import           Control.Concurrent.STM.TVar    (readTVar, registerDelay)
 import           Control.Exception              (throwIO)
-import           Control.Monad                  (void)
-import           Control.Monad.STM              (atomically)
+import           Control.Monad                  (join, void, when)
+import           Control.Monad.STM              (STM, atomically, check)
 import qualified Data.ByteString                as BS
+import           Data.Function                  (fix)
 import           Data.Monoid                    ((<>))
 
 import           Network.SSH.Constants
 import           Network.SSH.Encoding
-import           Network.SSH.Exception
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Connection
@@ -55,12 +56,13 @@ serve config stream = do
                 where
                     loop s = do
                         msg <- atomically $ kexOutput <|> pullMessageSTM connection
+                        onSend config msg
                         s $ runPut $ put msg
                         -- This thread shall terminate gracefully in case the
                         -- message was a disconnect message. By specification
                         -- no other messages may follow after a disconnect message.
                         case msg of
-                            MsgDisconnect {} -> pure ()
+                            MsgDisconnect d  -> throwIO d
                             MsgKexNewKeys {} -> loop =<< readMVar (transportSender state)
                             _                -> loop s
 
@@ -69,8 +71,9 @@ serve config stream = do
         -- or to the connection layer.
         let runReceiver = loop =<< readMVar (transportReceiver state)
                 where
-                    loop r = r >>= runGet get >>= \case
-                        MsgDisconnect x -> onDisconnect config x
+                    loop r = r >>= runGet get >>= \msg-> onReceive config msg >> case msg of
+                        MsgDisconnect x ->
+                            pure x
                         MsgKexInit kexInit -> do
                             kexNextStep (KexProcessInit kexInit)
                             loop r
@@ -79,15 +82,50 @@ serve config stream = do
                             loop r
                         MsgKexNewKeys {} -> do
                             loop =<< readMVar (transportReceiver state)
-                        msg -> do
-                            print msg
+                        _ -> do
                             pushMessage connection msg
                             loop r
 
         -- Two threads are necessary to process input and output concurrently.
         -- A third thread is used to initiate a rekeying after a certain amount of time
         -- or after exceeding transmission thresholds.
-        runSender `race_` runReceiver `race_` runRekeyingWatchdog config state (kexNextStep KexStart)
+        withAsync runSender $ \senderAsync->
+            withAsync runReceiver $ \receiverAsync-> fix $ \continue-> do
+
+                let waitSender = waitCatchSTM senderAsync >>= \case
+                        Left  e -> pure $ onDisconnect config (Left e)
+                        Right _ -> undefined -- impossible
+
+                let waitReceiver = waitCatchSTM receiverAsync >>= \case
+                        -- Handle graceful client disconnect (client sent disconnect message).
+                        -- This is the only non-exceptional case.
+                        Right d -> pure $ onDisconnect config (Right d)
+                        -- When the receiver threw an exception this may either be
+                        -- caused by invalid input, unexpected end of input or by program errors.
+                        -- All cases are exceptional.
+                        -- The sender thread is given one additional second to deliver the
+                        -- disconnect message to the client. This may be unsucessful if the
+                        -- connection is too slow or already closed. Delivery in this case
+                        -- cannot be guaranteed when using TCP anyway (see SO_LINGER).
+                        -- The server's main concern should be about freeing the resources as
+                        -- fast as possible.
+                        Left  e -> pure $ do
+                            timeout <- newTimer 1
+                            atomically $ void (waitCatchSTM senderAsync) <|> timeout
+                            onDisconnect config (Left  e)
+
+                let waitWatchdog delay = do
+                        delay :: STM ()
+                        pure $ do
+                            required <- askRekeyingRequired config state
+                            when required (kexNextStep KexStart)
+                            continue :: IO ()
+
+                delay <- newTimer 1
+                join $ atomically $ waitReceiver <|> waitSender <|> waitWatchdog delay
+    where
+        newTimer :: Int -> IO (STM ())
+        newTimer i = registerDelay (i * 1000000) >>= \t-> pure (readTVar t >>= check)
 
 -- The maximum length of the version string is 255 chars including CR+LF.
 -- The version string is usually short and transmitted within
@@ -101,5 +139,5 @@ receiveVersion stream = receive stream 255 >>= f
     where
         f bs
             | BS.last bs == 0x0a  = runGet get bs
-            | BS.length bs == 255 = throwIO $ SshSyntaxErrorException "invalid version string"
+            | BS.length bs == 255 = throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""
             | otherwise           = receive stream (255 - BS.length bs) >>= f . (bs <>)

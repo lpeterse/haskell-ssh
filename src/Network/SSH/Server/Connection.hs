@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Network.SSH.Server.Connection
     ( Connection ()
     , withConnection
@@ -53,9 +54,7 @@ disconnectWith connection reason =
     atomically $ putTMVar (connDisconnected connection) (Disconnect reason mempty mempty) <|> pure ()
 
 pushMessage :: Connection identity -> Message -> IO ()
-pushMessage connection msg = do
-  print msg
-  case msg of
+pushMessage connection = \case
     MsgIgnore {}                  -> pure ()
 
     MsgServiceRequest x           -> Service.handleServiceRequest      connection x
