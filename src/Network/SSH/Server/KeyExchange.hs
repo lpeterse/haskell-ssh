@@ -65,8 +65,8 @@ runRekeyingWatchdog config state rekey = countDown interval
         -- NB: This is security critical as some algorithms like ChaCha20
         -- use the packet counter as nonce and an overflow will lead to
         -- nonce reuse!
-        interval = min (rekeyingAfterSeconds config) 3600
-        threshold = min (fromIntegral $ rekeyingAfterBytes config) (1024 * 1024 * 1024)
+        interval = min (maxTimeBeforeRekey config) 3600
+        threshold = min (fromIntegral $ maxDataBeforeRekey config) (1024 * 1024 * 1024)
         countDown 0 = do
             rekey
             countDown interval

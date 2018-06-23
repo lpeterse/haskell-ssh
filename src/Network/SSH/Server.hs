@@ -51,7 +51,7 @@ serve config stream = do
         -- from either the transport or the connection layer.
         -- The sender is also aware of switching the encryption context
         -- when encountering KexNewKeys messages.
-        let sender = loop =<< readMVar (transportSender state)
+        let runSender = loop =<< readMVar (transportSender state)
                 where
                     loop s = do
                         msg <- atomically $ kexOutput <|> pullMessageSTM connection
@@ -67,7 +67,7 @@ serve config stream = do
         -- The receiver is an infinite loop that waits for incoming messages
         -- and dispatches it either to the transport layer handling functions
         -- or to the connection layer.
-        let receiver = loop =<< readMVar (transportReceiver state)
+        let runReceiver = loop =<< readMVar (transportReceiver state)
                 where
                     loop r = r >>= runGet get >>= \case
                         MsgDisconnect x -> onDisconnect config x
@@ -87,7 +87,7 @@ serve config stream = do
         -- Two threads are necessary to process input and output concurrently.
         -- A third thread is used to initiate a rekeying after a certain amount of time
         -- or after exceeding transmission thresholds.
-        sender `race_` receiver `race_` runRekeyingWatchdog config state (kexNextStep KexStart)
+        runSender `race_` runReceiver `race_` runRekeyingWatchdog config state (kexNextStep KexStart)
 
 -- The maximum length of the version string is 255 chars including CR+LF.
 -- The version string is usually short and transmitted within
