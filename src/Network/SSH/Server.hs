@@ -4,10 +4,12 @@
 {-# LANGUAGE RankNTypes        #-}
 module Network.SSH.Server ( serve ) where
 
+import           Control.Applicative
 import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TChan
+import           Control.Concurrent.STM.TMVar
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class
@@ -53,13 +55,12 @@ data TransportState stream
     ,   transportPacketsSent     :: MVar Word64
     ,   transportSender          :: MVar (BS.ByteString -> IO ())
     ,   transportReceiver        :: MVar (IO BS.ByteString)
-    ,   transportKeyExchange     :: MVar (Maybe KeyExchangeState)
     }
 
 data KeyExchangeState
-    = WaitingForKexInit      (KexInit -> IO KeyExchangeState)
+    = WaitingForRekeying
+    | WaitingForKexInit      (KexInit -> IO KeyExchangeState)
     | WaitingForKexEcdhInit  (KexEcdhInit -> IO KeyExchangeState)
-    | WaitingForKexNewKeys   (IO ())
 
 newTransportState :: DuplexStream stream => stream -> IO (TransportState stream)
 newTransportState stream = do
@@ -72,19 +73,9 @@ newTransportState stream = do
         <*> newMVar 0
         <*> pure s
         <*> pure r
-        <*> newMVar Nothing
     putMVar s (sendPlain state)
     putMVar r (receivePlain state)
     pure state
-
-rekey :: (DuplexStream stream) => Config identity -> TransportState stream -> IO ()
-rekey config state = do
-    modifyMVar_ (transportKeyExchange state) $ \case
-        -- When rekeying is already in progress, there's nothing to do.
-        Just x -> pure (Just x)
-        -- Otherwise, a KexInit message shall be sent to the client and
-        -- server goes into expecting state.
-        Nothing -> pure Nothing
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = do
@@ -124,18 +115,30 @@ serve config stream = do
     -- It also contains resources that need to be freed on termination
     -- (like running threads), therefore the bracket pattern.
     withConnection config session $ \connection-> do
+        -- This variable shall be used to interleave the sending
+        -- of transport messages with high priority with the regular output
+        -- from higher layers.
+        priorityOutput <- newEmptyTMVarIO
+        -- The kex handler is a state machine that keeps track of
+        -- running key exchanges and all required context.
+        -- Key re-exchanges may be interleaved with regular traffic and
+        -- therefore cannot be performed synchronously.
+        handleKexStep <- newKexStepHandler config state (atomically . putTMVar priorityOutput)
+
         -- The sender is an infinite loop that pulls messages from the connection
         -- object. Produced messages are encoded and sent.
-        let sender = do
-                s <- readMVar (transportSender state)
-                msg <- pullMessage connection
-                s $ C.runPut $ put msg
-                -- This thread shall terminate gracefully in case the
-                -- message was a disconnect message. Per specification
-                -- no other messages may follow after a disconnect message.
-                case msg of
-                    MsgDisconnect {} -> pure ()
-                    _                -> sender
+        let sender = loop =<< readMVar (transportSender state)
+                where
+                    loop s = do
+                        msg <- atomically $ takeTMVar priorityOutput <|> pullMessageSTM connection
+                        s $ runPut $ put msg
+                        -- This thread shall terminate gracefully in case the
+                        -- message was a disconnect message. By specification
+                        -- no other messages may follow after a disconnect message.
+                        case msg of
+                            MsgDisconnect {} -> pure ()
+                            MsgKexNewKeys {} -> loop =<< readMVar (transportSender state)
+                            _                -> loop s
 
         -- The receiver is an infinite loop that waits for input on the stream,
         -- parses it and pushes it into the connection state object.
@@ -143,9 +146,17 @@ serve config stream = do
                 where
                     loop r = r >>= runGet get >>= \case
                         MsgDisconnect x -> onDisconnect config x
-                        MsgKexNewKeys KexNewKeys -> do
+                        MsgKexInit kexInit -> do
+                            handleKexStep (KexProcessInit kexInit)
+                            loop r
+                        MsgKexEcdhInit kexEcdhInit -> do
+                            handleKexStep (KexProcessEcdhInit kexEcdhInit)
+                            loop r
+                        MsgKexNewKeys {} -> do
+                            print "NEW"
                             loop =<< readMVar (transportReceiver state)
                         msg -> do
+                            print msg
                             pushMessage connection msg
                             loop r
 
@@ -153,7 +164,7 @@ serve config stream = do
                 where
                     interval = 3600
                     countDown 0 = do
-                        rekey config state
+                        handleKexStep KexStart
                         countDown interval
                     countDown t = do
                         threadDelay 1000000
@@ -162,6 +173,48 @@ serve config stream = do
         -- Two threads are necessary to process input and output concurrently.
         -- A third thread is used to initiate a rekeying after a certain amount of time.
         sender `race_` receiver `race_` rekeyingWatchdog
+
+data KexStep
+    = KexStart
+    | KexProcessInit KexInit
+    | KexProcessEcdhInit KexEcdhInit
+
+newKexStepHandler :: Config identity -> TransportState stream -> (Message -> IO ()) -> IO (KexStep -> IO ())
+newKexStepHandler config state sendMsg = do
+    continuation <- newEmptyMVar
+
+    let noKexInProgress = \case
+            KexStart -> do
+                ski <- kexInit <$> newCookie
+                sendMsg (MsgKexInit ski)
+                void $ swapMVar continuation (waitingForKexInit ski)
+            KexProcessInit cki -> do
+                ski <- kexInit <$> newCookie
+                sendMsg (MsgKexInit ski)
+                void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
+            KexProcessEcdhInit {} ->
+                throwIO $ SshProtocolErrorException "unexpected KexEcdhInit"
+
+        waitingForKexInit ski = \case
+            KexStart ->
+                pure () -- already in progress
+            KexProcessInit cki ->
+                void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
+            KexProcessEcdhInit {} ->
+                throwIO $ SshProtocolErrorException "unexpected KexEcdhInit"
+
+        waitingForKexEcdhInit ski cki = \case
+            KexStart ->
+                pure () -- already in progress
+            KexProcessInit {} ->
+                throwIO $ SshProtocolErrorException "unexpected KexInit"
+            KexProcessEcdhInit ecdhi ->
+                undefined
+
+    putMVar continuation noKexInProgress
+    pure $ \step-> do
+        handle <- readMVar continuation
+        handle step
 
 data Keys
     = Keys
@@ -221,7 +274,7 @@ exchangeKeys config state serverKexInit serverVersion clientKexInit clientVersio
             -- with a KexNewKeys msg.
             sendPlain state kexEcdhReply
             sendPlain state KexNewKeys
-            KexNewKeys <- receivePlain state
+            MsgKexNewKeys {} <- receivePlain state
 
             pure Keys {
                     keysSession        = session
@@ -244,6 +297,12 @@ receiveVersion stream = receive stream 255 >>= f
             | BS.length bs == 255 = throwIO $ SshSyntaxErrorException "invalid version string"
             | otherwise           = receive stream (255 - BS.length bs) >>= f . (bs <>)
 
+sendPlain :: (OutputStream stream, Encoding msg) => TransportState stream -> msg -> IO ()
+sendPlain state msg = do
+    sent <- sendAll (transportStream state) $ runPut $ putPacked msg
+    modifyMVar_ (transportBytesSent state) (\i-> pure $! i + fromIntegral sent)
+    modifyMVar_ (transportPacketsSent state) (\i-> pure $! i + 1)
+
 receivePlain :: (InputStream stream, Encoding msg) => TransportState stream -> IO msg
 receivePlain state = do
     let stream = transportStream state
@@ -254,12 +313,6 @@ receivePlain state = do
     modifyMVar_ (transportBytesReceived state) (\i-> pure $! i + 4 + fromIntegral len)
     modifyMVar_ (transportPacketsReceived state) (\i-> pure $! i + 1)
     pure msg
-
-sendPlain :: (OutputStream stream, Encoding msg) => TransportState stream -> msg -> IO ()
-sendPlain state msg = do
-    sent <- sendAll (transportStream state) $ runPut $ putPacked msg
-    modifyMVar_ (transportBytesSent state) (\i-> pure $! i + fromIntegral sent)
-    modifyMVar_ (transportPacketsSent state) (\i-> pure $! i + 1)
 
 sendEncrypted :: (OutputStream stream, BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
     => TransportState stream -> headerKey -> mainKey -> BS.ByteString -> IO ()
