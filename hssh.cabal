@@ -1,8 +1,8 @@
--- This file has been generated from package.yaml by hpack version 0.28.2.
+-- This file has been generated from package.yaml by hpack version 0.20.0.
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 0bba3cd0b6972cc6258fad862750418ecf7a2c0d7264e11cae2c538666ef8ead
+-- hash: 714c7541cf52bd854b0a30a047eb14537a81a906c40a4abe60912e181efffeee
 
 name:           hssh
 version:        0.1.0.0
@@ -17,6 +17,7 @@ license:        MIT
 license-file:   LICENSE
 build-type:     Simple
 cabal-version:  >= 1.10
+
 extra-source-files:
     CHANGELOG.md
     README.md
@@ -31,6 +32,19 @@ flag demo
   default: False
 
 library
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -fno-warn-orphans
+  build-depends:
+      async
+    , base >=4.7 && <5
+    , bytestring
+    , cereal
+    , clock
+    , containers
+    , cryptonite
+    , memory
+    , stm
   exposed-modules:
       Network.SSH.Algorithms
       Network.SSH.Constants
@@ -50,25 +64,10 @@ library
       Network.SSH.TAccountingQueue
   other-modules:
       Paths_hssh
-  hs-source-dirs:
-      src
-  ghc-options: -Wall -fno-warn-orphans
-  build-depends:
-      async
-    , base >=4.7 && <5
-    , bytestring
-    , cereal
-    , clock
-    , containers
-    , cryptonite
-    , memory
-    , stm
   default-language: Haskell2010
 
 executable hssh-demo
   main-is: Main.hs
-  other-modules:
-      Paths_hssh
   hs-source-dirs:
       app
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
@@ -88,15 +87,13 @@ executable hssh-demo
     buildable: True
   else
     buildable: False
+  other-modules:
+      Paths_hssh
   default-language: Haskell2010
 
 test-suite hssh-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
-  other-modules:
-      Spec.Key
-      Spec.Message
-      Paths_hssh
   hs-source-dirs:
       test
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
@@ -114,4 +111,8 @@ test-suite hssh-test
     , tasty
     , tasty-hunit
     , tasty-quickcheck
+  other-modules:
+      Spec.Key
+      Spec.Message
+      Paths_hssh
   default-language: Haskell2010

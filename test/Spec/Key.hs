@@ -29,20 +29,19 @@ testDecodePrivatePrivateKeyFile = testGroup "decodePrivateKeyFile"
         testPrivateKeyFileParser bcryptAes256CtrEd25519PrivateKeyFile
     ]
 
-testPrivateKeyFileParser :: (BS.ByteString, BS.ByteString, [(PrivateKey, BS.ByteString)]) -> Assertion
+testPrivateKeyFileParser :: (BS.ByteString, BS.ByteString, [(KeyPair, BS.ByteString)]) -> Assertion
 testPrivateKeyFileParser (file, passphrase, keys) = do
     keys' <- decodePrivateKeyFile passphrase file
     when (length keys /= length keys') (assertFailure "wrong number of keys")
     zipWithM_ f keys keys'
     where
-        f (Ed25519PrivateKey p0 s0, c0) (Ed25519PrivateKey p1 s1, c1) = do
+        f (KeyPairEd25519 p0 s0, c0) (KeyPairEd25519 p1 s1, c1) = do
             c0 @=? c1
             p0 @=? p1
             s0 @=? s1
-        f _ _ = assertFailure "key type mismatch"
 
-unencryptedEd25519PrivateKeyFile :: (BS.ByteString, BS.ByteString, [(PrivateKey, BS.ByteString)])
-unencryptedEd25519PrivateKeyFile = (file, passphrase, [(Ed25519PrivateKey public secret, "lpetersen@gallifrey")])
+unencryptedEd25519PrivateKeyFile :: (BS.ByteString, BS.ByteString, [(KeyPair, BS.ByteString)])
+unencryptedEd25519PrivateKeyFile = (file, passphrase, [(KeyPairEd25519 public secret, "lpetersen@gallifrey")])
     where
         file = mconcat
             [ "-----BEGIN OPENSSH PRIVATE KEY-----\n"
@@ -59,8 +58,8 @@ unencryptedEd25519PrivateKeyFile = (file, passphrase, [(Ed25519PrivateKey public
         CryptoPassed secret = Ed25519.secretKey
             ("O6J\227b\US\171lG\v$E\249\195\173\223\RS\227K\186,=\132\147\171\&9\166Q\196j\131\129" :: BS.ByteString)
 
-bcryptAes256CbcEd25519PrivateKeyFile :: (BS.ByteString, BS.ByteString, [(PrivateKey, BS.ByteString)])
-bcryptAes256CbcEd25519PrivateKeyFile = (file, passphrase, [(Ed25519PrivateKey public secret, "comment1234")])
+bcryptAes256CbcEd25519PrivateKeyFile :: (BS.ByteString, BS.ByteString, [(KeyPair, BS.ByteString)])
+bcryptAes256CbcEd25519PrivateKeyFile = (file, passphrase, [(KeyPairEd25519 public secret, "comment1234")])
     where
         file = mconcat
             [ "-----BEGIN OPENSSH PRIVATE KEY-----\n"
@@ -78,8 +77,8 @@ bcryptAes256CbcEd25519PrivateKeyFile = (file, passphrase, [(Ed25519PrivateKey pu
         CryptoPassed secret = Ed25519.secretKey
             ("\221\209\ETB\224\"M\133\169z\215H\158\DEL\134\&2n\155,q\227\229\251\183A+}\DC4qU\156\209n" :: BS.ByteString)
 
-bcryptAes256CtrEd25519PrivateKeyFile :: (BS.ByteString, BS.ByteString, [(PrivateKey, BS.ByteString)])
-bcryptAes256CtrEd25519PrivateKeyFile = (file, passphrase, [(Ed25519PrivateKey public secret, "comment")])
+bcryptAes256CtrEd25519PrivateKeyFile :: (BS.ByteString, BS.ByteString, [(KeyPair, BS.ByteString)])
+bcryptAes256CtrEd25519PrivateKeyFile = (file, passphrase, [(KeyPairEd25519 public secret, "comment")])
     where
         file = mconcat
             [ "-----BEGIN OPENSSH PRIVATE KEY-----\n"
