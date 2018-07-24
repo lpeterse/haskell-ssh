@@ -1,8 +1,10 @@
--- This file has been generated from package.yaml by hpack version 0.20.0.
+cabal-version: >= 1.10
+
+-- This file has been generated from package.yaml by hpack version 0.29.5.
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 714c7541cf52bd854b0a30a047eb14537a81a906c40a4abe60912e181efffeee
+-- hash: 39dcae893f9491e67fc0b3af2e9608e91db1a913b7bb9da0c9ed23c8d51f4883
 
 name:           hssh
 version:        0.1.0.0
@@ -16,8 +18,6 @@ copyright:      2017 Lars Petersen
 license:        MIT
 license-file:   LICENSE
 build-type:     Simple
-cabal-version:  >= 1.10
-
 extra-source-files:
     CHANGELOG.md
     README.md

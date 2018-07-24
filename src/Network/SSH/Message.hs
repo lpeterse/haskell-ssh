@@ -358,21 +358,21 @@ type ChannelWindowSize = Word32
 type ChannelMaxPacketSize = Word32
 
 newtype Version           = Version           BS.ByteString
-    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype Algorithm         = Algorithm         BS.ByteString
-    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype Password          = Password          BS.ByteString
-    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype SessionId         = SessionId         BS.ByteString
-    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype UserName          = UserName          BS.ByteString
-    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype AuthMethodName    = AuthMethodName    BS.ByteString
-    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype ServiceName       = ServiceName       BS.ByteString
-    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype ChannelType       = ChannelType       BS.ByteString
-    deriving (Eq, Ord, Show, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype ChannelId         = ChannelId         Word32
     deriving (Eq, Ord, Show)
 
