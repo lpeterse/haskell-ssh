@@ -1,6 +1,7 @@
 resolver: lts-12.2
 packages:
 - .
+- ../haskell-socket
 #- ../haskell-terminal
 #- ../haskell-replique
 extra-deps:

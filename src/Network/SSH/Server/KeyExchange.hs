@@ -34,8 +34,8 @@ data KexStep
     | KexProcessInit KexInit
     | KexProcessEcdhInit KexEcdhInit
 
-performInitialKeyExchange :: (DuplexStream stream) => Config identity -> TransportState stream -> IO (SessionId, STM Message, KexStep -> IO ())
-performInitialKeyExchange config state = do
+performInitialKeyExchange :: (DuplexStream stream) => Config identity -> TransportState stream -> Version -> Version -> IO (SessionId, STM Message, KexStep -> IO ())
+performInitialKeyExchange config state clientVersion serverVersion = do
     out <- newTChanIO
     msid <- newEmptyMVar
     handle <- newKexStepHandler config state (atomically . writeTChan out) msid

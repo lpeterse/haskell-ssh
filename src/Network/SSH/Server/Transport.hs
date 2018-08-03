@@ -20,8 +20,6 @@ import           Network.SSH.Stream
 data TransportState stream
     = TransportState
     {   transportStream                   :: stream
-    ,   transportClientVersion            :: Version
-    ,   transportServerVersion            :: Version
     ,   transportPacketsReceived          :: MVar Word64
     ,   transportBytesReceived            :: MVar Word64
     ,   transportPacketsSent              :: MVar Word64
@@ -33,11 +31,11 @@ data TransportState stream
     ,   transportReceiver                 :: MVar (IO BS.ByteString)
     }
 
-newTransportState :: DuplexStream stream => stream -> Version -> Version -> IO (TransportState stream)
-newTransportState stream clientVersion serverVersion = do
+newTransportState :: DuplexStream stream => stream -> IO (TransportState stream)
+newTransportState stream = do
     s <- newEmptyMVar
     r <- newEmptyMVar
-    state <- TransportState stream clientVersion serverVersion
+    state <- TransportState stream
         <$> newMVar 0
         <*> newMVar 0
         <*> newMVar 0
