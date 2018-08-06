@@ -24,7 +24,7 @@ data Config identity = Config {
                                     => Maybe (identity -> stdin -> stdout -> stderr -> Command -> IO ExitCode)
     , onSend                        :: Message -> IO ()
     , onReceive                     :: Message -> IO ()
-    , onDisconnect                  :: DisconnectType -> IO ()
+    , onDisconnect                  :: DisconnectInfo -> IO ()
     , transportBufferSize           :: Word16
     , channelMaxCount               :: Word16
     , channelMaxWindowSize          :: Word32
@@ -33,7 +33,7 @@ data Config identity = Config {
     , maxDataBeforeRekey            :: Word64
     }
 
-data DisconnectType
+data DisconnectInfo
   = ClientDisconnect Disconnect
   | ServerDisconnect Disconnect
   | ExternDisconnect SomeException

@@ -1,5 +1,4 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 module Network.SSH.Server ( serve ) where
 
 import           Control.Applicative            ((<|>))
@@ -29,11 +28,6 @@ serve config stream = do
     state <- newTransportState stream
 
     withExceptionsCaught state $ do
-        -- Receive the client version string and immediately reply
-        -- with the server version string if the client version string is valid.
-        clientVersion <- receiveVersion stream
-        void $ sendAll stream $ runPut $ put version
-
         -- Perform the initial key exchange.
         -- This key exchange is handled separately as the key exchange protocol
         -- shall be followed strictly and no other messages shall be accepted
@@ -94,13 +88,13 @@ serve config stream = do
                 withAsync runReceiver $ \receiverAsync-> fix $ \continue-> do
 
                     let waitSender = waitCatchSTM senderAsync >>= \case
-                            Left  e -> pure $ onDisconnect config (Left e)
+                            Left  e -> pure $ pure () -- onDisconnect config (Left e)
                             Right _ -> undefined -- impossible
 
                     let waitReceiver = waitCatchSTM receiverAsync >>= \case
                             -- Handle graceful client disconnect (client sent disconnect message).
                             -- This is the only non-exceptional case.
-                            Right d -> pure $ onDisconnect config (Right d)
+                            Right d -> pure $ pure () -- onDisconnect config (Right d)
                             -- When the receiver threw an exception this may either be
                             -- caused by invalid input, unexpected end of input or by program errors.
                             -- All cases are exceptional.
@@ -113,7 +107,7 @@ serve config stream = do
                             Left  e -> pure $ do
                                 timeout <- newTimer 1
                                 atomically $ void (waitCatchSTM senderAsync) <|> timeout
-                                onDisconnect config (Left  e)
+                                -- onDisconnect config (Left  e)
 
                     let waitWatchdog delay = do
                             delay :: STM ()
@@ -130,17 +124,4 @@ serve config stream = do
 
         withExceptionsCaught state action = action
 
--- The maximum length of the version string is 255 chars including CR+LF.
--- The version string is usually short and transmitted within
--- a single TCP segment. The concatenation is therefore unlikely to happen
--- for regular use cases, but nonetheless required for correctness.
--- It is furthermore assumed that the client does not send any more data
--- after the version string before having received a response from the server;
--- otherwise parsing will fail. This is done in order to not having to deal with leftovers.
-receiveVersion :: (InputStream stream) => stream -> IO Version
-receiveVersion stream = receive stream 255 >>= f
-    where
-        f bs
-            | BS.last bs == 0x0a  = runGet get bs
-            | BS.length bs == 255 = throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""
-            | otherwise           = receive stream (255 - BS.length bs) >>= f . (bs <>)
+

@@ -22,6 +22,7 @@ import           Data.Monoid                  ((<>))
 import           System.Clock
 
 import           Network.SSH.Algorithms
+import           Network.SSH.Constants
 import           Network.SSH.Encoding
 import           Network.SSH.Key
 import           Network.SSH.Message
@@ -34,11 +35,18 @@ data KexStep
     | KexProcessInit KexInit
     | KexProcessEcdhInit KexEcdhInit
 
-performInitialKeyExchange :: (DuplexStream stream) => Config identity -> TransportState stream -> Version -> Version -> IO (SessionId, STM Message, KexStep -> IO ())
-performInitialKeyExchange config state clientVersion serverVersion = do
+performInitialKeyExchange :: (DuplexStream stream)
+    => Config identity -> TransportState stream
+    -> IO (SessionId, STM Message, KexStep -> IO ())
+performInitialKeyExchange config state = do
+    -- Receive the client version string and immediately reply
+    -- with the server version string if the client version string is valid.
+    clientVersion <- receiveVersion (transportStream state)
+    void $ sendAll (transportStream state) $ runPut $ put version
+
     out <- newTChanIO
     msid <- newEmptyMVar
-    handle <- newKexStepHandler config state (atomically . writeTChan out) msid
+    handle <- newKexStepHandler config state clientVersion version (atomically . writeTChan out) msid
     handle KexStart
     sendPlain state =<< hookSend =<< atomically (readTChan out)
     MsgKexInit cki <- hookRecv =<< receivePlain state
@@ -81,8 +89,10 @@ askRekeyingRequired config state = do
         intervalExceeded  t t0 = t > t0 && t - t0 > interval
         thresholdExceeded x x0 = x > x0 && x - x0 > threshold
 
-newKexStepHandler :: (DuplexStream stream) => Config identity -> TransportState stream -> (Message -> IO ()) -> MVar SessionId -> IO (KexStep -> IO ())
-newKexStepHandler config state sendMsg msid = do
+newKexStepHandler :: (DuplexStream stream)
+    => Config identity -> TransportState stream -> Version -> Version
+    -> (Message -> IO ()) -> MVar SessionId -> IO (KexStep -> IO ())
+newKexStepHandler config state clientVersion serverVersion sendMsg msid = do
   continuation <- newEmptyMVar
 
   let noKexInProgress = \case
@@ -147,8 +157,8 @@ newKexStepHandler config state sendMsg msid = do
                     serverEphemeralSecretKey
 
             let hash = exchangeHash
-                    (transportClientVersion state)
-                    (transportServerVersion state)
+                    clientVersion
+                    serverVersion
                     cki
                     ski
                     (PublicKeyEd25519 pubKey)
@@ -354,3 +364,18 @@ receiveEncrypted state headerKey mainKey = do
             case BS.uncons plain of
                 Nothing    -> throwIO $ Disconnect DisconnectProtocolError "packet structure" ""
                 Just (h,t) -> pure $ BS.take (BS.length t - fromIntegral h) t
+
+-- The maximum length of the version string is 255 chars including CR+LF.
+-- The version string is usually short and transmitted within
+-- a single TCP segment. The concatenation is therefore unlikely to happen
+-- for regular use cases, but nonetheless required for correctness.
+-- It is furthermore assumed that the client does not send any more data
+-- after the version string before having received a response from the server;
+-- otherwise parsing will fail. This is done in order to not having to deal with leftovers.
+receiveVersion :: (InputStream stream) => stream -> IO Version
+receiveVersion stream = receive stream 255 >>= f
+    where
+        f bs
+            | BS.last bs == 0x0a  = runGet get bs
+            | BS.length bs == 255 = throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""
+            | otherwise           = receive stream (255 - BS.length bs) >>= f . (bs <>)
