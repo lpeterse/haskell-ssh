@@ -93,117 +93,117 @@ newKexStepHandler :: (DuplexStream stream)
     => Config identity -> TransportState stream -> Version -> Version
     -> (Message -> IO ()) -> MVar SessionId -> IO (KexStep -> IO ())
 newKexStepHandler config state clientVersion serverVersion sendMsg msid = do
-  continuation <- newEmptyMVar
+    continuation <- newEmptyMVar
 
-  let noKexInProgress = \case
-          KexStart -> do
-              ski <- newKexInit config
-              sendMsg (MsgKexInit ski)
-              void $ swapMVar continuation (waitingForKexInit ski)
-          KexProcessInit cki -> do
-              ski <- newKexInit config
-              sendMsg (MsgKexInit ski)
-              void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
-          KexProcessEcdhInit {} ->
-              throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
+    let noKexInProgress = \case
+            KexStart -> do
+                ski <- newKexInit config
+                sendMsg (MsgKexInit ski)
+                void $ swapMVar continuation (waitingForKexInit ski)
+            KexProcessInit cki -> do
+                ski <- newKexInit config
+                sendMsg (MsgKexInit ski)
+                void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
+            KexProcessEcdhInit {} ->
+                throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
 
-      waitingForKexInit ski = \case
-          KexStart ->
-              pure () -- already in progress
-          KexProcessInit cki ->
-              void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
-          KexProcessEcdhInit {} ->
-              throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
+        waitingForKexInit ski = \case
+            KexStart ->
+                pure () -- already in progress
+            KexProcessInit cki ->
+                void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
+            KexProcessEcdhInit {} ->
+                throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
 
-      waitingForKexEcdhInit ski cki = \case
-          KexStart ->
-              pure () -- already in progress
-          KexProcessInit {} ->
-              throwIO $ Disconnect DisconnectProtocolError "unexpected KexInit" ""
-          KexProcessEcdhInit (KexEcdhInit clientEphemeralPublicKey) -> do
-              completeEcdhExchange ski cki clientEphemeralPublicKey
-              void $ swapMVar continuation noKexInProgress
+        waitingForKexEcdhInit ski cki = \case
+            KexStart ->
+                pure () -- already in progress
+            KexProcessInit {} ->
+                throwIO $ Disconnect DisconnectProtocolError "unexpected KexInit" ""
+            KexProcessEcdhInit (KexEcdhInit clientEphemeralPublicKey) -> do
+                completeEcdhExchange ski cki clientEphemeralPublicKey
+                void $ swapMVar continuation noKexInProgress
 
-  putMVar continuation noKexInProgress
-  pure $ \step-> do
-        handle <- readMVar continuation
-        handle step
-    where
-        completeEcdhExchange ski cki clientEphemeralPublicKey = do
-            kexAlgorithm   <- commonKexAlgorithm   ski cki
-            encAlgorithmCS <- commonEncAlgorithmCS ski cki
-            encAlgorithmSC <- commonEncAlgorithmSC ski cki
+    putMVar continuation noKexInProgress
+    pure $ \step-> do
+            handle <- readMVar continuation
+            handle step
+        where
+            completeEcdhExchange ski cki clientEphemeralPublicKey = do
+                kexAlgorithm   <- commonKexAlgorithm   ski cki
+                encAlgorithmCS <- commonEncAlgorithmCS ski cki
+                encAlgorithmSC <- commonEncAlgorithmSC ski cki
 
-            -- TODO: Dispatch here when implementing support for more algorithms.
-            case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
-                (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
-                    completeCurve25519KeyExchange ski cki clientEphemeralPublicKey
+                -- TODO: Dispatch here when implementing support for more algorithms.
+                case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
+                    (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
+                        completeCurve25519KeyExchange ski cki clientEphemeralPublicKey
 
-        completeCurve25519KeyExchange ski cki clientEphemeralPublicKey = do
-            -- Generate a Curve25519 keypair for elliptic curve Diffie-Hellman key exchange.
-            serverEphemeralSecretKey <- Curve25519.generateSecretKey
-            serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
+            completeCurve25519KeyExchange ski cki clientEphemeralPublicKey = do
+                -- Generate a Curve25519 keypair for elliptic curve Diffie-Hellman key exchange.
+                serverEphemeralSecretKey <- Curve25519.generateSecretKey
+                serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
 
-            KeyPairEd25519 pubKey secKey <- do
-                let isEd25519 KeyPairEd25519 {} = True
-                    -- TODO: Required when more algorithms are implemented.
-                    -- isEd25519 _                 = False
-                case NEL.filter isEd25519 (hostKeys config) of
-                    (x:_) -> pure x
-                    _     -> undefined -- impossible
+                KeyPairEd25519 pubKey secKey <- do
+                    let isEd25519 KeyPairEd25519 {} = True
+                        -- TODO: Required when more algorithms are implemented.
+                        -- isEd25519 _                 = False
+                    case NEL.filter isEd25519 (hostKeys config) of
+                        (x:_) -> pure x
+                        _     -> undefined -- impossible
 
-            let secret = Curve25519.dh
-                    clientEphemeralPublicKey
-                    serverEphemeralSecretKey
+                let secret = Curve25519.dh
+                        clientEphemeralPublicKey
+                        serverEphemeralSecretKey
 
-            let hash = exchangeHash
-                    clientVersion
-                    serverVersion
-                    cki
-                    ski
-                    (PublicKeyEd25519 pubKey)
-                    clientEphemeralPublicKey
-                    serverEphemeralPublicKey
-                    secret
+                let hash = exchangeHash
+                        clientVersion
+                        serverVersion
+                        cki
+                        ski
+                        (PublicKeyEd25519 pubKey)
+                        clientEphemeralPublicKey
+                        serverEphemeralPublicKey
+                        secret
 
-            -- The reply is shall be sent with the old encryption context.
-            -- This is the case as long as the KexNewKeys message has not
-            -- been transmitted.
-            sendMsg $ MsgKexEcdhReply KexEcdhReply {
-                        kexServerHostKey      = PublicKeyEd25519 pubKey
-                    ,   kexServerEphemeralKey = serverEphemeralPublicKey
-                    ,   kexHashSignature      = SignatureEd25519 $ Ed25519.sign
-                                                    secKey
-                                                    pubKey
-                                                    hash
-                    }
+                -- The reply is shall be sent with the old encryption context.
+                -- This is the case as long as the KexNewKeys message has not
+                -- been transmitted.
+                sendMsg $ MsgKexEcdhReply KexEcdhReply {
+                            kexServerHostKey      = PublicKeyEd25519 pubKey
+                        ,   kexServerEphemeralKey = serverEphemeralPublicKey
+                        ,   kexHashSignature      = SignatureEd25519 $ Ed25519.sign
+                                                        secKey
+                                                        pubKey
+                                                        hash
+                        }
 
-            session <- tryReadMVar msid >>= \case
-                Just s -> pure s
-                Nothing -> do
-                    let s = SessionId $ BA.convert hash
-                    putMVar msid s
-                    pure s
+                session <- tryReadMVar msid >>= \case
+                    Just s -> pure s
+                    Nothing -> do
+                        let s = SessionId $ BA.convert hash
+                        putMVar msid s
+                        pure s
 
-            -- Derive the required encryption/decryption keys.
-            -- The integrity keys etc. are not needed with chacha20.
-            let mainKeyCS:headerKeyCS:_ = deriveKeys secret hash "C" session
-                mainKeySC:headerKeySC:_ = deriveKeys secret hash "D" session
+                -- Derive the required encryption/decryption keys.
+                -- The integrity keys etc. are not needed with chacha20.
+                let mainKeyCS:headerKeyCS:_ = deriveKeys secret hash "C" session
+                    mainKeySC:headerKeySC:_ = deriveKeys secret hash "D" session
 
-            void $ swapMVar (transportSender state) $
-                sendEncrypted state headerKeySC mainKeySC
+                void $ swapMVar (transportSender state) $
+                    sendEncrypted state headerKeySC mainKeySC
 
-            void $ swapMVar (transportReceiver state) $ do
-                receiveEncrypted state headerKeyCS mainKeyCS
+                void $ swapMVar (transportReceiver state) $
+                    receiveEncrypted state headerKeyCS mainKeyCS
 
-            void $ swapMVar (transportLastRekeyingTime         state) =<< fromIntegral . sec <$> getTime Monotonic
-            void $ swapMVar (transportLastRekeyingDataSent     state) =<< readMVar (transportBytesSent     state)
-            void $ swapMVar (transportLastRekeyingDataReceived state) =<< readMVar (transportBytesReceived state)
+                void $ swapMVar (transportLastRekeyingTime         state) =<< fromIntegral . sec <$> getTime Monotonic
+                void $ swapMVar (transportLastRekeyingDataSent     state) =<< readMVar (transportBytesSent     state)
+                void $ swapMVar (transportLastRekeyingDataReceived state) =<< readMVar (transportBytesReceived state)
 
-            -- The encryption context shall be switched no earlier than
-            -- before the new keys message has been transmitted.
-            -- It's the sender's thread responsibility to switch the context.
-            sendMsg (MsgKexNewKeys KexNewKeys)
+                -- The encryption context shall be switched no earlier than
+                -- before the new keys message has been transmitted.
+                -- It's the sender's thread responsibility to switch the context.
+                sendMsg (MsgKexNewKeys KexNewKeys)
 
 commonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
 commonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of

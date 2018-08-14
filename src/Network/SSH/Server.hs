@@ -27,7 +27,7 @@ import           Network.SSH.Server.Transport
 import           Network.SSH.Stream
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
-serve config stream = do
+serve config stream = withHandledExceptions $ do
     -- Initialize a new transport state object to keep track of
     -- packet sequence numbers and encryption contexts.
     state <- newTransportState stream
@@ -108,12 +108,17 @@ serve config stream = do
         -- Two threads are necessary to process input and output concurrently.
         -- A third thread is used to initiate a rekeying after a certain amount of time
         -- or after exceeding transmission thresholds.
-        withAsync runReceiver $ \receiverAsync ->
-            withAsync runSender $ \senderAsync ->
+        withAsync runSender $ \senderAsync ->
+            withAsync runReceiver $ \receiverAsync ->
                 withAsync runWatchdog $ \watchdogAsync ->
                     waitForDisconnect serverDisconnect receiverAsync senderAsync watchdogAsync
 
     where
+        withHandledExceptions :: IO () -> IO ()
+        withHandledExceptions action = action `catch` \e -> do
+            onDisconnect config (Left e)
+            throwIO e
+
         waitForDisconnect
             :: TMVar Disconnect
             -> Async Disconnect
@@ -121,22 +126,14 @@ serve config stream = do
             -> Async Disconnect
             -> IO ()
         waitForDisconnect serverDisconnect receiverAsync senderAsync watchdogAsync =
-            waitAll `catch` \e -> do
-                cancelAll
-                onDisconnect config (Left e)
-                throwIO e
-            where
-                waitAll = join (atomically $ waitReceiver <|> waitSender <|> waitWatchdog) >>= \case
-                    Left  e -> throwIO e
-                    Right d -> do
-                        cancelAll
-                        onDisconnect config (Right d)
-
-                cancelAll = do
+            join (atomically $ waitReceiver <|> waitSender <|> waitWatchdog) >>= \case
+                Left  e -> throwIO e
+                Right d -> do
                     cancel watchdogAsync
                     cancel receiverAsync
                     cancel senderAsync
-
+                    onDisconnect config (Right d)
+            where
                 waitWatchdog = pure <$> waitCatchSTM watchdogAsync
                 waitSender   = pure <$> waitCatchSTM senderAsync
                 waitReceiver = waitCatchSTM receiverAsync >>= \case
