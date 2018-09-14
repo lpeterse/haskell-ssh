@@ -4,9 +4,9 @@
 module Main where
 
 import           Control.Concurrent             (forkIO, threadDelay)
-import           Control.Concurrent.MVar
-import           Control.Exception              (SomeException, bracket, catch,
-                                                 finally)
+import           Control.Concurrent.STM.TVar
+import           Control.Exception              (SomeException, bracket,
+                                                 bracketOnError, catch, finally)
 import           Control.Monad                  (forM_, forever)
 import           Control.Monad.STM
 import qualified Data.ByteArray                 as BA
@@ -48,17 +48,17 @@ main = do
     send    s x = S.sendAll s x S.msgNoSignal >> pure ()
     receive s i = S.receive s i S.msgNoSignal
     accept config s = do
-      S.setSocketOption s (S.ReuseAddress True)
-      S.setSocketOption s (S.V6Only False)
-      S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
-      S.listen s 5
-      token <- newEmptyMVar
-      forever $ do
-        forkIO $ bracket
-          (S.accept s `finally` putMVar token ())
-          (S.close . fst)
-          (\(stream,_)-> Server.serve config stream)
-        takeMVar token
+        S.setSocketOption s (S.ReuseAddress True)
+        S.setSocketOption s (S.V6Only False)
+        S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
+        S.listen s 5
+        forever $ bracketOnError (S.accept s) (S.close . fst) $ \(stream,_) -> do
+            ownershipTransferred <- newTVarIO False
+            let serveStream = do
+                    atomically $ writeTVar ownershipTransferred True
+                    Server.serve config stream
+            forkIO $ serveStream `finally` S.close stream
+            atomically $ check =<< readTVar ownershipTransferred
 
 runExec :: (OutputStream stdout) => identity -> stdin -> stdout -> stderr -> command -> IO ExitCode
 runExec identity stdin stdout stderr command = do
