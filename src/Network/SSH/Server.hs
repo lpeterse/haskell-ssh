@@ -28,6 +28,9 @@ import           Network.SSH.Stream
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = withHandledExceptions $ do
+
+    
+
     -- Initialize a new transport state object to keep track of
     -- packet sequence numbers and encryption contexts.
     state <- newTransportState stream

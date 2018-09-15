@@ -9,8 +9,6 @@ import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
 import qualified Data.ByteString          as BS
 import qualified Data.Serialize           as B
-import qualified Data.Serialize.Get       as B
-import qualified Data.Serialize.Put       as B
 import           System.Exit
 
 import           Test.Tasty

@@ -59,9 +59,9 @@ executables:
     dependencies:
     - hssh
     - socket
-    when:
-      - condition: flag(demo)
-        then:
-          buildable: true
-        else:
-          buildable: false
+    # when:
+    #   - condition: flag(demo)
+    #     then:
+    #       buildable: true
+    #     else:
+    #       buildable: false

@@ -40,8 +40,9 @@ performInitialKeyExchange :: (DuplexStream stream)
     -> IO (SessionId, STM Message, KexStep -> IO ())
 performInitialKeyExchange config state = do
     -- Receive the client version string and immediately reply
-    -- with the server version string if the client version string is valid.
+    -- with the server version string if the client version  string is valid.
     clientVersion <- receiveVersion (transportStream state)
+    print clientVersion
     void $ sendAll (transportStream state) $ runPut $ put version
 
     out <- newTChanIO
@@ -376,6 +377,14 @@ receiveVersion :: (InputStream stream) => stream -> IO Version
 receiveVersion stream = receive stream 255 >>= f
     where
         f bs
-            | BS.last bs == 0x0a  = runGet get bs
-            | BS.length bs == 255 = throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""
-            | otherwise           = receive stream (255 - BS.length bs) >>= f . (bs <>)
+            | BS.null bs          = throwException
+            | BS.length bs >= 257 = throwException
+            | BS.last bs   ==  10 = case runGet get bs of
+                Nothing -> throwException
+                Just v  -> pure v
+            | otherwise = do
+                bs' <- receive stream (255 - BS.length bs)
+                if BS.null bs'
+                    then throwException
+                    else f (bs <> bs')
+        throwException = throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""

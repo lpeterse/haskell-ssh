@@ -822,7 +822,7 @@ instance Encoding Version where
         magic :: [Word8]
         magic  = [0x53,0x53,0x48,0x2d,0x32,0x2e,0x30,0x2d]
         untilCRLF !i !xs
-            | i >= (255 :: Int) = fail ""
+            | i >= (246 :: Int) = fail ""
             | otherwise = getWord8 >>= \case
                 0x0d -> getWord8 >>= \case
                     0x0a -> pure (Version $ BS.pack $ reverse xs)
