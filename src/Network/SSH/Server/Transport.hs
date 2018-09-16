@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, ExistentialQuantification #-}
 module Network.SSH.Server.Transport where
 
 import           Control.Concurrent.MVar
@@ -17,8 +17,8 @@ import           Network.SSH.Message
 import           Network.SSH.Server.Types
 import           Network.SSH.Stream
 
-data TransportState stream
-    = TransportState
+data TransportState
+    = forall stream. DuplexStream stream => TransportState
     {   transportStream                   :: stream
     ,   transportPacketsReceived          :: MVar Word64
     ,   transportBytesReceived            :: MVar Word64
@@ -31,8 +31,8 @@ data TransportState stream
     ,   transportReceiver                 :: MVar (IO BS.ByteString)
     }
 
-newTransportState :: DuplexStream stream => stream -> IO (TransportState stream)
-newTransportState stream = do
+withTransportState :: DuplexStream stream => stream -> (TransportState -> IO a) -> IO a
+withTransportState stream with = do
     s <- newEmptyMVar
     r <- newEmptyMVar
     state <- TransportState stream
@@ -47,21 +47,20 @@ newTransportState stream = do
         <*> pure r
     putMVar s (sendPlain state)
     putMVar r (receivePlain state)
-    pure state
+    with state
 
-sendPlain :: (OutputStream stream, Encoding msg) => TransportState stream -> msg -> IO ()
-sendPlain state msg = do
-    sent <- sendAll (transportStream state) $ runPut $ putPacked msg
+sendPlain :: (Encoding msg) => TransportState -> msg -> IO ()
+sendPlain state@TransportState { transportStream = s } msg = do
+    sent <- sendAll s $ runPut $ putPacked msg
     modifyMVar_ (transportBytesSent state) (\i-> pure $! i + fromIntegral sent)
     modifyMVar_ (transportPacketsSent state) (\i-> pure $! i + 1)
 
-receivePlain :: (InputStream stream, Encoding msg) => TransportState stream -> IO msg
-receivePlain state = do
-    let stream = transportStream state
-    paclen <- runGet getWord32 =<< receiveAll stream 4
+receivePlain :: (Encoding msg) => TransportState -> IO msg
+receivePlain state@TransportState { transportStream = s } = do
+    paclen <- runGet getWord32 =<< receiveAll s 4
     when (paclen > maxPacketLength) $
         throwIO $ Disconnect DisconnectProtocolError "max packet length exceeded" ""
-    msg <- runGet (skip 1 >> get) =<< receiveAll stream (fromIntegral paclen)
+    msg <- runGet (skip 1 >> get) =<< receiveAll s (fromIntegral paclen)
     modifyMVar_ (transportBytesReceived state) (\i-> pure $! i + 4 + fromIntegral paclen)
     modifyMVar_ (transportPacketsReceived state) (\i-> pure $! i + 1)
     pure msg

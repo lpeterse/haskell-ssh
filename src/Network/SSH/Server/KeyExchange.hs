@@ -35,19 +35,13 @@ data KexStep
     | KexProcessInit KexInit
     | KexProcessEcdhInit KexEcdhInit
 
-performInitialKeyExchange :: (DuplexStream stream)
-    => Config identity -> TransportState stream
+performInitialKeyExchange ::
+    Config identity -> TransportState -> Version -> Version
     -> IO (SessionId, STM Message, KexStep -> IO ())
-performInitialKeyExchange config state = do
-    -- Receive the client version string and immediately reply
-    -- with the server version string if the client version  string is valid.
-    clientVersion <- receiveVersion (transportStream state)
-    print clientVersion
-    void $ sendAll (transportStream state) $ runPut $ put version
-
+performInitialKeyExchange config state clientVersion serverVersion = do
     out <- newTChanIO
     msid <- newEmptyMVar
-    handle <- newKexStepHandler config state clientVersion version (atomically . writeTChan out) msid
+    handle <- newKexStepHandler config state clientVersion serverVersion (atomically . writeTChan out) msid
     handle KexStart
     sendPlain state =<< hookSend =<< atomically (readTChan out)
     MsgKexInit cki <- hookRecv =<< receivePlain state
@@ -67,7 +61,7 @@ performInitialKeyExchange config state = do
 -- a key re-exchange when either a certain amount of time has passed or
 -- when either the input or output stream has exceeded its threshold
 -- of bytes sent/received.
-askRekeyingRequired :: Config identity -> TransportState stream -> IO Bool
+askRekeyingRequired :: Config identity -> TransportState -> IO Bool
 askRekeyingRequired config state = do
     t  <- fromIntegral . sec <$> getTime Monotonic
     t0 <- readMVar (transportLastRekeyingTime state)
@@ -90,9 +84,8 @@ askRekeyingRequired config state = do
         intervalExceeded  t t0 = t > t0 && t - t0 > interval
         thresholdExceeded x x0 = x > x0 && x - x0 > threshold
 
-newKexStepHandler :: (DuplexStream stream)
-    => Config identity -> TransportState stream -> Version -> Version
-    -> (Message -> IO ()) -> MVar SessionId -> IO (KexStep -> IO ())
+newKexStepHandler :: Config identity -> TransportState -> Version -> Version
+                  -> (Message -> IO ()) -> MVar SessionId -> IO (KexStep -> IO ())
 newKexStepHandler config state clientVersion serverVersion sendMsg msid = do
     continuation <- newEmptyMVar
 
@@ -279,11 +272,11 @@ deriveKeys secret hash i (SessionId sess) = BA.convert <$> k1 : f [k1]
         flip Hash.hashUpdate hash $
         Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
 
-sendEncrypted :: (OutputStream stream, BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
-              => TransportState stream -> headerKey -> mainKey -> BS.ByteString -> IO ()
-sendEncrypted state headerKey mainKey plain = do
+sendEncrypted :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
+              => TransportState -> headerKey -> mainKey -> BS.ByteString -> IO ()
+sendEncrypted state@TransportState { transportStream = s } headerKey mainKey plain = do
     seqnr <- readMVar (transportPacketsSent state)
-    sent  <- sendAll (transportStream state) (encode seqnr)
+    sent  <- sendAll s (encode seqnr)
     modifyMVar_ (transportBytesSent state) (\i-> pure $! i + fromIntegral sent)
     modifyMVar_ (transportPacketsSent state) (\i-> pure $! i + 1)
     where
@@ -319,9 +312,9 @@ sendEncrypted state headerKey mainKey plain = do
                 ciph3         = ciph1 <> ciph2
                 mac           = BA.convert (Poly1305.auth (BS.take 32 poly) ciph3)
 
-receiveEncrypted :: (InputStream stream, BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
-    => TransportState stream -> headerKey -> mainKey -> IO BS.ByteString
-receiveEncrypted state headerKey mainKey = do
+receiveEncrypted :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
+    => TransportState -> headerKey -> mainKey -> IO BS.ByteString
+receiveEncrypted state@TransportState { transportStream = s } headerKey mainKey = do
     -- The sequence number is always the lower 32 bits of the number of
     -- packets received - 1. By specification, it wraps around every 2^32 packets.
     -- Special care must be taken wrt to rekeying as the sequence number
@@ -338,7 +331,7 @@ receiveEncrypted state headerKey mainKey = do
             , fromIntegral $ seqnr  `shiftR`  0
             ] :: BA.Bytes
 
-    paclenCiph <- receiveAll (transportStream state) 4
+    paclenCiph <- receiveAll s 4
     let ccMain          = ChaCha.initialize 20 mainKey   nonce
     let ccHeader        = ChaCha.initialize 20 headerKey nonce
     let (poly, ccMain') = ChaCha.generate ccMain 64
@@ -349,8 +342,8 @@ receiveEncrypted state headerKey mainKey = do
             .|.  fromIntegral (BA.index paclenPlain 2) `shiftL`  8
             .|.  fromIntegral (BA.index paclenPlain 3) `shiftL`  0
 
-    pac <- receiveAll (transportStream state) paclen
-    mac <- receiveAll (transportStream state) maclen
+    pac <- receiveAll s paclen
+    mac <- receiveAll s maclen
 
     modifyMVar_ (transportBytesReceived state) (\i-> pure $! i + 4 + fromIntegral paclen + fromIntegral maclen)
     modifyMVar_ (transportPacketsReceived state) (\i-> pure $! i + 1)
@@ -373,8 +366,8 @@ receiveEncrypted state headerKey mainKey = do
 -- It is furthermore assumed that the client does not send any more data
 -- after the version string before having received a response from the server;
 -- otherwise parsing will fail. This is done in order to not having to deal with leftovers.
-receiveVersion :: (InputStream stream) => stream -> IO Version
-receiveVersion stream = receive stream 255 >>= f
+receiveClientVersion :: (InputStream stream) => stream -> IO Version
+receiveClientVersion stream = receive stream 257 >>= f
     where
         f bs
             | BS.null bs          = throwException
@@ -388,3 +381,8 @@ receiveVersion stream = receive stream 255 >>= f
                     then throwException
                     else f (bs <> bs')
         throwException = throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""
+
+sendServerVersion :: (OutputStream stream) => stream -> IO Version
+sendServerVersion stream = do
+    void $ sendAll stream $ runPut $ put version
+    pure version

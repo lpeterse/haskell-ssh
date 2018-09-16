@@ -9,15 +9,9 @@ import           Control.Concurrent.MVar        (readMVar)
 import           Control.Concurrent.STM.TMVar   (TMVar, newEmptyTMVarIO,
                                                  putTMVar, readTMVar)
 import           Control.Concurrent.STM.TVar    (readTVar, registerDelay)
-import           Control.Exception              (catch, fromException, throwIO,
-                                                 toException)
+import           Control.Exception              (fromException, throwIO)
 import           Control.Monad                  (forever, join, void, when)
 import           Control.Monad.STM              (STM, atomically, check)
-import qualified Data.ByteString                as BS
-import           Data.Function                  (fix)
-import           Data.Monoid                    ((<>))
-
-import           Network.SSH.Constants
 import           Network.SSH.Encoding
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
@@ -27,14 +21,24 @@ import           Network.SSH.Server.Transport
 import           Network.SSH.Stream
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
-serve config stream = withHandledExceptions $ do
-
-    
+serve config stream = withExceptionsHandled $ do
+    -- Receive the client version and reject immediately if this
+    -- is not an SSH connection attempt (before allocating
+    -- any more resources); respond with the server version string.
+    clientVersion <- receiveClientVersion stream
+    serverVersion <- sendServerVersion stream
 
     -- Initialize a new transport state object to keep track of
     -- packet sequence numbers and encryption contexts.
-    state <- newTransportState stream
+    -- The transport context has exclusive access to the stream handle.
+    -- This assures that no plain text will ever be transmitted after
+    -- an encryption context has been established.
+    withTransportState stream (serveTransport config clientVersion serverVersion)
+    where
+        withExceptionsHandled = id -- FIXME
 
+serveTransport :: Config identity -> Version -> Version -> TransportState -> IO ()
+serveTransport config clientVersion serverVersion state = do
     -- Perform the initial key exchange.
     -- This key exchange is handled separately as the key exchange protocol
     -- shall be followed strictly and no other messages shall be accepted
@@ -43,7 +47,7 @@ serve config stream = withHandledExceptions $ do
     -- running key re-exchanges and all required context.
     -- Key re-exchanges may be interleaved with regular traffic and
     -- therefore cannot be performed synchronously.
-    (session, kexOutput, kexNextStep) <- performInitialKeyExchange config state
+    (session, kexOutput, kexNextStep) <- performInitialKeyExchange config state clientVersion serverVersion
 
     -- The connection is essentially a state machine.
     -- It also contains resources that need to be freed on termination
@@ -117,11 +121,6 @@ serve config stream = withHandledExceptions $ do
                     waitForDisconnect serverDisconnect receiverAsync senderAsync watchdogAsync
 
     where
-        withHandledExceptions :: IO () -> IO ()
-        withHandledExceptions action = action `catch` \e -> do
-            onDisconnect config (Left e)
-            throwIO e
-
         waitForDisconnect
             :: TMVar Disconnect
             -> Async Disconnect
