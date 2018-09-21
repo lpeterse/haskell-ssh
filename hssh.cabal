@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 3254f67d06e9520f85d64f87d5d96661d9b862e98fe8b58b48794df0aa7ec027
+-- hash: 93ac0247e71e8d88781d749e025eda82e3a9d6dd2f651c2e5322b181064edaed
 
 name:           hssh
 version:        0.1.0.0
@@ -44,6 +44,8 @@ library
       Network.SSH.Server.KeyExchange
       Network.SSH.Server.Service
       Network.SSH.Server.Transport
+      Network.SSH.Server.Transport.Encryption
+      Network.SSH.Server.Transport.Internal
       Network.SSH.Server.Types
       Network.SSH.Server.UserAuth
       Network.SSH.Stream

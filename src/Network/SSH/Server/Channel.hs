@@ -9,7 +9,7 @@ import           Control.Applicative
 import           Control.Concurrent
 import qualified Control.Concurrent.Async     as Async
 import           Control.Concurrent.STM.TVar
-import           Control.Monad                (join, unless, void, when)
+import           Control.Monad                (join, void, when)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
@@ -20,35 +20,38 @@ import           System.Exit
 import           Network.SSH.Encoding
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
-import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
 import qualified Network.SSH.TAccountingQueue as AQ
 
 handleChannelOpen :: forall identity. Connection identity -> ChannelOpen -> IO ()
-handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) = atomically $ do
-    channels <- readTVar (connChannels connection)
-    case selectLocalChannelId channels of
-        Nothing ->
-            sendOpenFailure ChannelOpenResourceShortage
-        Just localChannelId -> case channelType of
-            ChannelType "session" -> do
-                env    <- newTVar mempty
-                pty    <- newTVar Nothing
-                thread <- newTVar Nothing
-                stdin  <- AQ.newTAccountingQueue 1024
-                stdout <- AQ.newTAccountingQueue 1024
-                stderr <- AQ.newTAccountingQueue 1024
-                openApplicationChannel localChannelId $ ChannelApplicationSession Session {
-                      sessEnvironment = env
-                    , sessTerminal    = pty
-                    , sessThread      = thread
-                    , sessStdin       = stdin
-                    , sessStdout      = stdout
-                    , sessStderr      = stderr
-                    }
-            ChannelType {} ->
-                sendOpenFailure ChannelOpenUnknownChannelType
+handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) =
+    atomically openSTM >>= connOutput connection
     where
+        openSTM :: STM Message
+        openSTM = do
+            channels <- readTVar (connChannels connection)
+            case selectLocalChannelId channels of
+                Nothing ->
+                    pure $ openFailure ChannelOpenResourceShortage
+                Just localChannelId -> case channelType of
+                    ChannelType "session" -> do
+                        env    <- newTVar mempty
+                        pty    <- newTVar Nothing
+                        thread <- newTVar Nothing
+                        stdin  <- AQ.newTAccountingQueue 1024
+                        stdout <- AQ.newTAccountingQueue 1024
+                        stderr <- AQ.newTAccountingQueue 1024
+                        openApplicationChannel localChannelId $ ChannelApplicationSession Session {
+                            sessEnvironment = env
+                            , sessTerminal    = pty
+                            , sessThread      = thread
+                            , sessStdin       = stdin
+                            , sessStdout      = stdout
+                            , sessStderr      = stderr
+                            }
+                    ChannelType {} ->
+                        pure $ openFailure ChannelOpenUnknownChannelType
+
         selectLocalChannelId :: M.Map ChannelId a -> Maybe ChannelId
         selectLocalChannelId m
             | M.size m >= fromIntegral maxCount = Nothing
@@ -61,14 +64,11 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
                     | otherwise     = Just (ChannelId i)
                 maxCount = channelMaxCount (connConfig connection)
 
-        sendOpenFailure :: ChannelOpenFailureReason -> STM ()
-        sendOpenFailure reason = send connection $ MsgChannelOpenFailure $
+        openFailure :: ChannelOpenFailureReason -> Message
+        openFailure reason = MsgChannelOpenFailure $
             ChannelOpenFailure remoteChannelId reason mempty mempty
 
-        sendOpenConfirmation :: ChannelOpenConfirmation -> STM ()
-        sendOpenConfirmation = send connection . MsgChannelOpenConfirmation
-
-        openApplicationChannel :: ChannelId -> ChannelApplication -> STM ()
+        openApplicationChannel :: ChannelId -> ChannelApplication -> STM Message
         openApplicationChannel localChannelId application = do
             channels <- readTVar (connChannels connection)
             wsLocal  <- newTVar (channelMaxWindowSize $ connConfig connection)
@@ -85,28 +85,34 @@ handleChannelOpen connection (ChannelOpen channelType remoteChannelId initialWin
                   , chanClosed              = closed
                   }
             writeTVar (connChannels connection) $! M.insert localChannelId channel channels
-            sendOpenConfirmation $ ChannelOpenConfirmation
+            pure $ MsgChannelOpenConfirmation $ ChannelOpenConfirmation
                 remoteChannelId
                 localChannelId
                 (channelMaxWindowSize $ connConfig connection)
                 (channelMaxPacketSize $ connConfig connection)
 
 handleChannelClose :: Connection identtiy -> ChannelClose -> IO ()
-handleChannelClose connection (ChannelClose localChannelId) = atomically $ do
-    channels <- readTVar (connChannels connection)
-    case M.lookup localChannelId channels of
-        -- The client tries to close the same channel twice.
-        -- This is a protocol error and the server shall disconnect.
-        Nothing ->
-            disconnectWith connection DisconnectProtocolError
-        Just channel -> do
-            writeTVar (connChannels connection) $! M.delete localChannelId channels
-            alreadyClosed <- swapTVar (chanClosed channel) True
-            -- When the channel is not marked as already closed then the close
-            -- must have been initiated by the client and the server needs to send
-            -- a confirmation.
-            unless alreadyClosed $
-                send connection $ MsgChannelClose $ ChannelClose $ chanIdRemote channel
+handleChannelClose connection (ChannelClose localChannelId) =
+    atomically closeSTM >>= \case
+      Nothing  -> pure ()
+      Just msg -> connOutput connection msg 
+    where
+        closeSTM = do
+            channels <- readTVar (connChannels connection)
+            case M.lookup localChannelId channels of
+                -- The client tries to close the same channel twice.
+                -- This is a protocol error and the server shall disconnect.
+                Nothing ->
+                    throwSTM $ Disconnect DisconnectProtocolError mempty mempty
+                Just channel -> do
+                    writeTVar (connChannels connection) $! M.delete localChannelId channels
+                    alreadyClosed <- swapTVar (chanClosed channel) True
+                    -- When the channel is not marked as already closed then the close
+                    -- must have been initiated by the client and the server needs to send
+                    -- a confirmation.
+                    pure $ if alreadyClosed
+                        then Nothing
+                        else Just $ MsgChannelClose $ ChannelClose $ chanIdRemote channel
 
 handleChannelEof :: Connection identity -> ChannelEof -> IO ()
 handleChannelEof = undefined
@@ -145,8 +151,8 @@ handleChannelRequest connection (ChannelRequest channelId request) =
     where
         pass                 = pure $ pure ()
         throwProtocolError e = throwSTM $ Disconnect DisconnectProtocolError e mempty
-        sendSuccess channel  = send connection $ MsgChannelSuccess $ ChannelSuccess (chanIdRemote channel)
-        sendFailure channel  = send connection $ MsgChannelFailure $ ChannelFailure (chanIdRemote channel)
+        sendSuccess channel  = connOutput connection $ MsgChannelSuccess $ ChannelSuccess (chanIdRemote channel)
+        sendFailure channel  = connOutput connection $ MsgChannelFailure $ ChannelFailure (chanIdRemote channel)
 
         interpretAsSessionRequest :: Channel identity -> Session -> BS.ByteString -> STM (IO ())
         interpretAsSessionRequest channel session req = case runGet get req of
@@ -155,34 +161,32 @@ handleChannelRequest connection (ChannelRequest channelId request) =
                 ChannelRequestEnv wantReply name value -> do
                     env <- readTVar (sessEnvironment session)
                     writeTVar (sessEnvironment session) $! M.insert name value env
-                    when wantReply (sendSuccess channel)
-                    pass
+                    pure $
+                        when wantReply $ sendSuccess channel
                 ChannelRequestPty _wantReply _ptySettings ->
                     throwProtocolError "pty-req not yet implemented"
                 ChannelRequestShell _wantReply ->
                     throwProtocolError "shell req not yet implemented"
                 ChannelRequestExec wantReply command -> case onExecRequest (connConfig connection) of
-                    Nothing -> do
-                        when wantReply (sendFailure channel)
-                        pass
+                    Nothing-> pure $
+                        when wantReply $ sendFailure channel
                     Just exec -> readTVar (connIdentity connection) >>= \case
-                        Nothing -> do
-                          when wantReply (sendFailure channel)
-                          pass
-                        Just identity -> do
-                          when wantReply (sendSuccess channel)
-                          pure (sessionExec connection channel session (\s0 s1 s2-> exec identity s0 s1 s2 command))
-                ChannelRequestOther _ wantReply -> do
-                    when wantReply (sendFailure channel)
-                    pass
+                        Nothing -> pure $
+                            when wantReply $ sendFailure channel
+                        Just identity -> pure $ do
+                            when wantReply $ sendSuccess channel
+                            sessionExec connection channel session (\s0 s1 s2-> exec identity s0 s1 s2 command)
+                ChannelRequestOther _ wantReply -> pure $
+                    when wantReply $ sendFailure channel
                 ChannelRequestExitStatus {} -> pass
                 ChannelRequestExitSignal {} -> pass
 
-close :: Channel identity -> STM ()
+close :: Channel identity -> STM (Maybe Message)
 close channel = do
     alreadyClosed <- swapTVar (chanClosed channel) True
-    unless alreadyClosed $
-        send (chanConnection channel) $ MsgChannelClose $ ChannelClose $ chanIdRemote channel
+    pure $ if alreadyClosed
+        then Nothing
+        else Just $ MsgChannelClose $ ChannelClose $ chanIdRemote channel
 
 sessionExec :: Connection identity -> Channel identity -> Session
             -> (AQ.TAccountingQueue -> AQ.TAccountingQueue -> AQ.TAccountingQueue -> IO ExitCode) -> IO ()
@@ -196,36 +200,35 @@ sessionExec connection channel session handler =
         -- loops until the session thread has terminated and exit has been signaled.
         wait :: Async.Async ExitCode ->IO ()
         wait thread = do
-            exit <- atomically $ waitStdout <|> waitStderr <|> waitExit thread
-            unless exit (wait thread)
+            atomically (Right <$> waitStdout <|> Right <$> waitStderr <|> Left <$> waitExit thread) >>= \case
+                Left  msgs -> mapM_ (connOutput connection) msgs
+                Right msgs -> mapM_ (connOutput connection) msgs >> wait thread
 
-        waitExit :: Async.Async ExitCode -> STM Bool
+        waitExit :: Async.Async ExitCode -> STM [Message]
         waitExit thread = do
-            Async.waitCatchSTM thread >>= \case
-                Right c -> sendExit $ ChannelRequestExitStatus c
-                Left  _ -> sendExit $ ChannelRequestExitSignal "ILL" False "" ""
-            close channel
-            pure True
+            msg <- Async.waitCatchSTM thread >>= \case
+                Right c -> pure $ exitMessage $ ChannelRequestExitStatus c
+                Left  _ -> pure $ exitMessage $ ChannelRequestExitSignal "ILL" False "" ""
+            close channel >>= \case
+                Nothing -> pure [msg]
+                Just m  -> pure [msg,m]
             where
-                sendExit :: ChannelRequestSession -> STM ()
-                sendExit = send connection . MsgChannelRequest
-                    . ChannelRequest (chanIdRemote channel) . runPut . put
+                exitMessage :: ChannelRequestSession -> Message
+                exitMessage = MsgChannelRequest . ChannelRequest (chanIdRemote channel) . runPut . put
 
-        waitStdout :: STM Bool
+        waitStdout :: STM [Message]
         waitStdout = do
             window <- getWindow
             ba <- AQ.dequeue (sessStdout session) (fromIntegral window)
             decWindow $ BA.length ba
-            send connection $ MsgChannelData $ ChannelData (chanIdRemote channel) (BA.convert ba)
-            pure False
+            pure [MsgChannelData $ ChannelData (chanIdRemote channel) (BA.convert ba)]
 
-        waitStderr :: STM Bool
+        waitStderr :: STM [Message]
         waitStderr = do
             window <- getWindow
             ba <- AQ.dequeue (sessStderr session) (fromIntegral window)
             decWindow $ BA.length ba
-            send connection $ MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 (BA.convert ba)
-            pure False
+            pure [MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 (BA.convert ba)]
 
         getWindow :: STM Int
         getWindow = do

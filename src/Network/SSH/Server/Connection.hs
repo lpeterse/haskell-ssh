@@ -3,15 +3,13 @@ module Network.SSH.Server.Connection
     ( Connection ()
     , withConnection
     , pushMessage
-    , pullMessage
-    , pullMessageSTM
     ) where
 
 import           Control.Applicative          ((<|>))
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.STM.TVar
-import           Control.Exception            (bracket)
+import           Control.Exception            (bracket, throwIO)
 import           Control.Monad.STM            (STM, atomically)
 
 import           Network.SSH.Message
@@ -21,8 +19,8 @@ import qualified Network.SSH.Server.Service   as Service
 import           Network.SSH.Server.Types
 import qualified Network.SSH.Server.UserAuth  as UserAuth
 
-withConnection :: Config identity -> SessionId -> (Connection identity -> IO ()) -> IO ()
-withConnection cfg sid = bracket before after
+withConnection :: Config identity -> SessionId -> (Message -> IO ()) -> (Connection identity -> IO a) -> IO a
+withConnection cfg sid enqueueMessage = bracket before after
     where
         -- FIXME: Why is there a bracket at all?
         before = Connection
@@ -31,27 +29,10 @@ withConnection cfg sid = bracket before after
             <*> newTVarIO Nothing
             <*> newTVarIO mempty
             <*> newTChanIO
-            <*> newTChanIO
+            <*> pure enqueueMessage
             <*> newEmptyTMVarIO
         after = const $ pure ()
 
-pullMessage :: Connection identity -> IO Message
-pullMessage connection = atomically $ pullMessageSTM connection
-
-pullMessageSTM :: Connection identity -> STM Message
-pullMessageSTM connection = disconnectMessage <|> nextMessage
-    where
-        disconnectMessage = MsgDisconnect <$> readTMVar (connDisconnected connection)
-        nextMessage = readTChan (connOutput connection)
-
--- Calling this operation will store a disconnect message
--- in the connection state. Afterwards, any attempts to read outgoing
--- messages from the connection shall yield this message and
--- the reader must close the connection after sending
--- the disconnect message.
-disconnectWith :: Connection identity -> DisconnectReason -> IO ()
-disconnectWith connection reason =
-    atomically $ putTMVar (connDisconnected connection) (Disconnect reason mempty mempty) <|> pure ()
 
 pushMessage :: Connection identity -> Message -> IO ()
 pushMessage connection = \case
@@ -69,4 +50,4 @@ pushMessage connection = \case
     MsgChannelData x              -> Channel.handleChannelData         connection x
     MsgChannelExtendedData x      -> Channel.handleChannelExtendedData connection x
 
-    _                             -> connection `disconnectWith` DisconnectProtocolError
+    _                             -> throwIO $ Disconnect DisconnectProtocolError mempty mempty

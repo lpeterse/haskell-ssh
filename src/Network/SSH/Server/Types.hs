@@ -20,7 +20,7 @@ data Connection identity
     , connIdentity     :: TVar (Maybe identity)
     , connChannels     :: TVar (M.Map ChannelId (Channel identity))
     , connLogs         :: TChan String
-    , connOutput       :: TChan Message
+    , connOutput       :: Message -> IO ()
     , connDisconnected :: TMVar Disconnect
     }
 

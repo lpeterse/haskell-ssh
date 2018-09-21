@@ -2,7 +2,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server.UserAuth where
 
-import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Monad.STM
 import qualified Crypto.Hash.Algorithms       as Hash
@@ -14,7 +13,6 @@ import           Network.SSH.Encoding
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
-import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
 
 handleUserAuthRequest :: Connection identity -> UserAuthRequest -> IO ()
@@ -27,17 +25,17 @@ handleUserAuthRequest connection (UserAuthRequest user service method) =
             | verifyAuthSignature (connSessionId connection) user service algo pk sig -> do
                 onAuthRequest (connConfig connection) user service pk >>= \case
                     Nothing -> sendSupportedAuthMethods
-                    Just ident -> atomically $ do
-                        writeTVar (connIdentity connection) (Just ident)
-                        writeTChan (connOutput connection) (MsgUserAuthSuccess UserAuthSuccess)
+                    Just ident -> do
+                        atomically $ writeTVar (connIdentity connection) (Just ident)
+                        connOutput connection (MsgUserAuthSuccess UserAuthSuccess)
             | otherwise ->
                 sendSupportedAuthMethods
       _ -> sendSupportedAuthMethods
     where
         sendSupportedAuthMethods =
-            atomically $ send connection $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+            connOutput connection $ MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
         unconditionallyConfirmPublicKeyIsOk algo pk =
-            atomically $ send connection $ MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
+            connOutput connection $ MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
 
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
 verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =

@@ -4,7 +4,9 @@
 module Network.SSH.Server.KeyExchange where
 
 import           Control.Concurrent.MVar
+import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TChan
+import           Control.Concurrent.STM.TMVar
 import           Control.Exception            (throwIO)
 import           Control.Monad                (void)
 import           Control.Monad.STM            (STM, atomically)
@@ -28,6 +30,8 @@ import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
+import           Network.SSH.Server.Transport.Encryption
+import           Network.SSH.Server.Transport.Internal
 import           Network.SSH.Stream
 
 data KexStep
@@ -36,23 +40,18 @@ data KexStep
     | KexProcessEcdhInit KexEcdhInit
 
 performInitialKeyExchange ::
-    Config identity -> TransportState -> Version -> Version
-    -> IO (SessionId, STM Message, KexStep -> IO ())
-performInitialKeyExchange config state clientVersion serverVersion = do
-    out <- newTChanIO
+    Config identity -> TransportState -> (Message -> IO ()) -> Version -> Version
+    -> IO (SessionId, KexStep -> IO ())
+performInitialKeyExchange config state enqueueMessage clientVersion serverVersion = do
     msid <- newEmptyMVar
-    handle <- newKexStepHandler config state clientVersion serverVersion (atomically . writeTChan out) msid
+    handle <- newKexStepHandler config state clientVersion serverVersion enqueueMessage msid
     handle KexStart
-    sendPlain state =<< hookSend =<< atomically (readTChan out)
-    MsgKexInit cki <- hookRecv =<< receivePlain state
+    MsgKexInit cki <- receiveMessage state
     handle (KexProcessInit cki)
-    MsgKexEcdhInit clientKexEcdhInit <- hookRecv =<< receivePlain state
+    MsgKexEcdhInit clientKexEcdhInit <- receiveMessage state
     handle (KexProcessEcdhInit clientKexEcdhInit)
-    sendPlain state =<< hookSend =<< atomically (readTChan out) -- KexEcdhReply
-    sendPlain state =<< hookSend =<< atomically (readTChan out) -- KexNewKeys
-    MsgKexNewKeys _ <- hookRecv =<< receivePlain state
     session <- readMVar msid
-    pure (session, readTChan out, handle)
+    pure (session, handle)
     where
         hookSend msg = onSend config msg >> pure msg
         hookRecv msg = onReceive config msg >> pure msg
@@ -64,15 +63,16 @@ performInitialKeyExchange config state clientVersion serverVersion = do
 askRekeyingRequired :: Config identity -> TransportState -> IO Bool
 askRekeyingRequired config state = do
     t  <- fromIntegral . sec <$> getTime Monotonic
-    t0 <- readMVar (transportLastRekeyingTime state)
-    s  <- readMVar (transportBytesSent state)
-    s0 <- readMVar (transportLastRekeyingDataSent state)
-    r  <- readMVar (transportBytesReceived state)
-    r0 <- readMVar (transportLastRekeyingDataReceived state)
-    pure $ if   | intervalExceeded  t t0 -> True
-                | thresholdExceeded s s0 -> True
-                | thresholdExceeded r r0 -> True
-                | otherwise              -> False
+    atomically $ do
+        t0 <- readTVar (transportLastRekeyingTime state)
+        s  <- readTVar (transportBytesSent state)
+        s0 <- readTVar (transportLastRekeyingDataSent state)
+        r  <- readTVar (transportBytesReceived state)
+        r0 <- readTVar (transportLastRekeyingDataReceived state)
+        pure $ if   | intervalExceeded  t t0 -> True
+                    | thresholdExceeded s s0 -> True
+                    | thresholdExceeded r r0 -> True
+                    | otherwise              -> False
     where
         -- For reasons of fool-proofness the rekeying interval/threshold
         -- shall never be greater than 1 hour or 1GB.
@@ -179,20 +179,11 @@ newKexStepHandler config state clientVersion serverVersion sendMsg msid = do
                         putMVar msid s
                         pure s
 
-                -- Derive the required encryption/decryption keys.
-                -- The integrity keys etc. are not needed with chacha20.
-                let mainKeyCS:headerKeyCS:_ = deriveKeys secret hash "C" session
-                    mainKeySC:headerKeySC:_ = deriveKeys secret hash "D" session
+                setCryptoContexts state $ chacha20poly1305 $ deriveKeys secret hash session
 
-                void $ swapMVar (transportSender state) $
-                    sendEncrypted state headerKeySC mainKeySC
-
-                void $ swapMVar (transportReceiver state) $
-                    receiveEncrypted state headerKeyCS mainKeyCS
-
-                void $ swapMVar (transportLastRekeyingTime         state) =<< fromIntegral . sec <$> getTime Monotonic
-                void $ swapMVar (transportLastRekeyingDataSent     state) =<< readMVar (transportBytesSent     state)
-                void $ swapMVar (transportLastRekeyingDataReceived state) =<< readMVar (transportBytesReceived state)
+                -- void $ swapMVar (transportLastRekeyingTime         state) =<< fromIntegral . sec <$> getTime Monotonic
+                -- void $ swapMVar (transportLastRekeyingDataSent     state) =<< readMVar (transportBytesSent     state)
+                -- void $ swapMVar (transportLastRekeyingDataReceived state) =<< readMVar (transportBytesReceived state)
 
                 -- The encryption context shall be switched no earlier than
                 -- before the new keys message has been transmitted.
@@ -259,8 +250,8 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
         put       qs
         putAsMPInt k
 
-deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> BS.ByteString -> SessionId -> [BA.ScrubbedBytes]
-deriveKeys secret hash i (SessionId sess) = BA.convert <$> k1 : f [k1]
+deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> SessionId -> BS.ByteString -> [BA.ScrubbedBytes]
+deriveKeys secret hash (SessionId sess) i = BA.convert <$> k1 : f [k1]
     where
     k1   = Hash.hashFinalize    $
         flip Hash.hashUpdate sess $
@@ -271,93 +262,6 @@ deriveKeys secret hash i (SessionId sess) = BA.convert <$> k1 : f [k1]
     st =
         flip Hash.hashUpdate hash $
         Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
-
-sendEncrypted :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
-              => TransportState -> headerKey -> mainKey -> BS.ByteString -> IO ()
-sendEncrypted state@TransportState { transportStream = s } headerKey mainKey plain = do
-    seqnr <- readMVar (transportPacketsSent state)
-    sent  <- sendAll s (encode seqnr)
-    modifyMVar_ (transportBytesSent state) (\i-> pure $! i + fromIntegral sent)
-    modifyMVar_ (transportPacketsSent state) (\i-> pure $! i + 1)
-    where
-        encode seqnr = ciph3 <> mac
-            where
-                plainlen      = BA.length plain                :: Int
-                padlen        = let p = 8 - ((1 + plainlen) `mod` 8)
-                                in  if p < 4 then p + 8 else p :: Int
-                paclen        = 1 + plainlen + padlen          :: Int
-                padding       = BA.replicate padlen 0
-                padlenBA      = BA.singleton (fromIntegral padlen)
-                paclenBA      = BA.pack
-                    [ fromIntegral $ paclen `shiftR` 24
-                    , fromIntegral $ paclen `shiftR` 16
-                    , fromIntegral $ paclen `shiftR`  8
-                    , fromIntegral $ paclen `shiftR`  0
-                    ]
-                nonceBA = BA.pack
-                    [ 0
-                    , 0
-                    , 0
-                    , 0
-                    , fromIntegral $ seqnr  `shiftR` 24
-                    , fromIntegral $ seqnr  `shiftR` 16
-                    , fromIntegral $ seqnr  `shiftR`  8
-                    , fromIntegral $ seqnr  `shiftR`  0
-                    ] :: BA.Bytes
-                st1           = ChaCha.initialize 20 mainKey nonceBA
-                st2           = ChaCha.initialize 20 headerKey nonceBA
-                (poly, st3)   = ChaCha.generate st1 64
-                ciph1         = fst $ ChaCha.combine st2 paclenBA
-                ciph2         = fst $ ChaCha.combine st3 $ padlenBA <> plain <> padding
-                ciph3         = ciph1 <> ciph2
-                mac           = BA.convert (Poly1305.auth (BS.take 32 poly) ciph3)
-
-receiveEncrypted :: (BA.ByteArrayAccess headerKey, BA.ByteArrayAccess mainKey)
-    => TransportState -> headerKey -> mainKey -> IO BS.ByteString
-receiveEncrypted state@TransportState { transportStream = s } headerKey mainKey = do
-    -- The sequence number is always the lower 32 bits of the number of
-    -- packets received - 1. By specification, it wraps around every 2^32 packets.
-    -- Special care must be taken wrt to rekeying as the sequence number
-    -- is used as nonce in the ChaCha20Poly1305 encryption mode.
-    seqnr <- readMVar (transportPacketsReceived state)
-    let nonce = BA.pack
-            [ 0
-            , 0
-            , 0
-            , 0
-            , fromIntegral $ seqnr  `shiftR` 24
-            , fromIntegral $ seqnr  `shiftR` 16
-            , fromIntegral $ seqnr  `shiftR`  8
-            , fromIntegral $ seqnr  `shiftR`  0
-            ] :: BA.Bytes
-
-    paclenCiph <- receiveAll s 4
-    let ccMain          = ChaCha.initialize 20 mainKey   nonce
-    let ccHeader        = ChaCha.initialize 20 headerKey nonce
-    let (poly, ccMain') = ChaCha.generate ccMain 64
-    let paclenPlain = fst $ ChaCha.combine ccHeader paclenCiph
-    let maclen = 16
-    let paclen = fromIntegral (BA.index paclenPlain 0) `shiftL` 24
-            .|.  fromIntegral (BA.index paclenPlain 1) `shiftL` 16
-            .|.  fromIntegral (BA.index paclenPlain 2) `shiftL`  8
-            .|.  fromIntegral (BA.index paclenPlain 3) `shiftL`  0
-
-    pac <- receiveAll s paclen
-    mac <- receiveAll s maclen
-
-    modifyMVar_ (transportBytesReceived state) (\i-> pure $! i + 4 + fromIntegral paclen + fromIntegral maclen)
-    modifyMVar_ (transportPacketsReceived state) (\i-> pure $! i + 1)
-
-    let authTagReceived = Poly1305.Auth $ BA.convert mac
-    let authTagExpected = Poly1305.auth (BS.take 32 poly) (paclenCiph <> pac)
-
-    if authTagReceived /= authTagExpected
-        then throwIO $ Disconnect DisconnectMacError "" ""
-        else do
-            let plain = fst (ChaCha.combine ccMain' pac)
-            case BS.uncons plain of
-                Nothing    -> throwIO $ Disconnect DisconnectProtocolError "packet structure" ""
-                Just (h,t) -> pure $ BS.take (BS.length t - fromIntegral h) t
 
 -- The maximum length of the version string is 255 chars including CR+LF.
 -- The version string is usually short and transmitted within

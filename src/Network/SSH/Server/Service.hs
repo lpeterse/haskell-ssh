@@ -1,17 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server.Service where
 
-import           Control.Monad.STM
+import Control.Exception (throwIO)
 
 import           Network.SSH.Message
-import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Types
 
 handleServiceRequest :: Connection identity -> ServiceRequest -> IO ()
-handleServiceRequest connection (ServiceRequest (ServiceName srv)) = atomically $ case srv of
+handleServiceRequest connection (ServiceRequest (ServiceName srv)) = case srv of
     "ssh-userauth"   -> accept
     "ssh-connection" -> accept
     _                -> reject
     where
-        accept = send connection $ MsgServiceAccept (ServiceAccept (ServiceName srv))
-        reject = connection `disconnectWith` DisconnectServiceNotAvailable
+        accept = connOutput connection $ MsgServiceAccept (ServiceAccept (ServiceName srv))
+        reject = throwIO $ Disconnect DisconnectServiceNotAvailable mempty mempty
