@@ -5,12 +5,10 @@ module Network.SSH.Server.Connection
     , pushMessage
     ) where
 
-import           Control.Applicative          ((<|>))
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.STM.TVar
 import           Control.Exception            (bracket, throwIO)
-import           Control.Monad.STM            (STM, atomically)
 
 import           Network.SSH.Message
 import qualified Network.SSH.Server.Channel   as Channel

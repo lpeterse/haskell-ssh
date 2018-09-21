@@ -2,34 +2,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server.Transport.Encryption where
 
-import           Control.Concurrent.MVar
-import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
-import           Control.Concurrent.STM.TMVar
 import           Control.Exception            (throwIO)
-import           Control.Monad                (void)
-import           Control.Monad.STM            (STM, atomically)
+import           Control.Monad.STM            (atomically)
 import qualified Crypto.Cipher.ChaCha         as ChaCha
-import qualified Crypto.Hash                  as Hash
 import qualified Crypto.MAC.Poly1305          as Poly1305
-import qualified Crypto.PubKey.Curve25519     as Curve25519
-import qualified Crypto.PubKey.Ed25519        as Ed25519
 import           Data.Bits
 import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
-import           Data.List
-import qualified Data.List.NonEmpty           as NEL
 import           Data.Monoid                  ((<>))
-import           System.Clock
 
-import           Network.SSH.Algorithms
-import           Network.SSH.Constants
-import           Network.SSH.Encoding
-import           Network.SSH.Key
 import           Network.SSH.Message
-import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport.Internal
-import           Network.SSH.Stream
 
 setCryptoContexts :: TransportState -> (EncryptionContext, DecryptionContext) -> IO ()
 setCryptoContexts state (encryptionContext, decryptionContext) = atomically $ do
@@ -59,7 +43,7 @@ chacha20poly1305 deriveKeys = (encryptionContext, decryptionContext)
             , fromIntegral $ i  `shiftR`  0
             ] :: BA.Bytes
 
-        encryptionContext packetsSent plain = ciph3 <> mac
+        encryptionContext packetsSent plain = pure $ ciph3 <> mac
             where
                 plainlen      = BA.length plain                :: Int
                 padlen        = let p = 8 - ((1 + plainlen) `mod` 8)

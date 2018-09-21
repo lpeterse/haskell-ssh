@@ -1,33 +1,29 @@
-{-# LANGUAGE OverloadedStrings, ExistentialQuantification #-}
+{-# LANGUAGE ExistentialQuantification #-}
 module Network.SSH.Server.Transport
-    ( TransportState ()
+    ( TransportState()
     , withTransportState
     , sendMessage
     , receiveMessage
     , switchEncryptionContext
     , switchDecryptionContext
-    ) where
+    )
+where
 
-import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TVar
-import           Control.Concurrent.STM.TMVar
-import           Control.Exception            (throwIO)
-import           Control.Monad                (when, void)
-import           Control.Monad.STM            (atomically)
-import qualified Data.ByteString              as BS
-import           Data.Word
+import           Control.Monad.STM              ( atomically )
+import           Control.Monad                  ( void )
+import qualified Data.ByteString               as BS
 import           System.Clock
 
-import           Network.SSH.Constants
 import           Network.SSH.Encoding
-import           Network.SSH.Message
 import           Network.SSH.Stream
 import           Network.SSH.Server.Transport.Internal
-import           Network.SSH.Server.Transport.Encryption
 
-withTransportState :: DuplexStream stream => stream -> (TransportState -> IO a) -> IO a
+withTransportState
+    :: DuplexStream stream => stream -> (TransportState -> IO a) -> IO a
 withTransportState stream runWith = do
-    state <- TransportState stream
+    state <-
+        TransportState stream
         <$> newTVarIO 0
         <*> newTVarIO 0
         <*> newTVarIO 0
@@ -43,31 +39,34 @@ withTransportState stream runWith = do
 
 switchEncryptionContext :: TransportState -> IO ()
 switchEncryptionContext state = atomically $ do
-    writeTVar (transportEncryptionContext state) =<< readTVar (transportEncryptionContextNext state)
+    writeTVar (transportEncryptionContext state)
+        =<< readTVar (transportEncryptionContextNext state)
 
 switchDecryptionContext :: TransportState -> IO ()
 switchDecryptionContext state = atomically $ do
-    writeTVar (transportDecryptionContext state) =<< readTVar (transportDecryptionContextNext state)
+    writeTVar (transportDecryptionContext state)
+        =<< readTVar (transportDecryptionContextNext state)
 
 sendMessage :: (Show msg, Encoding msg) => TransportState -> msg -> IO ()
 sendMessage state@TransportState { transportStream = stream } msg = do
     let plainText = runPut (put msg) :: BS.ByteString
-    encrypt     <- readTVarIO  (transportEncryptionContext state)
-    bytesSent   <- readTVarIO  (transportBytesSent state)
-    packetsSent <- readTVarIO  (transportPacketsSent state)
-    atomically $ modifyTVar' (transportPacketsSent state) (+1)
-    let cipherText = encrypt (packetsSent) plainText
+    encrypt     <- readTVarIO (transportEncryptionContext state)
+    packetsSent <- readTVarIO (transportPacketsSent state)
+    cipherText  <- encrypt packetsSent plainText
+    atomically $ modifyTVar' (transportBytesSent state) (+ fromIntegral (BS.length cipherText))
+    atomically $ modifyTVar' (transportPacketsSent state) (+ 1)
     void $ sendAll stream cipherText
 
 receiveMessage :: Encoding msg => TransportState -> IO msg
 receiveMessage state@TransportState { transportStream = stream } = do
     packetsReceived <- readTVarIO (transportPacketsReceived state)
-    atomically $ modifyTVar' (transportPacketsReceived state) (+1)
-    decrypt    <- readTVarIO (transportDecryptionContext state)
-    plainText  <- decrypt packetsReceived receiveAll'
+    atomically $ modifyTVar' (transportPacketsReceived state) (+ 1)
+    decrypt   <- readTVarIO (transportDecryptionContext state)
+    plainText <- decrypt packetsReceived receiveAll'
     runGet get plainText
-    where
-        receiveAll' i = do
-            bs <- receiveAll stream i
-            atomically $ modifyTVar' (transportBytesReceived state) (+ fromIntegral (BS.length bs))
-            pure bs
+  where
+    receiveAll' i = do
+        bs <- receiveAll stream i
+        atomically $ modifyTVar' (transportBytesReceived state)
+                                 (+ fromIntegral (BS.length bs))
+        pure bs

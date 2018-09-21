@@ -1,14 +1,11 @@
-{-# LANGUAGE ExistentialQuantification, OverloadedStrings, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ExistentialQuantification, OverloadedStrings #-}
 module Network.SSH.Server.Transport.Internal where
 
-import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TVar
-import           Control.Concurrent.STM.TMVar
-import qualified Data.ByteString              as BS
+import qualified Data.ByteString               as BS
 import           Data.Word
-import           System.Clock
-import Control.Monad (when)
-import Control.Exception (throwIO)
+import           Control.Monad                  ( when )
+import           Control.Exception              ( throwIO )
 
 import           Network.SSH.Stream
 import           Network.SSH.Encoding
@@ -32,14 +29,16 @@ data TransportState
     }
 
 type DecryptionContext  = Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
-type EncryptionContext  = Word64 -> BS.ByteString -> BS.ByteString
+type EncryptionContext  = Word64 -> BS.ByteString -> IO BS.ByteString
 
 noEncryption :: EncryptionContext
-noEncryption _ plainText = runPut (putPacked plainText)
+noEncryption _ plainText = pure $ runPut (putPacked plainText)
 
 noDecryption :: DecryptionContext
 noDecryption _ getCipherText = do
     paclen <- runGet getWord32 =<< getCipherText 4
-    when (paclen > maxPacketLength) $
-        throwIO $ Disconnect DisconnectProtocolError "max packet length exceeded" ""
+    when (paclen > maxPacketLength) $ throwIO $ Disconnect
+        DisconnectProtocolError
+        "max packet length exceeded"
+        ""
     BS.drop 1 <$> getCipherText (fromIntegral paclen)

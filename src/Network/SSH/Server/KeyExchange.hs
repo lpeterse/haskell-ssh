@@ -5,17 +5,12 @@ module Network.SSH.Server.KeyExchange where
 
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TVar
-import           Control.Concurrent.STM.TChan
-import           Control.Concurrent.STM.TMVar
 import           Control.Exception            (throwIO)
 import           Control.Monad                (void)
-import           Control.Monad.STM            (STM, atomically)
-import qualified Crypto.Cipher.ChaCha         as ChaCha
+import           Control.Monad.STM            (atomically)
 import qualified Crypto.Hash                  as Hash
-import qualified Crypto.MAC.Poly1305          as Poly1305
 import qualified Crypto.PubKey.Curve25519     as Curve25519
 import qualified Crypto.PubKey.Ed25519        as Ed25519
-import           Data.Bits
 import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
 import           Data.List
@@ -44,17 +39,14 @@ performInitialKeyExchange ::
     -> IO (SessionId, KexStep -> IO ())
 performInitialKeyExchange config state enqueueMessage clientVersion serverVersion = do
     msid <- newEmptyMVar
-    handle <- newKexStepHandler config state clientVersion serverVersion enqueueMessage msid
-    handle KexStart
+    handler <- newKexStepHandler config state clientVersion serverVersion enqueueMessage msid
+    handler KexStart
     MsgKexInit cki <- receiveMessage state
-    handle (KexProcessInit cki)
+    handler (KexProcessInit cki)
     MsgKexEcdhInit clientKexEcdhInit <- receiveMessage state
-    handle (KexProcessEcdhInit clientKexEcdhInit)
+    handler (KexProcessEcdhInit clientKexEcdhInit)
     session <- readMVar msid
-    pure (session, handle)
-    where
-        hookSend msg = onSend config msg >> pure msg
-        hookRecv msg = onReceive config msg >> pure msg
+    pure (session, handler)
 
 -- The rekeying watchdog is an inifinite loop that initiates
 -- a key re-exchange when either a certain amount of time has passed or

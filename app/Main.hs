@@ -3,67 +3,84 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import           Control.Concurrent             (forkIO, threadDelay)
+import           Control.Concurrent             ( forkIO
+                                                , threadDelay
+                                                )
 import           Control.Concurrent.STM.TVar
-import           Control.Exception              (SomeException, bracket,
-                                                 bracketOnError, catch, finally)
-import           Control.Monad                  (forM_, forever)
+import           Control.Exception              ( bracket
+                                                , bracketOnError
+                                                , finally
+                                                )
+import           Control.Monad                  ( forM_
+                                                , void
+                                                , forever
+                                                )
 import           Control.Monad.STM
-import qualified Data.ByteArray                 as BA
-import qualified Data.ByteString                as BS
+import qualified Data.ByteArray                as BA
+import qualified Data.ByteString               as BS
 import           System.Exit
-import qualified System.Socket                  as S
-import qualified System.Socket.Family.Inet6     as S
-import qualified System.Socket.Protocol.Default as S
-import qualified System.Socket.Type.Stream      as S
+import qualified System.Socket                 as S
+import qualified System.Socket.Family.Inet6    as S
+import qualified System.Socket.Protocol.Default
+                                               as S
+import qualified System.Socket.Type.Stream     as S
 
 import           Network.SSH.Constants
 import           Network.SSH.Key
-import qualified Network.SSH.Server             as Server
-import qualified Network.SSH.Server.Config      as Server
-import qualified Network.SSH.Server.Types       as Server
+import qualified Network.SSH.Server            as Server
+import qualified Network.SSH.Server.Config     as Server
 import           Network.SSH.Stream
 
 main :: IO ()
 main = do
     print version
-    file <- BS.readFile "./resources/id_ed25519"
-    (privateKey, _):_ <- decodePrivateKeyFile BS.empty file :: IO [(KeyPair, BA.Bytes)]
+    file                <- BS.readFile "./resources/id_ed25519"
+    (privateKey, _) : _ <-
+        decodePrivateKeyFile BS.empty file :: IO [(KeyPair, BA.Bytes)]
 
     c <- Server.newDefaultConfig
-    let config = c {
-          Server.hostKeys       = pure privateKey
-        , Server.onAuthRequest  = \username _ _ -> pure (Just username)
-        , Server.onExecRequest  = Just runExec
-        , Server.onSend         = \msg-> putStrLn ("sent: " ++ show msg)
-        , Server.onReceive      = \msg-> putStrLn ("received: " ++ show msg)
-        , Server.onDisconnect   = \dis-> putStrLn ("disconnect: " ++ show dis)
-        , Server.maxTimeBeforeRekey = 120
-        , Server.maxDataBeforeRekey = 1024 * 10
-        }
+    let
+        config = c
+            { Server.hostKeys           = pure privateKey
+            , Server.onAuthRequest      = \username _ _ -> pure (Just username)
+            , Server.onExecRequest      = Just runExec
+            , Server.onSend = \msg -> putStrLn ("sent: " ++ show msg)
+            , Server.onReceive = \msg -> putStrLn ("received: " ++ show msg)
+            , Server.onDisconnect       = \dis -> putStrLn
+                                              ("disconnect: " ++ show dis)
+            , Server.maxTimeBeforeRekey = 120
+            , Server.maxDataBeforeRekey = 1024 * 10
+            }
     bracket open close (accept config)
   where
-    open        = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
-    close       = S.close
-    send    s x = S.sendAll s x S.msgNoSignal >> pure ()
-    receive s i = S.receive s i S.msgNoSignal
+    open  = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
+    close = S.close
     accept config s = do
         S.setSocketOption s (S.ReuseAddress True)
         S.setSocketOption s (S.V6Only False)
         S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
         S.listen s 5
-        forever $ bracketOnError (S.accept s) (S.close . fst) $ \(stream,_) -> do
-            ownershipTransferred <- newTVarIO False
-            let serveStream = do
-                    atomically $ writeTVar ownershipTransferred True
-                    Server.serve config stream
-            forkIO $ serveStream `finally` S.close stream
-            atomically $ check =<< readTVar ownershipTransferred
+        forever $ bracketOnError (S.accept s) (S.close . fst) $ \(stream, _) ->
+            do
+                ownershipTransferred <- newTVarIO False
+                let serveStream = do
+                        atomically $ writeTVar ownershipTransferred True
+                        Server.serve config stream
+                void $ forkIO $ serveStream `finally` S.close stream
+                atomically $ check =<< readTVar ownershipTransferred
 
-runExec :: (OutputStream stdout) => identity -> stdin -> stdout -> stderr -> command -> IO ExitCode
-runExec identity stdin stdout stderr command = do
-    forM_ [1..] $ \i-> do
-        send stdout (BS.pack (map (fromIntegral . fromEnum) (show i)) `mappend` "\n" :: BS.ByteString)
+runExec
+    :: (OutputStream stdout)
+    => identity
+    -> stdin
+    -> stdout
+    -> stderr
+    -> command
+    -> IO ExitCode
+runExec _identity _stdin stdout _stderr _command = do
+    forM_ [1 ..] $ \i -> do
+        void $ sendAll stdout
+            (BS.pack (map (fromIntegral . fromEnum) (show (i :: Int))) `mappend` "\n" :: BS.ByteString)
         threadDelay 100000
     pure (ExitFailure 23)
 
