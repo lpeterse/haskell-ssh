@@ -25,7 +25,6 @@ data Config identity = Config {
     , onSend                        :: Message -> IO ()
     , onReceive                     :: Message -> IO ()
     , onDisconnect                  :: Either SomeException Disconnect -> IO ()
-    , transportBufferSize           :: Word16
     , channelMaxCount               :: Word16
     , channelMaxWindowSize          :: Word32
     , channelMaxPacketSize          :: Word32
@@ -45,7 +44,6 @@ newDefaultConfig = do
         , onSend                        = \_ -> pure ()
         , onReceive                     = \_ -> pure ()
         , onDisconnect                  = \_ -> pure ()
-        , transportBufferSize           = 4096
         , channelMaxCount               = 256
         , channelMaxWindowSize          = 256 * 1024
         , channelMaxPacketSize          = 32 * 1024
