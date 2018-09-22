@@ -2,12 +2,13 @@
 module Network.SSH.Encoding where
 
 import           Control.Applicative
-import           Control.Monad       (when)
-import qualified Control.Monad.Fail  as Fail
-import qualified Data.ByteArray      as BA
-import qualified Data.ByteString     as BS
-import qualified Data.Serialize.Get  as G
-import qualified Data.Serialize.Put  as P
+import           Control.Monad                  ( when )
+import qualified Control.Monad.Fail            as Fail
+import qualified Data.ByteArray                as BA
+import qualified Data.ByteString               as BS
+import qualified Data.Serialize.Get            as G
+import qualified Data.Serialize.Put            as P
+import           Data.Foldable
 import           Data.Word
 import           System.Exit
 
@@ -19,7 +20,7 @@ runPut = P.runPut
 
 runGet :: (Fail.MonadFail m) => Get a -> BS.ByteString -> m a
 runGet g bs = case G.runGet g bs of
-    Left e  -> Fail.fail e
+    Left  e -> Fail.fail e
     Right a -> pure a
 
 class Encoding a where
@@ -133,23 +134,40 @@ putPacked payload = do
     putWord8 (fromIntegral paddingLen)
     put payload
     putByteString padding
-    where
-        payloadLen = len payload :: Word32
-        paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8 :: Word32
-        packetLen  = 1 + payloadLen + paddingLen :: Word32
-        padding    = BS.replicate (fromIntegral paddingLen) 0 :: BS.ByteString
+  where
+    payloadLen = len payload :: Word32
+    paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8 :: Word32
+    packetLen  = 1 + payloadLen + paddingLen :: Word32
+    padding    = BS.replicate (fromIntegral paddingLen) 0 :: BS.ByteString
 
 getUnpacked :: Encoding a => Get a
 getUnpacked = do
     packetLen <- fromIntegral <$> getWord32
     isolate packetLen $ do
         paddingLen <- fromIntegral <$> getWord8
-        x <- isolate (packetLen - 1 - paddingLen) get
+        x          <- isolate (packetLen - 1 - paddingLen) get
         skip paddingLen
         pure x
 
 putAsMPInt :: (BA.ByteArrayAccess ba) => ba -> Put
-putAsMPInt ba
-    | BA.null ba           = fail ""
-    | BA.index ba 0 >= 128 = putWord32 (lenBytes ba + 1) >> putWord8 0 >> putBytes ba
-    | otherwise            = putWord32 (lenBytes ba) >> putBytes ba
+putAsMPInt ba = f 0
+  where
+    baLen = BA.length ba
+    f i | i >= baLen =
+            pure ()
+        | BA.index ba i == 0 =
+            f (i + 1)
+        | BA.index ba i >= 128 = do
+            putWord32 $ fromIntegral (baLen - i + 1)
+            putWord8 0
+            putWord8 (BA.index ba i)
+            g (i + 1)
+        | otherwise = do
+            putWord32 $ fromIntegral (baLen - i)
+            putWord8 (BA.index ba i)
+            g (i + 1)
+    g i | i >= baLen =
+            pure ()
+        | otherwise = do
+            putWord8 (BA.index ba i)
+            g (i + 1)

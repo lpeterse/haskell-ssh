@@ -48,8 +48,8 @@ main = do
             , Server.onReceive = \msg -> putStrLn ("received: " ++ show msg)
             , Server.onDisconnect       = \dis -> putStrLn
                                               ("disconnect: " ++ show dis)
-            , Server.maxTimeBeforeRekey = 120
-            , Server.maxDataBeforeRekey = 1024 * 10
+            , Server.maxTimeBeforeRekey = 60
+            , Server.maxDataBeforeRekey = 1024 * 1024
             }
     bracket open close (accept config)
   where

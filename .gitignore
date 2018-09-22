@@ -2,3 +2,5 @@
 haskell-ssh.cabal
 *~
 .vscode
+*.hp
+*.prof

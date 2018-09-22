@@ -94,7 +94,7 @@ newKexStepHandler config state clientVersion serverVersion sendMsg msid = do
                 throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
 
         waitingForKexInit ski = \case
-            KexStart ->
+            KexStart -> do
                 pure () -- already in progress
             KexProcessInit cki ->
                 void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
@@ -102,7 +102,7 @@ newKexStepHandler config state clientVersion serverVersion sendMsg msid = do
                 throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
 
         waitingForKexEcdhInit ski cki = \case
-            KexStart ->
+            KexStart -> do
                 pure () -- already in progress
             KexProcessInit {} ->
                 throwIO $ Disconnect DisconnectProtocolError "unexpected KexInit" ""
@@ -173,9 +173,9 @@ newKexStepHandler config state clientVersion serverVersion sendMsg msid = do
 
                 setCryptoContexts state $ chacha20poly1305 $ deriveKeys secret hash session
 
-                -- void $ swapMVar (transportLastRekeyingTime         state) =<< fromIntegral . sec <$> getTime Monotonic
-                -- void $ swapMVar (transportLastRekeyingDataSent     state) =<< readMVar (transportBytesSent     state)
-                -- void $ swapMVar (transportLastRekeyingDataReceived state) =<< readMVar (transportBytesReceived state)
+                atomically . writeTVar (transportLastRekeyingTime         state) =<< fromIntegral . sec <$> getTime Monotonic
+                atomically $ writeTVar (transportLastRekeyingDataSent     state) =<< readTVar (transportBytesSent     state)
+                atomically $ writeTVar (transportLastRekeyingDataReceived state) =<< readTVar (transportBytesReceived state)
 
                 -- The encryption context shall be switched no earlier than
                 -- before the new keys message has been transmitted.
