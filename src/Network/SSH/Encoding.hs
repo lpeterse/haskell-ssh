@@ -8,7 +8,6 @@ import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import qualified Data.Serialize.Get            as G
 import qualified Data.Serialize.Put            as P
-import           Data.Foldable
 import           Data.Word
 import           System.Exit
 

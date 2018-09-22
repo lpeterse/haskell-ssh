@@ -35,8 +35,8 @@ import           Data.Maybe
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Connection
-import           Network.SSH.Server.KeyExchange
 import           Network.SSH.Server.Transport
+import           Network.SSH.Server.Transport.KeyExchange
 import           Network.SSH.Stream
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
@@ -46,22 +46,22 @@ serve config stream = withDisconnectHandler config $ do
     -- any more resources); respond with the server version string.
     clientVersion <- receiveClientVersion stream
     serverVersion <- sendServerVersion stream
-    -- Initialize a new transport state object to keep track of
+    -- Initialize a new transport object to keep track of
     -- packet sequence numbers and encryption contexts.
     -- The transport context has exclusive access to the stream handle.
     -- This assures that no plain text will ever be transmitted after
     -- an encryption context has been established.
-    withTransportState stream
+    withTransport stream
                        (serveTransport config clientVersion serverVersion)
 
 serveTransport
-    :: Config identity -> Version -> Version -> TransportState -> IO Disconnect
-serveTransport config clientVersion serverVersion state = do
-    -- The `sendMessage` operation on the `state` is not thread-safe.
+    :: Config identity -> Version -> Version -> Transport -> IO Disconnect
+serveTransport config clientVersion serverVersion transport = do
+    -- The `sendMessage` operation on the `transport` is not thread-safe.
     -- A background thread is started to serialize writes from different
     -- threads.
     -- => `enqueue` is a thread-safe variant of `sendMessage`.
-    withAsyncSender config state $ \enqueue -> do
+    withAsyncSender config transport $ \enqueue -> do
         -- Perform the initial key exchange.
         -- This key exchange is handled separately as the key exchange protocol
         -- shall be followed strictly and no other messages shall be accepted
@@ -71,13 +71,13 @@ serveTransport config clientVersion serverVersion state = do
         -- Key re-exchanges may be interleaved with regular traffic and
         -- therefore cannot be performed synchronously.
         (session, kexNextStep) <- performInitialKeyExchange config
-                                                            state
+                                                            transport
                                                             enqueue
                                                             clientVersion
                                                             serverVersion
         -- Install a watchdog running in background that initiates
         -- a key re-exchange when necessary.
-        withAsyncWatchdog config state (kexNextStep KexStart) $ do
+        withAsyncWatchdog config transport (kexNextStep KexStart) $ do
             -- The connection is essentially a state machine.
             -- It also contains resources that need to be freed on termination
             -- (like running threads), therefore the bracket pattern.
@@ -91,7 +91,7 @@ serveTransport config clientVersion serverVersion state = do
     processIncomingMessages
         :: (KexStep -> IO ()) -> Connection identity -> IO Disconnect
     processIncomingMessages kexNextStep connection = fix $ \continue -> do
-        msg <- receiveMessage state
+        msg <- receiveMessage transport
         onReceive config msg
         case msg of
             MsgDisconnect x       -> pure x
@@ -102,24 +102,24 @@ serveTransport config clientVersion serverVersion state = do
                 kexNextStep (KexProcessEcdhInit kexEcdhInit)
                 continue
             MsgKexNewKeys{} -> do
-                switchDecryptionContext state
+                switchDecryptionContext transport
                 continue
             _ -> do
                 pushMessage connection msg
                 continue
 
-withAsyncWatchdog :: Config identity -> TransportState -> IO () -> IO a -> IO a
-withAsyncWatchdog config state rekey run = withAsync runWatchdog
+withAsyncWatchdog :: Config identity -> Transport -> IO () -> IO a -> IO a
+withAsyncWatchdog config transport rekey run = withAsync runWatchdog
     $ \thread -> link thread >> run
   where
     runWatchdog = forever $ do
-        required <- askRekeyingRequired config state
+        required <- askRekeyingRequired config transport
         when required rekey
         threadDelay 1000000
 
 withAsyncSender
-    :: Config identity -> TransportState -> ((Message -> IO ()) -> IO a) -> IO a
-withAsyncSender config state runWith = do
+    :: Config identity -> Transport -> ((Message -> IO ()) -> IO a) -> IO a
+withAsyncSender config transport runWith = do
     -- This is a one-element queue that shall be used to pass
     -- a server disconnect message to the sender thread.
     -- The sender thread is supposed to treat this queue with
@@ -154,7 +154,7 @@ withAsyncSender config state runWith = do
     runSender dequeue = fix $ \continue -> do
         msg <- dequeue
         onSend config msg
-        sendMessage state msg
+        sendMessage transport msg
         case msg of
             -- This thread shall terminate gracefully in case the
             -- message was a disconnect message. By specification
@@ -162,7 +162,7 @@ withAsyncSender config state runWith = do
             MsgDisconnect d -> pure d
             -- A key re-exchange is taken into effect right after
             -- the MsgKexNewKey message.
-            MsgKexNewKeys{} -> switchEncryptionContext state >> continue
+            MsgKexNewKeys{} -> switchEncryptionContext transport >> continue
             _               -> continue
 
 withDisconnectHandler :: Config identity -> IO Disconnect -> IO ()

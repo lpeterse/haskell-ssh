@@ -1,7 +1,10 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE MultiWayIf        #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Network.SSH.Server.KeyExchange where
+module Network.SSH.Server.Transport.KeyExchange
+  ( KexStep (..)
+  , performInitialKeyExchange
+  ) where
 
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TVar
@@ -15,11 +18,9 @@ import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
 import           Data.List
 import qualified Data.List.NonEmpty           as NEL
-import           Data.Monoid                  ((<>))
 import           System.Clock
 
 import           Network.SSH.Algorithms
-import           Network.SSH.Constants
 import           Network.SSH.Encoding
 import           Network.SSH.Key
 import           Network.SSH.Message
@@ -27,7 +28,6 @@ import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Transport.Encryption
 import           Network.SSH.Server.Transport.Internal
-import           Network.SSH.Stream
 
 data KexStep
     = KexStart
@@ -35,50 +35,22 @@ data KexStep
     | KexProcessEcdhInit KexEcdhInit
 
 performInitialKeyExchange ::
-    Config identity -> TransportState -> (Message -> IO ()) -> Version -> Version
+    Config identity -> Transport -> (Message -> IO ()) -> Version -> Version
     -> IO (SessionId, KexStep -> IO ())
-performInitialKeyExchange config state enqueueMessage clientVersion serverVersion = do
+performInitialKeyExchange config transport enqueueMessage clientVersion serverVersion = do
     msid <- newEmptyMVar
-    handler <- newKexStepHandler config state clientVersion serverVersion enqueueMessage msid
+    handler <- newKexStepHandler config transport clientVersion serverVersion enqueueMessage msid
     handler KexStart
-    MsgKexInit cki <- receiveMessage state
+    MsgKexInit cki <- receiveMessage transport
     handler (KexProcessInit cki)
-    MsgKexEcdhInit clientKexEcdhInit <- receiveMessage state
+    MsgKexEcdhInit clientKexEcdhInit <- receiveMessage transport
     handler (KexProcessEcdhInit clientKexEcdhInit)
     session <- readMVar msid
     pure (session, handler)
 
--- The rekeying watchdog is an inifinite loop that initiates
--- a key re-exchange when either a certain amount of time has passed or
--- when either the input or output stream has exceeded its threshold
--- of bytes sent/received.
-askRekeyingRequired :: Config identity -> TransportState -> IO Bool
-askRekeyingRequired config state = do
-    t  <- fromIntegral . sec <$> getTime Monotonic
-    atomically $ do
-        t0 <- readTVar (transportLastRekeyingTime state)
-        s  <- readTVar (transportBytesSent state)
-        s0 <- readTVar (transportLastRekeyingDataSent state)
-        r  <- readTVar (transportBytesReceived state)
-        r0 <- readTVar (transportLastRekeyingDataReceived state)
-        pure $ if   | intervalExceeded  t t0 -> True
-                    | thresholdExceeded s s0 -> True
-                    | thresholdExceeded r r0 -> True
-                    | otherwise              -> False
-    where
-        -- For reasons of fool-proofness the rekeying interval/threshold
-        -- shall never be greater than 1 hour or 1GB.
-        -- NB: This is security critical as some algorithms like ChaCha20
-        -- use the packet counter as nonce and an overflow will lead to
-        -- nonce reuse!
-        interval  = min (maxTimeBeforeRekey config) 3600
-        threshold = min (maxDataBeforeRekey config) (1024 * 1024 * 1024)
-        intervalExceeded  t t0 = t > t0 && t - t0 > interval
-        thresholdExceeded x x0 = x > x0 && x - x0 > threshold
-
-newKexStepHandler :: Config identity -> TransportState -> Version -> Version
+newKexStepHandler :: Config identity -> Transport -> Version -> Version
                   -> (Message -> IO ()) -> MVar SessionId -> IO (KexStep -> IO ())
-newKexStepHandler config state clientVersion serverVersion sendMsg msid = do
+newKexStepHandler config transport clientVersion serverVersion sendMsg msid = do
     continuation <- newEmptyMVar
 
     let noKexInProgress = \case
@@ -171,11 +143,11 @@ newKexStepHandler config state clientVersion serverVersion sendMsg msid = do
                         putMVar msid s
                         pure s
 
-                setCryptoContexts state $ chacha20poly1305 $ deriveKeys secret hash session
+                setCryptoContexts transport $ chacha20poly1305Context $ deriveKeys secret hash session
 
-                atomically . writeTVar (transportLastRekeyingTime         state) =<< fromIntegral . sec <$> getTime Monotonic
-                atomically $ writeTVar (transportLastRekeyingDataSent     state) =<< readTVar (transportBytesSent     state)
-                atomically $ writeTVar (transportLastRekeyingDataReceived state) =<< readTVar (transportBytesReceived state)
+                atomically . writeTVar (transportLastRekeyingTime         transport) =<< fromIntegral . sec <$> getTime Monotonic
+                atomically $ writeTVar (transportLastRekeyingDataSent     transport) =<< readTVar (transportBytesSent     transport)
+                atomically $ writeTVar (transportLastRekeyingDataReceived transport) =<< readTVar (transportBytesReceived transport)
 
                 -- The encryption context shall be switched no earlier than
                 -- before the new keys message has been transmitted.
@@ -254,31 +226,3 @@ deriveKeys secret hash (SessionId sess) i = BA.convert <$> k1 : f [k1]
     st =
         flip Hash.hashUpdate hash $
         Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
-
--- The maximum length of the version string is 255 chars including CR+LF.
--- The version string is usually short and transmitted within
--- a single TCP segment. The concatenation is therefore unlikely to happen
--- for regular use cases, but nonetheless required for correctness.
--- It is furthermore assumed that the client does not send any more data
--- after the version string before having received a response from the server;
--- otherwise parsing will fail. This is done in order to not having to deal with leftovers.
-receiveClientVersion :: (InputStream stream) => stream -> IO Version
-receiveClientVersion stream = receive stream 257 >>= f
-    where
-        f bs
-            | BS.null bs          = throwException
-            | BS.length bs >= 257 = throwException
-            | BS.last bs   ==  10 = case runGet get bs of
-                Nothing -> throwException
-                Just v  -> pure v
-            | otherwise = do
-                bs' <- receive stream (255 - BS.length bs)
-                if BS.null bs'
-                    then throwException
-                    else f (bs <> bs')
-        throwException = throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""
-
-sendServerVersion :: (OutputStream stream) => stream -> IO Version
-sendServerVersion stream = do
-    void $ sendAll stream $ runPut $ put version
-    pure version
