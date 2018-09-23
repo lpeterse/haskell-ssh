@@ -3,7 +3,7 @@
 {-# LANGUAGE MultiWayIf          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module Network.SSH.Server.Channel where
+module Network.SSH.Server.Service.Connection.Channel where
 
 import           Control.Applicative
 import           Control.Concurrent
@@ -20,7 +20,7 @@ import           System.Exit
 import           Network.SSH.Encoding
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
-import           Network.SSH.Server.Types
+import           Network.SSH.Server.Service.Connection.Internal
 import qualified Network.SSH.TAccountingQueue as AQ
 
 handleChannelOpen :: forall identity. Connection identity -> ChannelOpen -> IO ()
@@ -170,12 +170,9 @@ handleChannelRequest connection (ChannelRequest channelId request) =
                 ChannelRequestExec wantReply command -> case onExecRequest (connConfig connection) of
                     Nothing-> pure $
                         when wantReply $ sendFailure channel
-                    Just exec -> readTVar (connIdentity connection) >>= \case
-                        Nothing -> pure $
-                            when wantReply $ sendFailure channel
-                        Just identity -> pure $ do
-                            when wantReply $ sendSuccess channel
-                            sessionExec connection channel session (\s0 s1 s2-> exec identity s0 s1 s2 command)
+                    Just exec -> readTVar (connIdentity connection) >>= \identity -> pure $ do
+                        when wantReply $ sendSuccess channel
+                        sessionExec connection channel session (\s0 s1 s2-> exec identity s0 s1 s2 command)
                 ChannelRequestOther _ wantReply -> pure $
                     when wantReply $ sendFailure channel
                 ChannelRequestExitStatus {} -> pass

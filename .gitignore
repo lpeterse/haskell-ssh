@@ -5,3 +5,4 @@ haskell-ssh.cabal
 *.hp
 *.prof
 *.svg
+*.cabal

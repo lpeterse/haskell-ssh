@@ -1,16 +1,111 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 module Network.SSH.Server.Service where
 
-import Control.Exception (throwIO)
+import           Control.Concurrent.STM.TVar
+import           Control.Concurrent.STM.TMVar
+import           Control.Concurrent.MVar
+import           Control.Exception (bracket)
+import           Control.Monad.STM
+import qualified Crypto.Hash.Algorithms       as Hash
+import qualified Crypto.PubKey.Ed25519        as Ed25519
+import qualified Crypto.PubKey.RSA.PKCS15     as RSA.PKCS15
+import qualified Data.ByteString              as BS
+import           Control.Exception (throwIO)
 
+import           Network.SSH.Encoding
+import           Network.SSH.Key
 import           Network.SSH.Message
-import           Network.SSH.Server.Types
+import           Network.SSH.Server.Config
+import           Network.SSH.Server.Service.Connection.Internal
+import           Network.SSH.Server.Service.Connection.Channel
 
-handleServiceRequest :: Connection identity -> ServiceRequest -> IO ()
-handleServiceRequest connection (ServiceRequest (ServiceName srv)) = case srv of
-    "ssh-userauth"   -> accept
-    "ssh-connection" -> accept
-    _                -> reject
+newtype MessageDispatcher = MessageDispatcher (Message -> IO MessageDispatcher)
+
+withServiceLayer :: forall identity a. Config identity -> SessionId -> (Message -> IO ()) -> ((Message -> IO ()) -> IO a) -> IO a
+withServiceLayer config session send runWith = bracket
+    ( newMVar dispatchAuth0 ) -- a disconnect message will be dispatched on termination!
+    (\mvar -> modifyMVar_ mvar (\(MessageDispatcher f) -> f $ MsgDisconnect $ Disconnect DisconnectReserved mempty mempty))
+    (\mvar -> runWith $ \msg -> modifyMVar_ mvar (\(MessageDispatcher f)-> f msg))
     where
-        accept = connOutput connection $ MsgServiceAccept (ServiceAccept (ServiceName srv))
-        reject = throwIO $ Disconnect DisconnectServiceNotAvailable mempty mempty
+        dispatchAuth0 :: MessageDispatcher
+        dispatchAuth0 = MessageDispatcher $ \case
+            MsgServiceRequest (ServiceRequest (ServiceName srv@"ssh-userauth")) -> do
+                send $ MsgServiceAccept (ServiceAccept (ServiceName srv))
+                pure $ dispatchAuth1
+            MsgServiceRequest _ -> do
+                throwIO $ Disconnect DisconnectServiceNotAvailable mempty mempty
+            _ ->
+                throwIO $ Disconnect DisconnectProtocolError mempty mempty
+
+        dispatchAuth1 :: MessageDispatcher
+        dispatchAuth1 = MessageDispatcher $ \case
+            MsgUserAuthRequest (UserAuthRequest user service method) -> case method of
+                AuthPublicKey algo pk msig -> case msig of
+                    Nothing -> do
+                        send $ unconditionallyConfirmPublicKeyIsOk algo pk
+                        pure $ dispatchAuth1
+                    Just sig
+                        | verifyAuthSignature session user service algo pk sig -> do
+                            onAuthRequest config user service pk >>= \case
+                                Nothing -> do
+                                    send supportedAuthMethods
+                                    pure $ dispatchAuth1
+                                Just identity -> case service of
+                                    (ServiceName "ssh-connection") -> do
+                                        send $ MsgUserAuthSuccess UserAuthSuccess
+                                        conn <- Connection
+                                            <$> pure config
+                                            <*> newTVarIO identity
+                                            <*> newTVarIO mempty
+                                            <*> pure send
+                                            <*> newTVarIO False
+                                        pure $ dispatchConnection0 conn
+                                    _ -> do
+                                        send supportedAuthMethods
+                                        pure $ dispatchAuth1
+                        | otherwise -> do
+                            send supportedAuthMethods
+                            pure $ dispatchAuth1
+                _ -> do
+                    send supportedAuthMethods
+                    pure $ dispatchAuth1
+            _ -> throwIO $ Disconnect DisconnectProtocolError mempty mempty
+            where
+                supportedAuthMethods =
+                    MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+                unconditionallyConfirmPublicKeyIsOk algo pk =
+                    MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
+
+        dispatchConnection0 :: Connection identity -> MessageDispatcher
+        dispatchConnection0 connection = MessageDispatcher $ \msg-> do
+            case msg of
+                MsgChannelOpen x              -> handleChannelOpen         connection x
+                MsgChannelClose x             -> handleChannelClose        connection x
+                MsgChannelEof x               -> handleChannelEof          connection x
+                MsgChannelRequest x           -> handleChannelRequest      connection x
+                MsgChannelWindowAdjust x      -> handleChannelWindowAdjust connection x
+                MsgChannelData x              -> handleChannelData         connection x
+                MsgChannelExtendedData x      -> handleChannelExtendedData connection x
+                _ -> do
+                    terminate connection
+                    throwIO $ Disconnect DisconnectProtocolError mempty mempty
+            pure $ dispatchConnection0 connection
+
+verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
+verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =
+    case (publicKey,signature) of
+        (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
+        (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
+        _                                        -> False
+    where
+        signedData :: BS.ByteString
+        signedData = runPut $ do
+            put           sessionIdentifier
+            putWord8      50
+            put           userName
+            put           serviceName
+            putString     ("publickey" :: BS.ByteString)
+            putWord8      1
+            put           algorithm
+            put           publicKey

@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server
     ( serve
     )
@@ -34,7 +35,7 @@ import           Data.Maybe
 
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
-import           Network.SSH.Server.Connection
+import           Network.SSH.Server.Service
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Transport.KeyExchange
 import           Network.SSH.Stream
@@ -78,24 +79,33 @@ serveTransport config clientVersion serverVersion transport = do
         -- Install a watchdog running in background that initiates
         -- a key re-exchange when necessary.
         withAsyncWatchdog config transport (kexNextStep KexStart) $ do
-            -- The connection is essentially a state machine.
-            -- It also contains resources that need to be freed on termination
-            -- (like running threads), therefore the bracket pattern.
-            withConnection config session enqueue
+            -- The authentication layer is (in this implementation) the
+            -- next higher layer. All other layers are on top of it
+            -- and all messages are passed through it (and eventually
+            -- rejected as long is the user is not authenticated).
+            withServiceLayer config session enqueue
                 -- The next call waits for incoming messages
                 -- and dispatches them either to the transport layer handling functions
                 -- or to the connection layer. It terminates when receiving a disconnect
                 -- message from the client or when an exception occurs.
-                $ processIncomingMessages kexNextStep
+                $ processInboundMessages kexNextStep
   where
-    processIncomingMessages
-        :: (KexStep -> IO ()) -> Connection identity -> IO Disconnect
-    processIncomingMessages kexNextStep connection = fix $ \continue -> do
+    processInboundMessages
+        :: (KexStep -> IO ()) -> (Message -> IO ()) -> IO Disconnect
+    processInboundMessages kexNextStep dispatch = fix $ \continue -> do
         msg <- receiveMessage transport
         onReceive config msg
         case msg of
-            MsgDisconnect x       -> pure x
-            MsgKexInit    kexInit -> do
+            ----------------- transport layer messages -------------
+            MsgDisconnect x ->
+                pure x
+            MsgDebug {} ->
+                continue
+            MsgIgnore {} ->
+                continue
+            MsgUnimplemented {} ->
+                continue
+            MsgKexInit kexInit -> do
                 kexNextStep (KexProcessInit kexInit)
                 continue
             MsgKexEcdhInit kexEcdhInit -> do
@@ -104,8 +114,9 @@ serveTransport config clientVersion serverVersion transport = do
             MsgKexNewKeys{} -> do
                 switchDecryptionContext transport
                 continue
+            ----------------- higer layer messages ------------------
             _ -> do
-                pushMessage connection msg
+                dispatch msg
                 continue
 
 withAsyncWatchdog :: Config identity -> Transport -> IO () -> IO a -> IO a
