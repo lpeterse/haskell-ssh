@@ -1,12 +1,12 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, LambdaCase #-}
-module Spec.Server.KeyExchange ( tests ) where
+module Spec.Server.Transport ( tests ) where
     
 import           Control.Concurrent.MVar
 import qualified Data.ByteString as BS
 import           Control.Exception
 import           Control.Monad
 
-import           Network.SSH.Server.KeyExchange
+import           Network.SSH.Server.Transport
 import           Network.SSH.Stream
 import           Network.SSH.Message
 
@@ -14,7 +14,7 @@ import           Test.Tasty
 import           Test.Tasty.HUnit
 
 tests :: TestTree
-tests = testGroup "Network.SSH.Server.KeyExchange.receiveClientVersion"
+tests = testGroup "Network.SSH.Server.Transport.receiveClientVersion"
     [ testCase "correct version string #1" $ do 
         s <- newMVar ["SSH-2.0-OpenSSH_4.3\x0d\x0a" :: BS.ByteString]
         v <- receiveClientVersion s

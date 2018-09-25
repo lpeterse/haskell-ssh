@@ -7,6 +7,7 @@ module Network.SSH.Server.Service.Connection
     ( Connection ()
     , connectionOpen
     , connectionClose
+    , connectionClosed
     , connectionChannelOpen
     , connectionChannelClose
     , connectionChannelEof
@@ -83,6 +84,9 @@ connectionOpen config identity send = do
 connectionClose :: Connection identity -> IO ()
 connectionClose = atomically . connClose
 
+connectionClosed :: Connection identity -> IO Bool
+connectionClosed = atomically . connClosed
+
 connectionChannelOpen :: Connection identity -> ChannelOpen -> IO (Either ChannelOpenFailure ChannelOpenConfirmation)
 connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) =
     atomically openSTM
@@ -117,13 +121,12 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
         selectLocalChannelId :: M.Map ChannelId a -> Maybe ChannelId
         selectLocalChannelId m
             | M.size m >= fromIntegral maxCount = Nothing
-            | otherwise = f (ChannelId 1) $ M.keys m
+            | otherwise = f (ChannelId 0) $ M.keys m
             where
-                f i [] = Just i
+                f i []          = Just i
                 f (ChannelId i) (ChannelId k:ks)
-                    | i == maxBound = Nothing
-                    | i == k        = f (ChannelId $ i+1) ks
-                    | otherwise     = Just (ChannelId i)
+                    | i == k    = f (ChannelId $ i+1) ks
+                    | otherwise = Just (ChannelId i)
                 maxCount = channelMaxCount (connConfig connection)
 
         openFailure :: ChannelOpenFailureReason -> ChannelOpenFailure
