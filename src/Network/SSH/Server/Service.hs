@@ -2,23 +2,19 @@
 {-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 module Network.SSH.Server.Service where
 
-import           Control.Concurrent.STM.TVar
-import           Control.Concurrent.STM.TMVar
 import           Control.Concurrent.MVar
-import           Control.Exception (bracket)
-import           Control.Monad.STM
+import           Control.Monad     (void)
+import           Control.Exception (bracket, throwIO)
 import qualified Crypto.Hash.Algorithms       as Hash
 import qualified Crypto.PubKey.Ed25519        as Ed25519
 import qualified Crypto.PubKey.RSA.PKCS15     as RSA.PKCS15
 import qualified Data.ByteString              as BS
-import           Control.Exception (throwIO)
 
 import           Network.SSH.Encoding
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
-import           Network.SSH.Server.Service.Connection.Internal
-import           Network.SSH.Server.Service.Connection.Channel
+import           Network.SSH.Server.Service.Connection
 
 newtype MessageDispatcher = MessageDispatcher (Message -> IO MessageDispatcher)
 
@@ -54,16 +50,11 @@ withServiceLayer config session send runWith = bracket
                                 Just identity -> case service of
                                     (ServiceName "ssh-connection") -> do
                                         send $ MsgUserAuthSuccess UserAuthSuccess
-                                        conn <- Connection
-                                            <$> pure config
-                                            <*> newTVarIO identity
-                                            <*> newTVarIO mempty
-                                            <*> pure send
-                                            <*> newTVarIO False
+                                        conn <- connectionOpen config identity send
                                         pure $ dispatchConnection0 conn
                                     _ -> do
                                         send supportedAuthMethods
-                                        pure $ dispatchAuth1
+                                        pure dispatchAuth1
                         | otherwise -> do
                             send supportedAuthMethods
                             pure $ dispatchAuth1
@@ -80,15 +71,22 @@ withServiceLayer config session send runWith = bracket
         dispatchConnection0 :: Connection identity -> MessageDispatcher
         dispatchConnection0 connection = MessageDispatcher $ \msg-> do
             case msg of
-                MsgChannelOpen x              -> handleChannelOpen         connection x
-                MsgChannelClose x             -> handleChannelClose        connection x
-                MsgChannelEof x               -> handleChannelEof          connection x
-                MsgChannelRequest x           -> handleChannelRequest      connection x
-                MsgChannelWindowAdjust x      -> handleChannelWindowAdjust connection x
-                MsgChannelData x              -> handleChannelData         connection x
-                MsgChannelExtendedData x      -> handleChannelExtendedData connection x
+                MsgChannelOpen x              -> connectionChannelOpen     connection x >>= \case
+                    Left y  -> send (MsgChannelOpenFailure y)
+                    Right y -> send (MsgChannelOpenConfirmation y)
+                MsgChannelClose x             -> connectionChannelClose        connection x >>= \case
+                    Nothing -> pure ()
+                    Just y  -> send (MsgChannelClose y)
+                MsgChannelEof x               -> connectionChannelEof          connection x
+                MsgChannelRequest x           -> connectionChannelRequest      connection x >>= \case
+                    Nothing -> pure ()
+                    Just (Left y) -> send (MsgChannelFailure y)
+                    Just (Right y) -> send (MsgChannelSuccess y)
+                MsgChannelWindowAdjust x      -> connectionChannelWindowAdjust connection x
+                MsgChannelData x              -> connectionChannelData         connection x
+                MsgChannelExtendedData x      -> connectionChannelExtendedData connection x
                 _ -> do
-                    terminate connection
+                    connectionClose connection
                     throwIO $ Disconnect DisconnectProtocolError mempty mempty
             pure $ dispatchConnection0 connection
 
