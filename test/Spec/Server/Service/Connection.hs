@@ -29,6 +29,13 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
         , connectionChannelOpen02
         , connectionChannelOpen03
         , connectionChannelOpen04
+        , connectionChannelOpen05
+        ]
+    
+    , testGroup "connectionChannelRequest"
+        [ connectionChannelRequest01
+        , connectionChannelRequest02
+        , connectionChannelRequest03
         ]
     ]
 
@@ -110,7 +117,7 @@ connectionChannelOpen04 = testCase "open two channels, close first, reuse first"
         ct  = ChannelType "session"
         lid0 = ChannelId 0
         lid1 = ChannelId 1
-        lid2 = ChannelId 0
+        lid2 = lid0
         rid0 = ChannelId 0
         rid1 = ChannelId 1
         rid2 = ChannelId 2
@@ -119,5 +126,64 @@ connectionChannelOpen04 = testCase "open two channels, close first, reuse first"
         send = error "shall not send"
         identity = error "shall not use identity"
 
-assertThrowsExact :: (Exception e, Eq e) => e -> IO a -> Assertion
-assertThrowsExact e action = (action >> assertFailure "should have thrown") `catch` \e'-> when (e /= e') (throwIO e')
+connectionChannelOpen05 :: TestTree
+connectionChannelOpen05 = testCase "open unknown channel type" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf identity send
+    Left (ChannelOpenFailure rid' reason _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    assertEqual "remote channel id" rid rid'
+    assertEqual "failure reason" ChannelOpenUnknownChannelType reason
+    where
+        ct  = ChannelType "unknown"
+        rid = ChannelId 45
+        rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelRequest01 :: TestTree
+connectionChannelRequest01 = testCase "request for non-existing channel" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf identity send
+    connectionChannelRequest conn (ChannelRequest rid undefined)
+        `assertException` \(Disconnect reason _ _) ->
+            DisconnectProtocolError @=? reason
+    where
+        rid = ChannelId 23
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelRequest02 :: TestTree
+connectionChannelRequest02 = testCase "syntactically invalid request" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf identity send
+    Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    connectionChannelRequest conn (ChannelRequest lid "")
+        `assertException` \(Disconnect reason description _) -> do
+            DisconnectProtocolError @=? reason
+            "invalid session channel request" @=? description
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelRequest03 :: TestTree
+connectionChannelRequest03 = testCase "session environment request" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf identity send
+    Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    Nothing <- connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ETXenv\NUL\NUL\NUL\NUL\ACKLC_ALL\NUL\NUL\NUL\ven_US.UTF-8")
+    pure ()
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+assertException :: Exception e => IO a -> (e -> Assertion) -> Assertion
+assertException action checkException = (action >> assertFailure "should have thrown") `catch` checkException
