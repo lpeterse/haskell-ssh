@@ -83,8 +83,9 @@ withServiceLayer config session send runWith = bracket
                     Just (Left y) -> send (MsgChannelFailure y)
                     Just (Right y) -> send (MsgChannelSuccess y)
                 MsgChannelWindowAdjust x      -> connectionChannelWindowAdjust connection x
-                MsgChannelData x              -> connectionChannelData         connection x
-                MsgChannelExtendedData x      -> connectionChannelExtendedData connection x
+                MsgChannelData x              -> connectionChannelData         connection x >>= \case
+                    Nothing -> pure ()
+                    Just y -> send (MsgChannelWindowAdjust y)
                 _ -> do
                     connectionClose connection
                     throwIO $ Disconnect DisconnectProtocolError mempty mempty

@@ -9,11 +9,10 @@ module Network.SSH.Server.Service.Connection
     , connectionClose
     , connectionClosed
     , connectionChannelOpen
-    , connectionChannelClose
     , connectionChannelEof
+    , connectionChannelClose
     , connectionChannelRequest
     , connectionChannelData
-    , connectionChannelExtendedData
     , connectionChannelWindowAdjust
     ) where
 
@@ -32,7 +31,7 @@ import           System.Exit
 import           Network.SSH.Encoding
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
-import qualified Network.SSH.TAccountingQueue as AQ
+import           Network.SSH.TByteStringQueue
 
 data Connection identity
     = Connection
@@ -53,6 +52,10 @@ data Channel identity
     , chanMaxPacketSizeRemote :: Word32
     , chanWindowSizeLocal     :: TVar Word32
     , chanWindowSizeRemote    :: TVar Word32
+    , chanEofSent             :: TVar Bool
+    , chanEofReceived         :: TVar Bool
+    , chanCloseSent           :: TVar Bool
+    , chanCloseReceived       :: TVar Bool
     , chanClose               :: STM ()
     , chanClosed              :: STM Bool
     }
@@ -65,9 +68,9 @@ data Session
     { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
     , sessTerminal    :: TVar (Maybe ())
     , sessThread      :: TVar (Maybe ThreadId)
-    , sessStdin       :: AQ.TAccountingQueue
-    , sessStdout      :: AQ.TAccountingQueue
-    , sessStderr      :: AQ.TAccountingQueue
+    , sessStdin       :: TByteStringQueue
+    , sessStdout      :: TByteStringQueue
+    , sessStderr      :: TByteStringQueue
     }
 
 connectionOpen :: Config identity -> identity -> (Message -> IO ()) -> IO (Connection identity)
@@ -99,12 +102,14 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
                     pure $ Left $ openFailure ChannelOpenResourceShortage
                 Just localChannelId -> case channelType of
                     ChannelType "session" -> do
-                        env    <- newTVar mempty
-                        pty    <- newTVar Nothing
-                        thread <- newTVar Nothing
-                        stdin  <- AQ.newTAccountingQueue 1024
-                        stdout <- AQ.newTAccountingQueue 1024
-                        stderr <- AQ.newTAccountingQueue 1024
+                        -- The maximum possible buffer size is 1 GB in order to avoid Int <-> Word32 conversion issues.
+                        let maxBufferSize = max 1 $ fromIntegral $ min (1024 * 1024 * 1024) (channelMaxBufferSize $ connConfig connection) 
+                        env          <- newTVar mempty
+                        pty          <- newTVar Nothing
+                        thread       <- newTVar Nothing
+                        stdin        <- newTByteStringQueue maxBufferSize
+                        stdout       <- newTByteStringQueue maxBufferSize
+                        stderr       <- newTByteStringQueue maxBufferSize
                         confirmation <- openApplicationChannel localChannelId $
                             ChannelApplicationSession Session
                                 { sessEnvironment = env
@@ -134,10 +139,14 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
 
         openApplicationChannel :: ChannelId -> ChannelApplication -> STM ChannelOpenConfirmation
         openApplicationChannel localChannelId application = do
-            channels <- readTVar (connChannels connection)
-            wsLocal  <- newTVar (channelMaxWindowSize $ connConfig connection)
-            wsRemote <- newTVar initialWindowSize
-            closed   <- newTVar False
+            channels      <- readTVar (connChannels connection)
+            wsLocal       <- newTVar (channelMaxWindowSize $ connConfig connection)
+            wsRemote      <- newTVar initialWindowSize
+            eofSent       <- newTVar False
+            eofReceived   <- newTVar False
+            closeSent     <- newTVar False
+            closeReceived <- newTVar False
+            closed        <- newTVar False
             let channel = Channel {
                     chanConnection          = connection
                   , chanApplication         = application
@@ -146,6 +155,10 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
                   , chanMaxPacketSizeRemote = maxPacketSize
                   , chanWindowSizeLocal     = wsLocal
                   , chanWindowSizeRemote    = wsRemote
+                  , chanEofSent             = eofSent
+                  , chanEofReceived         = eofReceived
+                  , chanCloseSent           = closeSent
+                  , chanCloseReceived       = closeReceived
                   , chanClose               = writeTVar closed True
                   , chanClosed              = (||) <$> connClosed connection <*> readTVar closed
                   }
@@ -156,36 +169,50 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
                 (channelMaxWindowSize $ connConfig connection)
                 (channelMaxPacketSize $ connConfig connection)
 
-connectionChannelClose :: Connection identity -> ChannelClose -> IO (Maybe ChannelClose)
-connectionChannelClose connection (ChannelClose localChannelId) =
-    atomically closeSTM
-    where
-        closeSTM :: STM (Maybe ChannelClose)
-        closeSTM = do
-            channels <- readTVar (connChannels connection)
-            case M.lookup localChannelId channels of
-                -- The client tries to close the same channel twice.
-                -- This is a protocol error and the server shall disconnect.
-                Nothing ->
-                    throwSTM $ Disconnect DisconnectProtocolError mempty mempty
-                Just channel -> do
-                    writeTVar (connChannels connection) $! M.delete localChannelId channels
-                    alreadyClosed <- chanClosed channel
-                    -- When the channel is not marked as already closed then the close
-                    -- must have been initiated by the client and the server needs to send
-                    -- a confirmation.
-                    if alreadyClosed then pure Nothing else do
-                        chanClose channel
-                        pure $ Just $ ChannelClose $ chanIdRemote channel
-
 connectionChannelEof :: Connection identity -> ChannelEof -> IO ()
-connectionChannelEof = undefined
+connectionChannelEof connection (ChannelEof localChannelId) = atomically $ do
+    channel <- getChannelSTM connection localChannelId
+    writeTVar (chanEofReceived channel) True
 
-connectionChannelData :: Connection identity -> ChannelData -> IO ()
-connectionChannelData = undefined
+connectionChannelClose :: Connection identity -> ChannelClose -> IO (Maybe ChannelClose)
+connectionChannelClose connection (ChannelClose localChannelId) = atomically $ do
+    channel <- getChannelSTM connection localChannelId
+    channels <- readTVar (connChannels connection)
+    writeTVar (connChannels connection) $! M.delete localChannelId channels
+    alreadyClosed <- chanClosed channel
+    -- When the channel is not marked as already closed then the close
+    -- must have been initiated by the client and the server needs to send
+    -- a confirmation.
+    if alreadyClosed then pure Nothing else do
+        chanClose channel
+        pure $ Just $ ChannelClose $ chanIdRemote channel
 
-connectionChannelExtendedData :: Connection identity -> ChannelExtendedData -> IO ()
-connectionChannelExtendedData = undefined
+connectionChannelData :: Connection identity -> ChannelData -> IO (Maybe ChannelWindowAdjust)
+connectionChannelData connection (ChannelData localChannelId payload) = atomically $ do
+    channel <- getChannelSTM connection localChannelId
+    eofReceived <- readTVar (chanEofReceived channel)
+    when eofReceived $ exception "data after eof"
+    closeReceived <- readTVar (chanCloseReceived channel)
+    when closeReceived $ exception "data after close"
+    ws  <- readTVar (chanWindowSizeLocal channel)
+    when (payloadLen > ws) $ exception "window size underrun"
+    case chanApplication channel of
+        -- `enqueueUnlimited` might exceed the queue limit, but is necessary as this
+        -- transaction must never block. Inbound flow control is done by window size
+        -- management!
+        ChannelApplicationSession session -> enqueueUnlimited (sessStdin session) payload
+    if ws - payloadLen < channelMaxWindowSize (connConfig connection) `div` 2
+        then do
+            let wsNew  = channelMaxWindowSize (connConfig connection)
+            let wsDiff = wsNew - ws - payloadLen
+            writeTVar (chanWindowSizeLocal channel) wsNew
+            pure $ Just (ChannelWindowAdjust (chanIdRemote channel) wsDiff)
+        else do
+            writeTVar (chanWindowSizeLocal channel) (ws - payloadLen)
+            pure Nothing
+    where
+        exception msg = throwSTM $ Disconnect DisconnectProtocolError msg mempty
+        payloadLen    = fromIntegral $ BS.length payload
 
 connectionChannelWindowAdjust :: Connection identity -> ChannelWindowAdjust -> IO ()
 connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId increase) = atomically $ do
@@ -234,7 +261,7 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
                 exception  e = throwSTM $ Disconnect DisconnectProtocolError e mempty
 
         sessionExec :: Channel identity -> Session
-                    -> (AQ.TAccountingQueue -> AQ.TAccountingQueue -> AQ.TAccountingQueue -> IO ExitCode) -> IO ()
+                    -> (TByteStringQueue -> TByteStringQueue -> TByteStringQueue -> IO ExitCode) -> IO ()
         sessionExec channel session handler =
             -- Two threads are forked: a worker thread running as Async and a dangling
             -- supervisor thread.
@@ -280,14 +307,14 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
                 waitStdout :: STM [Message]
                 waitStdout = do
                     window <- getWindow
-                    ba <- AQ.dequeue (sessStdout session) (fromIntegral window)
+                    ba <- dequeue (sessStdout session) (fromIntegral window)
                     decWindow $ BA.length ba
                     pure [MsgChannelData $ ChannelData (chanIdRemote channel) (BA.convert ba)]
 
                 waitStderr :: STM [Message]
                 waitStderr = do
                     window <- getWindow
-                    ba <- AQ.dequeue (sessStderr session) (fromIntegral window)
+                    ba <- dequeue (sessStderr session) (fromIntegral window)
                     decWindow $ BA.length ba
                     pure [MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 (BA.convert ba)]
 
