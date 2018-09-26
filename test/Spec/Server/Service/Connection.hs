@@ -1,10 +1,12 @@
-{-# LANGUAGE OverloadedStrings, FlexibleInstances, LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Spec.Server.Service.Connection ( tests ) where
     
-import           Control.Concurrent.MVar
 import qualified Data.ByteString as BS
 import           Control.Exception
 import           Control.Monad
+import           System.Exit
+import           Control.Monad.STM
+import           Control.Concurrent.STM.TChan
 
 import           Network.SSH.Server.Service.Connection
 import           Network.SSH.Message
@@ -36,6 +38,23 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
         [ connectionChannelRequest01
         , connectionChannelRequest02
         , connectionChannelRequest03
+        , testGroup "shell"
+            [ connectionChannelRequestShell01
+            , connectionChannelRequestShell02
+            ]
+        ]
+
+    , testGroup "connectionChannelData"
+        [ connectionChannelData01
+        , connectionChannelData02
+        , connectionChannelData03
+        , connectionChannelData04
+        , connectionChannelData05
+        ]
+
+    , testGroup "connectionChannelWindowAdjust"
+        [ connectionChannelWindowAdjust01
+        , connectionChannelWindowAdjust02
         ]
     ]
 
@@ -145,9 +164,10 @@ connectionChannelRequest01 :: TestTree
 connectionChannelRequest01 = testCase "request for non-existing channel" $ do
     conf <- newDefaultConfig
     conn <- connectionOpen conf identity send
-    connectionChannelRequest conn (ChannelRequest rid undefined)
-        `assertException` \(Disconnect reason _ _) ->
+    connectionChannelRequest conn (ChannelRequest rid mempty)
+        `assertException` \(Disconnect reason description "") -> do
             DisconnectProtocolError @=? reason
+            "invalid channel id" @=? description
     where
         rid = ChannelId 23
         send = error "shall not send"
@@ -158,8 +178,8 @@ connectionChannelRequest02 = testCase "syntactically invalid request" $ do
     conf <- newDefaultConfig
     conn <- connectionOpen conf identity send
     Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
-    connectionChannelRequest conn (ChannelRequest lid "")
-        `assertException` \(Disconnect reason description _) -> do
+    connectionChannelRequest conn (ChannelRequest lid mempty)
+        `assertException` \(Disconnect reason description "") -> do
             DisconnectProtocolError @=? reason
             "invalid session channel request" @=? description
     where
@@ -181,6 +201,156 @@ connectionChannelRequest03 = testCase "session environment request" $ do
         ct  = ChannelType "session"
         rid = ChannelId 23
         rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelRequestShell01 :: TestTree
+connectionChannelRequestShell01 = testCase "without handler" $ do
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf identity send) connectionClose $ \conn -> do
+        Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        Just (Left (ChannelFailure rid'))  <- connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        assertEqual "remote channel id" rid rid'
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelRequestShell02 :: TestTree
+connectionChannelRequestShell02 = testCase "with successful handler" $ do
+    msgs <- newTChanIO
+    let send msg = atomically $ writeTChan msgs msg
+    let recv     = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onShellRequest = Just handler } identity send) connectionClose $ \conn -> do
+        Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        Just (Right (ChannelSuccess rid'))  <- connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        assertEqual "rid" rid rid'
+        assertEqual "msg1" msg1 =<< recv
+        assertEqual "msg2" msg2 =<< recv
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        identity = error "shall not use identity"
+        handler identity stdin stdout stderr = pure ExitSuccess
+        msg1 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\NUL")
+        msg2 = MsgChannelClose (ChannelClose rid)
+
+connectionChannelData01 :: TestTree
+connectionChannelData01 = testCase "channel data" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf identity send
+    Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    connectionChannelData conn (ChannelData lid "ABCDEF")
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelData02 :: TestTree
+connectionChannelData02 = testCase "channel data after eof should throw" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf identity send
+    Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    connectionChannelEof conn (ChannelEof lid)
+    connectionChannelData conn (ChannelData lid "ABCDEF")
+        `assertException` \(Disconnect reason description "") -> do
+            DisconnectProtocolError @=? reason
+            "data after eof" @=? description
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelData03 :: TestTree
+connectionChannelData03 = testCase "window size" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxWindowSize = 6 } identity send
+    Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    connectionChannelData conn (ChannelData lid "ABC")
+    connectionChannelData conn (ChannelData lid "DEF")
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelData04 :: TestTree
+connectionChannelData04 = testCase "window exhaustion #1" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxWindowSize = 5 } identity send
+    Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    connectionChannelData conn (ChannelData lid "ABCDEF")
+        `assertException` \(Disconnect reason description "") -> do
+            DisconnectProtocolError @=? reason
+            "window size underrun" @=? description
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelData05 :: TestTree
+connectionChannelData05 = testCase "window exhaustion #2" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxWindowSize = 5 } identity send
+    Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    connectionChannelData conn (ChannelData lid "ABC")
+    connectionChannelData conn (ChannelData lid "ABCDEF")
+        `assertException` \(Disconnect reason description "") -> do
+            DisconnectProtocolError @=? reason
+            "window size underrun" @=? description
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelWindowAdjust01 :: TestTree
+connectionChannelWindowAdjust01 = testCase "window adjustion up to maximum" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf identity send
+    Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    connectionChannelWindowAdjust conn (ChannelWindowAdjust lid 128)
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = maxBound - 128
+        rps = 456
+        send = error "shall not send"
+        identity = error "shall not use identity"
+
+connectionChannelWindowAdjust02 :: TestTree
+connectionChannelWindowAdjust02 = testCase "window adjustion beyond maximum shoud throw" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf identity send
+    Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+    connectionChannelWindowAdjust conn (ChannelWindowAdjust lid 129)
+        `assertException` \(Disconnect reason description "") -> do
+            DisconnectProtocolError @=? reason
+            "window size overflow" @=? description
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = maxBound - 128
         rps = 456
         send = error "shall not send"
         identity = error "shall not use identity"

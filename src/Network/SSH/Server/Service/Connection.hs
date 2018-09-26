@@ -191,8 +191,6 @@ connectionChannelData connection (ChannelData localChannelId payload) = atomical
     channel <- getChannelSTM connection localChannelId
     eofReceived <- readTVar (chanEofReceived channel)
     when eofReceived $ exception "data after eof"
-    closeReceived <- readTVar (chanCloseReceived channel)
-    when closeReceived $ exception "data after close"
     ws  <- readTVar (chanWindowSizeLocal channel)
     when (payloadLen > ws) $ exception "window size underrun"
     writeTVar (chanWindowSizeLocal channel) $! ws - payloadLen
@@ -214,15 +212,14 @@ connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId increase
     when (windowSize' > 2 ^ (32 :: Word64) - 1) $
         throwSTM $ Disconnect DisconnectProtocolError "window size overflow" mempty
     -- Conversion from Word64 to Word32 never undefined as guaranteed by previous check.
-    writeTVar (chanWindowSizeRemote channel) (fromIntegral windowSize')
+    writeTVar (chanWindowSizeRemote channel) $! fromIntegral windowSize'
 
 connectionChannelRequest :: forall identity. Connection identity -> ChannelRequest -> IO (Maybe (Either ChannelFailure ChannelSuccess))
-connectionChannelRequest connection (ChannelRequest channelId request) =
-    join $ atomically $ do
-        channel <- getChannelSTM connection channelId
-        case chanApplication channel of
-            ChannelApplicationSession session -> interpretAsSessionRequest channel session request
-            -- Dispatch other channel request types here!
+connectionChannelRequest connection (ChannelRequest channelId request) = join $ atomically $ do
+    channel <- getChannelSTM connection channelId
+    case chanApplication channel of
+        ChannelApplicationSession session -> interpretAsSessionRequest channel session request
+        -- Dispatch other channel request types here!
     where
         interpretAsSessionRequest :: Channel identity -> Session -> BS.ByteString -> STM (IO (Maybe (Either ChannelFailure ChannelSuccess)))
         interpretAsSessionRequest channel session req = case runGet get req of
