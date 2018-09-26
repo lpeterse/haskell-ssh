@@ -234,12 +234,15 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
                     pure $ success wantReply
                 ChannelRequestPty _wantReply _ptySettings ->
                     exception "pty-req not yet implemented"
-                ChannelRequestShell _wantReply ->
-                    exception "shell req not yet implemented"
+                ChannelRequestShell wantReply -> case onShellRequest (connConfig connection) of
+                    Nothing-> pure $ failure wantReply
+                    Just exec -> pure $ do
+                        sessionExec channel session $ exec (connIdentity connection)
+                        success wantReply
                 ChannelRequestExec wantReply command -> case onExecRequest (connConfig connection) of
                     Nothing-> pure $ failure wantReply
                     Just exec -> pure $ do
-                        sessionExec channel session (\s0 s1 s2-> exec (connIdentity connection) s0 s1 s2 command)
+                        sessionExec channel session $ \s0 s1 s2-> exec (connIdentity connection) s0 s1 s2 command
                         success wantReply
                 ChannelRequestOther _ wantReply -> pure $ failure wantReply
                 ChannelRequestExitStatus {} -> pure $ success False
@@ -346,7 +349,6 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
                 decRemoteWindow :: Int -> STM ()
                 decRemoteWindow i = do
                     windowSize <- readTVar (chanWindowSizeRemote channel)
-                    when (fromIntegral i > windowSize) $ error "decrement smaller than available window size"
                     writeTVar (chanWindowSizeRemote channel) $! windowSize - fromIntegral i
 
 getChannelSTM :: Connection identity -> ChannelId -> STM (Channel identity)

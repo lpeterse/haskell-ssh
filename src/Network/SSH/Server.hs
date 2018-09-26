@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Server
     ( serve
     )

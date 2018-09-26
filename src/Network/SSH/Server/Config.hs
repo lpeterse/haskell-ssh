@@ -20,6 +20,8 @@ data Config identity = Config {
     , keyExchangeAlgorithms         :: NonEmpty KeyExchangeAlgorithm
     , encryptionAlgorithms          :: NonEmpty EncryptionAlgorithm
     , onAuthRequest                 :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
+    , onShellRequest                :: forall stdin stdout stderr. (DuplexStream stdin, DuplexStream stdout, DuplexStream stderr)
+                                    => Maybe (identity -> stdin -> stdout -> stderr -> IO ExitCode)
     , onExecRequest                 :: forall stdin stdout stderr. (DuplexStream stdin, DuplexStream stdout, DuplexStream stderr)
                                     => Maybe (identity -> stdin -> stdout -> stderr -> Command -> IO ExitCode)
     , onSend                        :: Message -> IO ()
@@ -40,6 +42,7 @@ newDefaultConfig = do
         , keyExchangeAlgorithms         = pure Curve25519Sha256AtLibsshDotOrg
         , encryptionAlgorithms          = pure Chacha20Poly1305AtOpensshDotCom
         , onAuthRequest                 = \_ _ _ -> pure Nothing
+        , onShellRequest                = Nothing
         , onExecRequest                 = Nothing
         , onSend                        = \_ -> pure ()
         , onReceive                     = \_ -> pure ()
