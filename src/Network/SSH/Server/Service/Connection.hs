@@ -22,7 +22,6 @@ import qualified Control.Concurrent.Async     as Async
 import           Control.Concurrent.STM.TVar
 import           Control.Monad                (join, void, when)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
-import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
 import qualified Data.Map.Strict              as M
 import           Data.Word
@@ -91,38 +90,38 @@ connectionClosed :: Connection identity -> IO Bool
 connectionClosed = atomically . connClosed
 
 connectionChannelOpen :: Connection identity -> ChannelOpen -> IO (Either ChannelOpenFailure ChannelOpenConfirmation)
-connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) =
-    atomically openSTM
+connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) = atomically $ do
+    channels <- readTVar (connChannels connection)
+    case selectLocalChannelId channels of
+        Nothing ->
+            pure $ Left $ openFailure ChannelOpenResourceShortage
+        Just localChannelId -> case channelType of
+            ChannelType "session" -> do
+                -- The maximum possible queue size is 1 GB in order to avoid
+                -- Int <-> Word32 conversion issues.
+                -- It is derived from the config option channelMaxWindowSize.
+                let maxQueueSize = max 1 $ fromIntegral $ min
+                        (1024 * 1024 * 1024)
+                        (channelMaxWindowSize $ connConfig connection)
+                env          <- newTVar mempty
+                pty          <- newTVar Nothing
+                thread       <- newTVar Nothing
+                stdin        <- newTByteStringQueue maxQueueSize
+                stdout       <- newTByteStringQueue maxQueueSize
+                stderr       <- newTByteStringQueue maxQueueSize
+                confirmation <- openApplicationChannel localChannelId $
+                    ChannelApplicationSession Session
+                        { sessEnvironment = env
+                        , sessTerminal    = pty
+                        , sessThread      = thread
+                        , sessStdin       = stdin
+                        , sessStdout      = stdout
+                        , sessStderr      = stderr
+                        }
+                pure (Right confirmation)
+            ChannelType {} ->
+                pure $ Left $ openFailure ChannelOpenUnknownChannelType
     where
-        openSTM :: STM (Either ChannelOpenFailure ChannelOpenConfirmation)
-        openSTM = do
-            channels <- readTVar (connChannels connection)
-            case selectLocalChannelId channels of
-                Nothing ->
-                    pure $ Left $ openFailure ChannelOpenResourceShortage
-                Just localChannelId -> case channelType of
-                    ChannelType "session" -> do
-                        -- The maximum possible queue size is 1 GB in order to avoid Int <-> Word32 conversion issues.
-                        let maxQueueSize = max 1 $ fromIntegral $ min (1024 * 1024 * 1024) (channelMaxWindowSize $ connConfig connection) 
-                        env          <- newTVar mempty
-                        pty          <- newTVar Nothing
-                        thread       <- newTVar Nothing
-                        stdin        <- newTByteStringQueue maxQueueSize
-                        stdout       <- newTByteStringQueue maxQueueSize
-                        stderr       <- newTByteStringQueue maxQueueSize
-                        confirmation <- openApplicationChannel localChannelId $
-                            ChannelApplicationSession Session
-                                { sessEnvironment = env
-                                , sessTerminal    = pty
-                                , sessThread      = thread
-                                , sessStdin       = stdin
-                                , sessStdout      = stdout
-                                , sessStderr      = stderr
-                                }
-                        pure (Right confirmation)
-                    ChannelType {} ->
-                        pure $ Left $ openFailure ChannelOpenUnknownChannelType
-
         selectLocalChannelId :: M.Map ChannelId a -> Maybe ChannelId
         selectLocalChannelId m
             | M.size m >= fromIntegral maxCount = Nothing
@@ -299,17 +298,17 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
 
                 waitStdout :: STM [Message]
                 waitStdout = do
-                    window <- getWindow
-                    ba <- dequeue (sessStdout session) (fromIntegral window)
-                    decWindow $ BA.length ba
-                    pure [MsgChannelData $ ChannelData (chanIdRemote channel) (BA.convert ba)]
+                    window <- askRemoteWindowAvailable
+                    bs <- dequeue (sessStdout session) (fromIntegral window)
+                    decRemoteWindow $ BS.length bs
+                    pure [MsgChannelData $ ChannelData (chanIdRemote channel) bs]
 
                 waitStderr :: STM [Message]
                 waitStderr = do
-                    window <- getWindow
-                    ba <- dequeue (sessStderr session) (fromIntegral window)
-                    decWindow $ BA.length ba
-                    pure [MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 (BA.convert ba)]
+                    window <- askRemoteWindowAvailable
+                    bs <- dequeue (sessStderr session) (fromIntegral window)
+                    decRemoteWindow $ BS.length bs
+                    pure [MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 bs]
 
                 waitLocalWindowAdjust :: STM [Message]
                 waitLocalWindowAdjust = do
@@ -329,8 +328,8 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
                         maxWindowSize = channelMaxWindowSize (connConfig connection)
                         maxQueueSize  = maxSizeTByteStringQueue (sessStdin session)
 
-                getWindow :: STM Int
-                getWindow = do
+                askRemoteWindowAvailable :: STM Int
+                askRemoteWindowAvailable = do
                     -- The standard (RFC 4254) is a bit vague about window size calculation.
                     -- See https://marc.info/?l=openssh-unix-dev&m=118466419618541&w=2
                     -- for a clarification.
@@ -344,8 +343,8 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
                     pure $ fromIntegral $ min (fromIntegral (maxBound :: Int)) window
 
                 -- Decrement the outbound window by the specified number of bytes.
-                decWindow :: Int -> STM ()
-                decWindow i = do
+                decRemoteWindow :: Int -> STM ()
+                decRemoteWindow i = do
                     windowSize <- readTVar (chanWindowSizeRemote channel)
                     when (fromIntegral i > windowSize) $ error "decrement smaller than available window size"
                     writeTVar (chanWindowSizeRemote channel) $! windowSize - fromIntegral i

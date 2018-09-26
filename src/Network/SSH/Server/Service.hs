@@ -3,7 +3,6 @@
 module Network.SSH.Server.Service where
 
 import           Control.Concurrent.MVar
-import           Control.Monad     (void)
 import           Control.Exception (bracket, throwIO)
 import qualified Crypto.Hash.Algorithms       as Hash
 import qualified Crypto.PubKey.Ed25519        as Ed25519
