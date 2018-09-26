@@ -28,7 +28,6 @@ data Config identity = Config {
     , channelMaxCount               :: Word16
     , channelMaxWindowSize          :: Word32
     , channelMaxPacketSize          :: Word32
-    , channelMaxBufferSize          :: Word32
     , maxTimeBeforeRekey            :: Word64
     , maxDataBeforeRekey            :: Word64
     }
@@ -48,7 +47,6 @@ newDefaultConfig = do
         , channelMaxCount               = 256
         , channelMaxWindowSize          = 256 * 1024
         , channelMaxPacketSize          = 32 * 1024
-        , channelMaxBufferSize          = 4096
         , maxTimeBeforeRekey            = 3600
         , maxDataBeforeRekey            = 1024 * 1024 * 1024
         }

@@ -15,6 +15,7 @@ import           Control.Monad                  ( forM_
                                                 , void
                                                 , forever
                                                 )
+import           Control.Concurrent.Async
 import           Control.Monad.STM
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
@@ -48,6 +49,7 @@ main = do
             , Server.onReceive = \msg -> putStrLn ("received: " ++ show msg)
             , Server.onDisconnect       = \dis -> putStrLn
                                               ("disconnect: " ++ show dis)
+            , Server.channelMaxWindowSize = 1024
             , Server.maxTimeBeforeRekey = 60
             , Server.maxDataBeforeRekey = 1024 * 1024
             }
@@ -70,19 +72,24 @@ main = do
                 atomically $ check =<< readTVar ownershipTransferred
 
 runExec
-    :: (OutputStream stdout)
+    :: (InputStream stdin, OutputStream stdout)
     => identity
     -> stdin
     -> stdout
     -> stderr
     -> command
     -> IO ExitCode
-runExec _identity _stdin stdout _stderr _command = do
+runExec _identity stdin stdout _stderr _command = withAsync receiver $ const $ do
     forM_ [1 ..] $ \i -> do
         void $ sendAll stdout
             (BS.pack (map (fromIntegral . fromEnum) (show (i :: Int))) `mappend` "\n" :: BS.ByteString)
         threadDelay 100000
     pure (ExitFailure 23)
+    where
+        receiver = forever $ do
+            bs <- receive stdin 200
+            print (BS.length bs)
+            threadDelay 1000000
 
 instance DuplexStream (S.Socket f S.Stream p) where
 

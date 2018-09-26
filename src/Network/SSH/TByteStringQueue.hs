@@ -21,6 +21,12 @@ data TByteStringQueue
     , aqTail      :: TChan BS.ByteString
     }
 
+sizeTByteStringQueue :: TByteStringQueue -> STM Int
+sizeTByteStringQueue q = readTVar (aqSize q)
+
+maxSizeTByteStringQueue :: TByteStringQueue -> Int
+maxSizeTByteStringQueue = aqSizeLimit
+
 newTByteStringQueue :: Int -> STM TByteStringQueue
 newTByteStringQueue i =
     TByteStringQueue <$> newTVar 0 <*> pure i <*> newTVar mempty <*> newTChan

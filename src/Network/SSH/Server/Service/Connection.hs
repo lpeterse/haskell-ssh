@@ -102,14 +102,14 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
                     pure $ Left $ openFailure ChannelOpenResourceShortage
                 Just localChannelId -> case channelType of
                     ChannelType "session" -> do
-                        -- The maximum possible buffer size is 1 GB in order to avoid Int <-> Word32 conversion issues.
-                        let maxBufferSize = max 1 $ fromIntegral $ min (1024 * 1024 * 1024) (channelMaxBufferSize $ connConfig connection) 
+                        -- The maximum possible queue size is 1 GB in order to avoid Int <-> Word32 conversion issues.
+                        let maxQueueSize = max 1 $ fromIntegral $ min (1024 * 1024 * 1024) (channelMaxWindowSize $ connConfig connection) 
                         env          <- newTVar mempty
                         pty          <- newTVar Nothing
                         thread       <- newTVar Nothing
-                        stdin        <- newTByteStringQueue maxBufferSize
-                        stdout       <- newTByteStringQueue maxBufferSize
-                        stderr       <- newTByteStringQueue maxBufferSize
+                        stdin        <- newTByteStringQueue maxQueueSize
+                        stdout       <- newTByteStringQueue maxQueueSize
+                        stderr       <- newTByteStringQueue maxQueueSize
                         confirmation <- openApplicationChannel localChannelId $
                             ChannelApplicationSession Session
                                 { sessEnvironment = env
@@ -187,7 +187,7 @@ connectionChannelClose connection (ChannelClose localChannelId) = atomically $ d
         chanClose channel
         pure $ Just $ ChannelClose $ chanIdRemote channel
 
-connectionChannelData :: Connection identity -> ChannelData -> IO (Maybe ChannelWindowAdjust)
+connectionChannelData :: Connection identity -> ChannelData -> IO ()
 connectionChannelData connection (ChannelData localChannelId payload) = atomically $ do
     channel <- getChannelSTM connection localChannelId
     eofReceived <- readTVar (chanEofReceived channel)
@@ -196,20 +196,12 @@ connectionChannelData connection (ChannelData localChannelId payload) = atomical
     when closeReceived $ exception "data after close"
     ws  <- readTVar (chanWindowSizeLocal channel)
     when (payloadLen > ws) $ exception "window size underrun"
+    writeTVar (chanWindowSizeLocal channel) $! ws - payloadLen
     case chanApplication channel of
         -- `enqueueUnlimited` might exceed the queue limit, but is necessary as this
         -- transaction must never block. Inbound flow control is done by window size
         -- management!
         ChannelApplicationSession session -> enqueueUnlimited (sessStdin session) payload
-    if ws - payloadLen < channelMaxWindowSize (connConfig connection) `div` 2
-        then do
-            let wsNew  = channelMaxWindowSize (connConfig connection)
-            let wsDiff = wsNew - ws - payloadLen
-            writeTVar (chanWindowSizeLocal channel) wsNew
-            pure $ Just (ChannelWindowAdjust (chanIdRemote channel) wsDiff)
-        else do
-            writeTVar (chanWindowSizeLocal channel) (ws - payloadLen)
-            pure Nothing
     where
         exception msg = throwSTM $ Disconnect DisconnectProtocolError msg mempty
         payloadLen    = fromIntegral $ BS.length payload
@@ -279,7 +271,7 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
                 -- handles them and loops until the session thread has terminated and exit
                 -- has been signaled or the channel/connection got closed.
                 supervise :: Async.Async ExitCode -> IO ()
-                supervise workerAsync = atomically (w0 <|> w1 <|> w2 <|> w3) >>= \case
+                supervise workerAsync = atomically (w0 <|> w1 <|> w2 <|> w3 <|> w4) >>= \case
                     Left  msgs -> mapM_ (connSend connection) msgs
                     Right msgs -> mapM_ (connSend connection) msgs >> supervise workerAsync
                     where
@@ -287,6 +279,7 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
                         w1 = Left  <$> waitExit workerAsync
                         w2 = Right <$> waitStdout
                         w3 = Right <$> waitStderr
+                        w4 = Right <$> waitLocalWindowAdjust
 
                 waitClose :: STM [Message]
                 waitClose = chanClosed channel >>= check >> pure mempty
@@ -317,6 +310,24 @@ connectionChannelRequest connection (ChannelRequest channelId request) =
                     ba <- dequeue (sessStderr session) (fromIntegral window)
                     decWindow $ BA.length ba
                     pure [MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 (BA.convert ba)]
+
+                waitLocalWindowAdjust :: STM [Message]
+                waitLocalWindowAdjust = do
+                    -- 1st condition: window size must be below half of its maximum
+                    windowSize <- readTVar (chanWindowSizeLocal channel) :: STM Word32
+                    check $ windowSize < maxWindowSize `div` 2
+                    -- 2nd condition: queue size must be below half of its capacity
+                    -- in order to avoid byte-wise adjustment and flapping
+                    queueSize  <- sizeTByteStringQueue (sessStdin session)
+                    check $ queueSize < maxQueueSize `div` 2
+                    let increaseBy = min
+                            (maxWindowSize - windowSize)
+                            (fromIntegral $ maxQueueSize - queueSize) :: Word32
+                    writeTVar (chanWindowSizeLocal channel) $! windowSize + increaseBy
+                    pure [MsgChannelWindowAdjust $ ChannelWindowAdjust (chanIdRemote channel) increaseBy]
+                    where
+                        maxWindowSize = channelMaxWindowSize (connConfig connection)
+                        maxQueueSize  = maxSizeTByteStringQueue (sessStdin session)
 
                 getWindow :: STM Int
                 getWindow = do
