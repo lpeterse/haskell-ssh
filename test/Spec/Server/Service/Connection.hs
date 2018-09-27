@@ -53,6 +53,7 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
             , connectionChannelRequestShell06
             , connectionChannelRequestShell07
             , connectionChannelRequestShell08
+            , connectionChannelRequestShell09
             ]
         ]
 
@@ -389,7 +390,57 @@ connectionChannelRequestShell07 = testCase "with handler running while close by 
         handler _ _ _ _ = threadDelay 10000000 >> pure ExitSuccess
 
 connectionChannelRequestShell08 :: TestTree
-connectionChannelRequestShell08 = testCase "with handler and outbound flow control #1" $ withTimeout $ do
+connectionChannelRequestShell08 = testCase "with handler and inbound flow control" $ withTimeout $ do
+    msgs <- newTChanIO
+    tmvar0 <- newEmptyTMVarIO
+    tmvar1 <- newEmptyTMVarIO
+    tmvar2 <- newEmptyTMVarIO
+    let handler _ stdin _ _= do
+            atomically $ takeTMVar tmvar0
+            atomically . putTMVar tmvar1 =<< receive stdin 1
+            atomically $ takeTMVar tmvar0
+            atomically . putTMVar tmvar1 =<< receive stdin 1
+            atomically $ takeTMVar tmvar2
+            pure ExitSuccess
+    let send msg = atomically $ writeTChan msgs msg
+    let recv     = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () send) connectionClose $ \conn -> do
+        assertEqual "msg00" msg00 =<< connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        assertEqual "msg01" msg01 =<< connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        connectionChannelData conn (ChannelData lid "ABC")
+        atomically $ putTMVar tmvar0 ()
+        assertEqual "byte0" "A" =<< atomically (takeTMVar tmvar1)
+        atomically $ putTMVar tmvar0 ()
+        assertEqual "byte1" "B" =<< atomically (takeTMVar tmvar1)
+        assertEqual "msg02" msg02 =<< recv
+        connectionChannelData conn (ChannelData lid "DE")
+        connectionChannelData conn (ChannelData lid "F")
+            `assertException` \(Disconnect reason description "") -> do
+                DisconnectProtocolError @=? reason
+                "window size underrun" @=? description
+    where
+        ct  = ChannelType "session"
+        lid = ChannelId 0
+        rid = ChannelId 23
+        rws = 4
+        rps = 1
+        lws = 3
+        lps = 1
+        msg00 = Right (ChannelOpenConfirmation rid lid lws lps)
+        msg01 = Just (Right (ChannelSuccess rid))
+        msg02 = MsgChannelWindowAdjust (ChannelWindowAdjust rid 2)
+        msg04 = MsgChannelData (ChannelData rid "3")
+        msg05 = MsgChannelData (ChannelData rid "4")
+        msg06 = MsgChannelData (ChannelData rid "A")
+        msg07 = MsgChannelData (ChannelData rid "B")
+        msg08 = MsgChannelData (ChannelData rid "C")
+        msg09 = MsgChannelEof (ChannelEof rid)
+        msg10 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\NUL")
+        msg11 = MsgChannelClose (ChannelClose rid)
+
+connectionChannelRequestShell09 :: TestTree
+connectionChannelRequestShell09 = testCase "with handler and outbound flow control" $ withTimeout $ do
     msgs <- newTChanIO
     tmvar0 <- newEmptyTMVarIO
     tmvar1 <- newEmptyTMVarIO
