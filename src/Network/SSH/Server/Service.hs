@@ -20,8 +20,8 @@ newtype MessageDispatcher = MessageDispatcher (Message -> IO MessageDispatcher)
 withServiceLayer :: forall identity a. Config identity -> SessionId -> (Message -> IO ()) -> ((Message -> IO ()) -> IO a) -> IO a
 withServiceLayer config session send runWith = bracket
     ( newMVar dispatchAuth0 ) -- a disconnect message will be dispatched on termination!
-    (\mvar -> modifyMVar_ mvar (\(MessageDispatcher f) -> f $ MsgDisconnect $ Disconnect DisconnectReserved mempty mempty))
-    (\mvar -> runWith $ \msg -> modifyMVar_ mvar (\(MessageDispatcher f)-> f msg))
+    (\mvar -> pure () )-- modifyMVar_ mvar (\(MessageDispatcher f) -> f $ MsgDisconnect $ Disconnect DisconnectReserved "D" mempty))
+    (\mvar -> runWith $ \msg -> modifyMVar_ mvar (\(MessageDispatcher f)-> f msg) )
     where
         dispatchAuth0 :: MessageDispatcher
         dispatchAuth0 = MessageDispatcher $ \case
@@ -31,7 +31,7 @@ withServiceLayer config session send runWith = bracket
             MsgServiceRequest _ -> do
                 throwIO $ Disconnect DisconnectServiceNotAvailable mempty mempty
             _ ->
-                throwIO $ Disconnect DisconnectProtocolError mempty mempty
+                throwIO $ Disconnect DisconnectProtocolError "unexpected message type (0)" mempty
 
         dispatchAuth1 :: MessageDispatcher
         dispatchAuth1 = MessageDispatcher $ \case
@@ -60,7 +60,7 @@ withServiceLayer config session send runWith = bracket
                 _ -> do
                     send supportedAuthMethods
                     pure $ dispatchAuth1
-            _ -> throwIO $ Disconnect DisconnectProtocolError mempty mempty
+            _ -> throwIO $ Disconnect DisconnectProtocolError "unexpected message type" mempty
             where
                 supportedAuthMethods =
                     MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
@@ -84,8 +84,9 @@ withServiceLayer config session send runWith = bracket
                 MsgChannelWindowAdjust x      -> connectionChannelWindowAdjust connection x
                 MsgChannelData x              -> connectionChannelData         connection x
                 _ -> do
-                    connectionClose connection
-                    throwIO $ Disconnect DisconnectProtocolError mempty mempty
+                    print msg
+                    connectionClose connection -- FIXME
+                    throwIO $ Disconnect DisconnectProtocolError "unexpected message type (2)" mempty
             pure $ dispatchConnection0 connection
 
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool

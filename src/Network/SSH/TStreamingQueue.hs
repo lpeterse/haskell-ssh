@@ -35,6 +35,9 @@ capacity = qCapacity
 getSize :: TStreamingQueue -> STM Word32
 getSize = readTVar . qSize
 
+getFree :: TStreamingQueue -> STM Word32
+getFree q = (capacity q -) <$> getSize q
+
 getWindowSpace :: TStreamingQueue -> STM Word32
 getWindowSpace = readTVar . qWindow
 
@@ -56,10 +59,10 @@ askWindowSpaceAdjustRecommended q = do
 
 fillWindowSpace :: TStreamingQueue -> STM Word32
 fillWindowSpace q = do
+    free <- getFree q
     wndw <- getWindowSpace q
-    if capacity q > wndw
-        then writeTVar (qWindow q) (capacity q) >> pure (capacity q - wndw)
-        else pure 0
+    writeTVar (qWindow q) $! wndw + free
+    pure free
 
 enqueue :: TStreamingQueue -> BS.ByteString -> STM Word32
 enqueue q bs
