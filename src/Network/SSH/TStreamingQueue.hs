@@ -55,7 +55,7 @@ askWindowSpaceAdjustRecommended q = do
     -- 1st condition: window size must be below half of its maximum
     -- 2nd condition: queue size must be below half of its capacity
     -- in order to avoid byte-wise adjustment and flapping
-    pure $ size < threshold && wndw < threshold 
+    pure $ size < threshold && wndw < threshold
 
 fillWindowSpace :: TStreamingQueue -> STM Word32
 fillWindowSpace q = do

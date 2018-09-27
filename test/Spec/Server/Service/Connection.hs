@@ -73,7 +73,7 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
 connectionChannelOpen01 :: TestTree
 connectionChannelOpen01 = testCase "open one channel" $ do
     c <- newDefaultConfig
-    let config = c { channelMaxWindowSize = lws, channelMaxPacketSize = lps }
+    let config = c { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
     conn <- connectionOpen config identity send
     Right (ChannelOpenConfirmation rid' lid' lws' lps') <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
     assertEqual "remote channel id" rid rid'
@@ -403,18 +403,22 @@ connectionChannelRequestShell08 = testCase "with handler and outbound flow contr
     let send msg = atomically $ writeTChan msgs msg
     let recv     = atomically $ readTChan msgs
     conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxWindowSize = lws, channelMaxPacketSize = lps } () send) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn (ChannelOpen ct rid rws rps)
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
-        assertEqual "bytes written by handler" (fromIntegral lws) =<< atomically (readTMVar tmvar0)
-        assertEqual "msg2" msg2 =<< recv
-        assertEqual "msg3" msg3 =<< recv
-        assertEqual "msg4" msg4 =<< recv
-        assertEqual "msg5" msg5 =<< recv
-        assertEqual "bytes written by handler" (fromIntegral 3) =<< atomically (readTMVar tmvar1)
-        assertEqual "msg6" msg6 =<< recv
-        assertEqual "msg7" msg7 =<< recv
-        assertEqual "msg8" msg8 =<< recv
+    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () send) connectionClose $ \conn -> do
+        assertEqual "msg00" msg00 =<< connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        assertEqual "msg01" msg01 =<< connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        assertEqual "bytes1" (fromIntegral rws) =<< atomically (readTMVar tmvar0)
+        assertEqual "msg02" msg02 =<< recv
+        assertEqual "msg03" msg03 =<< recv
+        assertEqual "msg04" msg04 =<< recv
+        assertEqual "msg05" msg05 =<< recv
+        connectionChannelWindowAdjust conn (ChannelWindowAdjust lid 3)
+        assertEqual "bytes2" (fromIntegral 3) =<< atomically (readTMVar tmvar1)
+        assertEqual "msg06" msg06 =<< recv
+        assertEqual "msg07" msg07 =<< recv
+        assertEqual "msg08" msg08 =<< recv
+        assertEqual "msg09" msg09 =<< recv
+        assertEqual "msg10" msg10 =<< recv
+        assertEqual "msg11" msg11 =<< recv
     where
         ct  = ChannelType "session"
         lid = ChannelId 0
@@ -423,15 +427,18 @@ connectionChannelRequestShell08 = testCase "with handler and outbound flow contr
         rps = 1
         lws = 5
         lps = 1
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = MsgChannelData (ChannelData rid "1")
-        msg3 = MsgChannelData (ChannelData rid "2")
-        msg4 = MsgChannelData (ChannelData rid "3")
-        msg5 = MsgChannelData (ChannelData rid "4")
-        msg6 = MsgChannelEof (ChannelEof rid)
-        msg7 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\NUL")
-        msg8 = MsgChannelClose (ChannelClose rid)
+        msg00 = Right (ChannelOpenConfirmation rid lid lws lps)
+        msg01 = Just (Right (ChannelSuccess rid))
+        msg02 = MsgChannelData (ChannelData rid "1")
+        msg03 = MsgChannelData (ChannelData rid "2")
+        msg04 = MsgChannelData (ChannelData rid "3")
+        msg05 = MsgChannelData (ChannelData rid "4")
+        msg06 = MsgChannelData (ChannelData rid "A")
+        msg07 = MsgChannelData (ChannelData rid "B")
+        msg08 = MsgChannelData (ChannelData rid "C")
+        msg09 = MsgChannelEof (ChannelEof rid)
+        msg10 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\NUL")
+        msg11 = MsgChannelClose (ChannelClose rid)
 
 connectionChannelData01 :: TestTree
 connectionChannelData01 = testCase "channel data" $ do
@@ -468,7 +475,7 @@ connectionChannelData02 = testCase "channel data after eof" $ do
 connectionChannelData03 :: TestTree
 connectionChannelData03 = testCase "window size" $ do
     conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxWindowSize = 6 } identity send
+    conn <- connectionOpen conf { channelMaxQueueSize = 6 } identity send
     Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
     connectionChannelData conn (ChannelData lid "ABC")
     connectionChannelData conn (ChannelData lid "DEF")
@@ -483,7 +490,7 @@ connectionChannelData03 = testCase "window size" $ do
 connectionChannelData04 :: TestTree
 connectionChannelData04 = testCase "window exhaustion #1" $ do
     conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxWindowSize = 5 } identity send
+    conn <- connectionOpen conf { channelMaxQueueSize = 5 } identity send
     Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
     connectionChannelData conn (ChannelData lid "ABCDEF")
         `assertException` \(Disconnect reason description "") -> do
@@ -500,7 +507,7 @@ connectionChannelData04 = testCase "window exhaustion #1" $ do
 connectionChannelData05 :: TestTree
 connectionChannelData05 = testCase "window exhaustion #2" $ do
     conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxWindowSize = 5 } identity send
+    conn <- connectionOpen conf { channelMaxQueueSize = 5 } identity send
     Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
     connectionChannelData conn (ChannelData lid "ABC")
     connectionChannelData conn (ChannelData lid "ABCDEF")
