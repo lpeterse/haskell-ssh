@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Spec.Server.Service.Connection ( tests ) where
     
-import qualified Data.ByteString as BS
 import           Control.Applicative
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async
@@ -73,118 +72,103 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
 
 connectionChannelOpen01 :: TestTree
 connectionChannelOpen01 = testCase "open one channel" $ do
-    c <- newDefaultConfig
-    let config = c { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    conn <- connectionOpen config identity send
-    Right (ChannelOpenConfirmation rid' lid' lws' lps') <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
-    assertEqual "remote channel id" rid rid'
-    assertEqual "local channel id" lid lid'
-    assertEqual "local max window size" lws lws'
-    assertEqual "local max packet size" lps lps'
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
+    assertEqual "msg0" msg0 =<< connectionChannelOpen conn (ChannelOpen ct rid rws rps)
     where
-        ct  = ChannelType "session"
-        lid = ChannelId 0
-        rid = ChannelId 1
-        lws = 256 * 1024
-        lps = 32 * 1024
-        rws = 123
-        rps = 456
-        send = error "shall not send"
-        identity = error "shall not use identity"
+        ct   = ChannelType "session"
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        lws  = 256 * 1024
+        lps  = 32 * 1024
+        rws  = 123
+        rps  = 456
+        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
 
 connectionChannelOpen02 :: TestTree
 connectionChannelOpen02 = testCase "exceed channel limit" $ do
-    c <- newDefaultConfig
-    let config = c { channelMaxCount = 1 }
-    conn <- connectionOpen config identity send
-    Right (ChannelOpenConfirmation rid0' _ _ _) <- connectionChannelOpen conn (ChannelOpen ct rid0 rws rps)
-    Left (ChannelOpenFailure rid1' reason _ _) <- connectionChannelOpen conn (ChannelOpen ct rid1 rws rps)
-    assertEqual "remote channel id (first)" rid0 rid0'
-    assertEqual "remote channel id (second)" rid1 rid1'
-    assertEqual "failure reason" ChannelOpenResourceShortage reason
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxCount = 1, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
+    assertEqual "msg0" msg0 =<<  connectionChannelOpen conn (ChannelOpen ct rid0 rws rps)
+    assertEqual "msg1" msg1 =<<  connectionChannelOpen conn (ChannelOpen ct rid1 rws rps)
     where
-        ct  = ChannelType "session"
+        ct   = ChannelType "session"
         rid0 = ChannelId 0
+        lid0 = ChannelId 0
         rid1 = ChannelId 1
-        rws = 123
-        rps = 456
-        send = error "shall not send"
-        identity = error "shall not use identity"
+        rws  = 124
+        rps  = 456
+        lws  = 128
+        lps  = 32
+        msg0 = Right (ChannelOpenConfirmation rid0 lid0 lws lps)
+        msg1 = Left (ChannelOpenFailure rid1 ChannelOpenResourceShortage "" "")
 
 connectionChannelOpen03 :: TestTree
 connectionChannelOpen03 = testCase "open two channels" $ do
-    c <- newDefaultConfig
-    let config = c { channelMaxCount = 2 }
-    conn <- connectionOpen config identity send
-    Right (ChannelOpenConfirmation rid0' lid0' _ _) <- connectionChannelOpen conn (ChannelOpen ct rid0 rws rps)
-    Right (ChannelOpenConfirmation rid1' lid1' _ _) <- connectionChannelOpen conn (ChannelOpen ct rid1 rws rps)
-    assertEqual "remote channel id (first)" rid0 rid0'
-    assertEqual "remote channel id (second)" rid1 rid1'
-    assertEqual "local channel id (first)" lid0 lid0'
-    assertEqual "local channel id (second)" lid1 lid1'
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxCount = 2, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
+    assertEqual "msg0" msg0 =<< connectionChannelOpen conn (ChannelOpen ct rid0 rws rps)
+    assertEqual "msg1" msg1 =<< connectionChannelOpen conn (ChannelOpen ct rid1 rws rps)
     where
-        ct  = ChannelType "session"
+        ct   = ChannelType "session"
         lid0 = ChannelId 0
         lid1 = ChannelId 1
-        rid0 = ChannelId 0
-        rid1 = ChannelId 1
-        rws = 123
-        rps = 456
-        send = error "shall not send"
-        identity = error "shall not use identity"
+        rid0 = ChannelId 2
+        rid1 = ChannelId 3
+        rws  = 123
+        rps  = 456
+        lws  = 128
+        lps  = 32
+        msg0 = Right (ChannelOpenConfirmation rid0 lid0 lws lps)
+        msg1 = Right (ChannelOpenConfirmation rid1 lid1 lws lps)
 
 connectionChannelOpen04 :: TestTree
 connectionChannelOpen04 = testCase "open two channels, close first, reuse first" $ do
-    c <- newDefaultConfig
-    let config = c { channelMaxCount = 2 }
-    conn <- connectionOpen config identity send
-    Right (ChannelOpenConfirmation _ lid0' _ _) <- connectionChannelOpen conn (ChannelOpen ct rid0 rws rps)
-    Right (ChannelOpenConfirmation _ lid1' _ _) <- connectionChannelOpen conn (ChannelOpen ct rid1 rws rps)
-    assertEqual "local channel id (first)" lid0 lid0'
-    assertEqual "local channel id (second)" lid1 lid1'
-    connectionChannelClose conn (ChannelClose lid0')
-    Right (ChannelOpenConfirmation _ lid2' _ _) <- connectionChannelOpen conn (ChannelOpen ct rid2 rws rps)
-    assertEqual "local channel id (third)" lid2 lid2'
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxCount = 2, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
+    assertEqual "msg0" msg0 =<< connectionChannelOpen conn (ChannelOpen ct rid0 rws rps)
+    assertEqual "msg1" msg1 =<< connectionChannelOpen conn (ChannelOpen ct rid1 rws rps)
+    assertEqual "msg2" msg2 =<< connectionChannelClose conn (ChannelClose lid0)
+    assertEqual "msg3" msg3 =<< connectionChannelOpen conn (ChannelOpen ct rid2 rws rps)
     where
-        ct  = ChannelType "session"
+        ct   = ChannelType "session"
         lid0 = ChannelId 0
         lid1 = ChannelId 1
         lid2 = lid0
         rid0 = ChannelId 0
         rid1 = ChannelId 1
         rid2 = ChannelId 2
-        rws = 123
-        rps = 456
-        send = error "shall not send"
-        identity = error "shall not use identity"
+        rws  = 123
+        rps  = 456
+        lws  = 243
+        lps  = 545
+        msg0 = Right (ChannelOpenConfirmation rid0 lid0 lws lps)
+        msg1 = Right (ChannelOpenConfirmation rid1 lid1 lws lps)
+        msg2 = Just (ChannelClose (ChannelId 0))
+        msg3 = Right (ChannelOpenConfirmation rid2 lid2 lws lps)
 
 connectionChannelOpen05 :: TestTree
 connectionChannelOpen05 = testCase "open unknown channel type" $ do
     conf <- newDefaultConfig
-    conn <- connectionOpen conf identity send
-    Left (ChannelOpenFailure rid' reason _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
-    assertEqual "remote channel id" rid rid'
-    assertEqual "failure reason" ChannelOpenUnknownChannelType reason
+    conn <- connectionOpen conf () undefined
+    assertEqual "msg0" msg0 =<< connectionChannelOpen conn (ChannelOpen ct rid rws rps)
     where
-        ct  = ChannelType "unknown"
-        rid = ChannelId 45
-        rws = 123
-        rps = 456
-        send = error "shall not send"
-        identity = error "shall not use identity"
+        ct   = ChannelType "unknown"
+        rid  = ChannelId 45
+        rws  = 173
+        rps  = 436
+        msg0 = Left (ChannelOpenFailure rid ChannelOpenUnknownChannelType "" "")
 
 connectionChannelRequest01 :: TestTree
 connectionChannelRequest01 = testCase "request for non-existing channel" $ do
     conf <- newDefaultConfig
-    conn <- connectionOpen conf identity send
+    conn <- connectionOpen conf () undefined
     connectionChannelRequest conn (ChannelRequest rid mempty)
         `assertException` \(Disconnect reason description "") -> do
             DisconnectProtocolError @=? reason
             "invalid channel id" @=? description
     where
         rid = ChannelId 23
-        send = error "shall not send"
-        identity = error "shall not use identity"
 
 connectionChannelRequest02 :: TestTree
 connectionChannelRequest02 = testCase "syntactically invalid request" $ do
@@ -400,7 +384,7 @@ connectionChannelRequestShell08 = testCase "with handler and inbound flow contro
             atomically . putTMVar tmvar1 =<< receive stdin 1
             atomically $ takeTMVar tmvar0
             atomically . putTMVar tmvar1 =<< receive stdin 1
-            atomically $ takeTMVar tmvar2
+            void $ atomically $ takeTMVar tmvar2
             pure ExitSuccess
     let send msg = atomically $ writeTChan msgs msg
     let recv     = atomically $ readTChan msgs
@@ -430,14 +414,6 @@ connectionChannelRequestShell08 = testCase "with handler and inbound flow contro
         msg00 = Right (ChannelOpenConfirmation rid lid lws lps)
         msg01 = Just (Right (ChannelSuccess rid))
         msg02 = MsgChannelWindowAdjust (ChannelWindowAdjust rid 2)
-        msg04 = MsgChannelData (ChannelData rid "3")
-        msg05 = MsgChannelData (ChannelData rid "4")
-        msg06 = MsgChannelData (ChannelData rid "A")
-        msg07 = MsgChannelData (ChannelData rid "B")
-        msg08 = MsgChannelData (ChannelData rid "C")
-        msg09 = MsgChannelEof (ChannelEof rid)
-        msg10 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\NUL")
-        msg11 = MsgChannelClose (ChannelClose rid)
 
 connectionChannelRequestShell09 :: TestTree
 connectionChannelRequestShell09 = testCase "with handler and outbound flow control" $ withTimeout $ do
@@ -463,7 +439,7 @@ connectionChannelRequestShell09 = testCase "with handler and outbound flow contr
         assertEqual "msg04" msg04 =<< recv
         assertEqual "msg05" msg05 =<< recv
         connectionChannelWindowAdjust conn (ChannelWindowAdjust lid 3)
-        assertEqual "bytes2" (fromIntegral 3) =<< atomically (readTMVar tmvar1)
+        assertEqual "bytes2" 3 =<< atomically (readTMVar tmvar1)
         assertEqual "msg06" msg06 =<< recv
         assertEqual "msg07" msg07 =<< recv
         assertEqual "msg08" msg08 =<< recv
