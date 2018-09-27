@@ -2,15 +2,21 @@
 module Spec.Server.Service.Connection ( tests ) where
     
 import qualified Data.ByteString as BS
+import           Control.Applicative
+import           Control.Concurrent (threadDelay)
+import           Control.Concurrent.Async
 import           Control.Exception
 import           Control.Monad
 import           System.Exit
 import           Control.Monad.STM
 import           Control.Concurrent.STM.TChan
+import           Control.Concurrent.STM.TVar
+import           Control.Concurrent.STM.TMVar
 
 import           Network.SSH.Server.Service.Connection
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
+import           Network.SSH.Stream (send, sendAll, receive)
 
 import           Test.Tasty
 import           Test.Tasty.HUnit
@@ -38,9 +44,15 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
         [ connectionChannelRequest01
         , connectionChannelRequest02
         , connectionChannelRequest03
-        , testGroup "shell"
+        , testGroup "shell requests"
             [ connectionChannelRequestShell01
             , connectionChannelRequestShell02
+            , connectionChannelRequestShell03
+            , connectionChannelRequestShell04
+            , connectionChannelRequestShell05
+            , connectionChannelRequestShell06
+            , connectionChannelRequestShell07
+            , connectionChannelRequestShell08
             ]
         ]
 
@@ -206,7 +218,7 @@ connectionChannelRequest03 = testCase "session environment request" $ do
         identity = error "shall not use identity"
 
 connectionChannelRequestShell01 :: TestTree
-connectionChannelRequestShell01 = testCase "without handler" $ do
+connectionChannelRequestShell01 = testCase "without handler" $ withTimeout $ do
     conf <- newDefaultConfig
     bracket (connectionOpen conf identity send) connectionClose $ \conn -> do
         Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
@@ -221,7 +233,7 @@ connectionChannelRequestShell01 = testCase "without handler" $ do
         identity = error "shall not use identity"
 
 connectionChannelRequestShell02 :: TestTree
-connectionChannelRequestShell02 = testCase "with successful handler" $ do
+connectionChannelRequestShell02 = testCase "with handler exit(0)" $ withTimeout $ do
     msgs <- newTChanIO
     let send msg = atomically $ writeTChan msgs msg
     let recv     = atomically $ readTChan msgs
@@ -232,6 +244,7 @@ connectionChannelRequestShell02 = testCase "with successful handler" $ do
         assertEqual "rid" rid rid'
         assertEqual "msg1" msg1 =<< recv
         assertEqual "msg2" msg2 =<< recv
+        assertEqual "msg3" msg3 =<< recv
     where
         ct  = ChannelType "session"
         rid = ChannelId 23
@@ -239,8 +252,186 @@ connectionChannelRequestShell02 = testCase "with successful handler" $ do
         rps = 456
         identity = error "shall not use identity"
         handler identity stdin stdout stderr = pure ExitSuccess
-        msg1 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\NUL")
-        msg2 = MsgChannelClose (ChannelClose rid)
+        msg1 = MsgChannelEof (ChannelEof rid)
+        msg2 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\NUL")
+        msg3 = MsgChannelClose (ChannelClose rid)
+
+connectionChannelRequestShell03 :: TestTree
+connectionChannelRequestShell03 = testCase "with handler exit(0) after writing to stdout" $ withTimeout $ do
+    msgs <- newTChanIO
+    let send msg = atomically $ writeTChan msgs msg
+    let recv     = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onShellRequest = Just handler } identity send) connectionClose $ \conn -> do
+        Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        Just (Right (ChannelSuccess rid'))  <- connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        assertEqual "rid" rid rid'
+        assertEqual "msg1" msg1 =<< recv
+        assertEqual "msg2" msg2 =<< recv
+        assertEqual "msg3" msg3 =<< recv
+        assertEqual "msg4" msg4 =<< recv
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        identity = error "shall not use identity"
+        handler identity stdin stdout stderr = do
+            sendAll stdout "ABCDEF"            
+            pure ExitSuccess
+        msg1 = MsgChannelData (ChannelData rid "ABCDEF")
+        msg2 = MsgChannelEof (ChannelEof rid)
+        msg3 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\NUL")
+        msg4 = MsgChannelClose (ChannelClose rid)
+
+connectionChannelRequestShell04 :: TestTree
+connectionChannelRequestShell04 = testCase "with handler exit(1) after echoing stdin to stdout" $ withTimeout $ do
+    msgs <- newTChanIO
+    let send msg = atomically $ writeTChan msgs msg
+    let recv     = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onShellRequest = Just handler } identity send) connectionClose $ \conn -> do
+        Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        Just (Right (ChannelSuccess rid'))  <- connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        connectionChannelData conn (ChannelData lid echo)
+        assertEqual "rid" rid rid'
+        assertEqual "msg1" msg1 =<< recv
+        assertEqual "msg2" msg2 =<< recv
+        assertEqual "msg3" msg3 =<< recv
+        assertEqual "msg4" msg4 =<< recv
+    where
+        echo = "PING PING PING PING"
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        identity = error "shall not use identity"
+        handler identity stdin stdout stderr = do
+            receive stdin 1024 >>= sendAll stdout
+            pure (ExitFailure 1)
+        msg1 = MsgChannelData (ChannelData rid echo)
+        msg2 = MsgChannelEof (ChannelEof rid)
+        msg3 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\SOH")
+        msg4 = MsgChannelClose (ChannelClose rid)
+
+connectionChannelRequestShell05 :: TestTree
+connectionChannelRequestShell05 = testCase "with handler exit(1) after echoing stdin to stderr" $ withTimeout $ do
+    msgs <- newTChanIO
+    let send msg = atomically $ writeTChan msgs msg
+    let recv     = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onShellRequest = Just handler } identity send) connectionClose $ \conn -> do
+        Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        Just (Right (ChannelSuccess rid'))  <- connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        connectionChannelData conn (ChannelData lid echo)
+        assertEqual "rid" rid rid'
+        assertEqual "msg1" msg1 =<< recv
+        assertEqual "msg2" msg2 =<< recv
+        assertEqual "msg3" msg3 =<< recv
+        assertEqual "msg4" msg4 =<< recv
+    where
+        echo = "PING PING PING PING"
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        identity = error "shall not use identity"
+        handler identity stdin stdout stderr = do
+            receive stdin 1024 >>= sendAll stderr
+            pure (ExitFailure 1)
+        msg1 = MsgChannelExtendedData (ChannelExtendedData rid 1 echo)
+        msg2 = MsgChannelEof (ChannelEof rid)
+        msg3 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\SOH")
+        msg4 = MsgChannelClose (ChannelClose rid)
+
+connectionChannelRequestShell06 :: TestTree
+connectionChannelRequestShell06 = testCase "with handler throwing exception" $ withTimeout $ do
+    msgs <- newTChanIO
+    let send msg = atomically $ writeTChan msgs msg
+    let recv     = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onShellRequest = Just handler } identity send) connectionClose $ \conn -> do
+        Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        Just (Right (ChannelSuccess rid'))  <- connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        assertEqual "rid" rid rid'
+        assertEqual "msg1" msg1 =<< recv
+        assertEqual "msg2" msg2 =<< recv
+        assertEqual "msg3" msg3 =<< recv
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        identity = error "shall not use identity"
+        handler identity stdin stdout stderr = error "nasty handler"
+        msg1 = MsgChannelEof (ChannelEof rid)
+        msg2 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-signal\NUL\NUL\NUL\NUL\ETXILL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL")
+        msg3 = MsgChannelClose (ChannelClose rid)
+
+connectionChannelRequestShell07 :: TestTree
+connectionChannelRequestShell07 = testCase "with handler running while close by client" $ withTimeout $ do
+    msgs <- newTChanIO
+    let send msg = atomically $ writeTChan msgs msg
+    let recv     = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onShellRequest = Just handler } identity send) connectionClose $ \conn -> do
+        Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        Just (Right (ChannelSuccess rid'))  <- connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        Just (ChannelClose rid'') <- connectionChannelClose conn (ChannelClose lid)
+        assertEqual "rid'"  rid rid'
+        assertEqual "rid''" rid rid''
+    where
+        ct  = ChannelType "session"
+        rid = ChannelId 23
+        rws = 123
+        rps = 456
+        identity = error "shall not use identity"
+        handler _ _ _ _ = threadDelay 10000000 >> pure ExitSuccess
+
+connectionChannelRequestShell08 :: TestTree
+connectionChannelRequestShell08 = testCase "with handler and outbound flow control #1" $ withTimeout $ do
+    msgs <- newTChanIO
+    tmvar0 <- newEmptyTMVarIO
+    tmvar1 <- newEmptyTMVarIO
+    tmvar2 <- newEmptyTMVarIO
+    let handler _ _ stdout _= do
+            i <- send stdout "1234567890"
+            atomically $ putTMVar tmvar0 i
+            j <- send stdout "ABCD"
+            atomically $ putTMVar tmvar1 j
+            pure ExitSuccess
+    let send msg = atomically $ writeTChan msgs msg
+    let recv     = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxWindowSize = lws, channelMaxPacketSize = lps } () send) connectionClose $ \conn -> do
+        assertEqual "msg0" msg0 =<< connectionChannelOpen conn (ChannelOpen ct rid rws rps)
+        assertEqual "msg1" msg1 =<< connectionChannelRequest conn (ChannelRequest lid "\NUL\NUL\NUL\ENQshell\SOH")
+        assertEqual "bytes written by handler" (fromIntegral lws) =<< atomically (readTMVar tmvar0)
+        assertEqual "msg2" msg2 =<< recv
+        assertEqual "msg3" msg3 =<< recv
+        assertEqual "msg4" msg4 =<< recv
+        assertEqual "msg5" msg5 =<< recv
+        assertEqual "bytes written by handler" (fromIntegral 3) =<< atomically (readTMVar tmvar1)
+        assertEqual "msg6" msg6 =<< recv
+        assertEqual "msg7" msg7 =<< recv
+        assertEqual "msg8" msg8 =<< recv
+    where
+        ct  = ChannelType "session"
+        lid = ChannelId 0
+        rid = ChannelId 23
+        rws = 4
+        rps = 1
+        lws = 5
+        lps = 1
+        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
+        msg1 = Just (Right (ChannelSuccess rid))
+        msg2 = MsgChannelData (ChannelData rid "1")
+        msg3 = MsgChannelData (ChannelData rid "2")
+        msg4 = MsgChannelData (ChannelData rid "3")
+        msg5 = MsgChannelData (ChannelData rid "4")
+        msg6 = MsgChannelEof (ChannelEof rid)
+        msg7 = MsgChannelRequest (ChannelRequest rid "\NUL\NUL\NUL\vexit-status\NUL\NUL\NUL\NUL\NUL")
+        msg8 = MsgChannelClose (ChannelClose rid)
 
 connectionChannelData01 :: TestTree
 connectionChannelData01 = testCase "channel data" $ do
@@ -257,7 +448,7 @@ connectionChannelData01 = testCase "channel data" $ do
         identity = error "shall not use identity"
 
 connectionChannelData02 :: TestTree
-connectionChannelData02 = testCase "channel data after eof should throw" $ do
+connectionChannelData02 = testCase "channel data after eof" $ do
     conf <- newDefaultConfig
     conn <- connectionOpen conf identity send
     Right (ChannelOpenConfirmation _ lid _ _) <- connectionChannelOpen conn (ChannelOpen ct rid rws rps)
@@ -357,3 +548,10 @@ connectionChannelWindowAdjust02 = testCase "window adjustion beyond maximum shou
 
 assertException :: Exception e => IO a -> (e -> Assertion) -> Assertion
 assertException action checkException = (action >> assertFailure "should have thrown") `catch` checkException
+
+withTimeout :: IO a -> IO a
+withTimeout action = withAsync action $ \thread -> do
+    t <- registerDelay 1000000
+    let timeout = readTVar t >>= check >> pure (assertFailure "timeout")
+    let result  = waitSTM thread >>= pure . pure
+    join $ atomically $ result <|> timeout

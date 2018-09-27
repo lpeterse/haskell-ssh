@@ -49,7 +49,7 @@ main = do
             , Server.onReceive = \msg -> putStrLn ("received: " ++ show msg)
             , Server.onDisconnect       = \dis -> putStrLn
                                               ("disconnect: " ++ show dis)
-            , Server.channelMaxWindowSize = 1024
+            , Server.channelMaxQueueSize = 1024
             , Server.maxTimeBeforeRekey = 60
             , Server.maxDataBeforeRekey = 1024 * 1024
             }

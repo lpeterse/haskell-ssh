@@ -28,7 +28,7 @@ data Config identity = Config {
     , onReceive                     :: Message -> IO ()
     , onDisconnect                  :: Either SomeException Disconnect -> IO ()
     , channelMaxCount               :: Word16
-    , channelMaxWindowSize          :: Word32
+    , channelMaxQueueSize           :: Word32
     , channelMaxPacketSize          :: Word32
     , maxTimeBeforeRekey            :: Word64
     , maxDataBeforeRekey            :: Word64
@@ -48,7 +48,7 @@ newDefaultConfig = do
         , onReceive                     = \_ -> pure ()
         , onDisconnect                  = \_ -> pure ()
         , channelMaxCount               = 256
-        , channelMaxWindowSize          = 256 * 1024
+        , channelMaxQueueSize           = 256 * 1024
         , channelMaxPacketSize          = 32 * 1024
         , maxTimeBeforeRekey            = 3600
         , maxDataBeforeRekey            = 1024 * 1024 * 1024

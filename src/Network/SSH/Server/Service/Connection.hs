@@ -21,16 +21,17 @@ import           Control.Concurrent
 import qualified Control.Concurrent.Async     as Async
 import           Control.Concurrent.STM.TVar
 import           Control.Monad                (join, void, when)
-import           Control.Monad.STM            (STM, atomically, check, throwSTM)
+import           Control.Monad.STM            (STM, atomically, check, throwSTM, retry)
 import qualified Data.ByteString              as BS
 import qualified Data.Map.Strict              as M
 import           Data.Word
 import           System.Exit
 
 import           Network.SSH.Encoding
+import           Network.SSH.Constants
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
-import           Network.SSH.TByteStringQueue
+import qualified Network.SSH.TStreamingQueue as Q
 
 data Connection identity
     = Connection
@@ -51,6 +52,9 @@ data Channel identity
     , chanMaxPacketSizeRemote :: Word32
     , chanWindowSizeLocal     :: TVar Word32
     , chanWindowSizeRemote    :: TVar Word32
+    , chanStdin               :: Q.TStreamingQueue
+    , chanStdout              :: Q.TStreamingQueue
+    , chanStderr              :: Q.TStreamingQueue
     , chanEofSent             :: TVar Bool
     , chanEofReceived         :: TVar Bool
     , chanCloseSent           :: TVar Bool
@@ -67,9 +71,6 @@ data Session
     { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
     , sessTerminal    :: TVar (Maybe ())
     , sessThread      :: TVar (Maybe ThreadId)
-    , sessStdin       :: TByteStringQueue
-    , sessStdout      :: TByteStringQueue
-    , sessStderr      :: TByteStringQueue
     }
 
 connectionOpen :: Config identity -> identity -> (Message -> IO ()) -> IO (Connection identity)
@@ -97,26 +98,15 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
             pure $ Left $ openFailure ChannelOpenResourceShortage
         Just localChannelId -> case channelType of
             ChannelType "session" -> do
-                -- The maximum possible queue size is 1 GB in order to avoid
-                -- Int <-> Word32 conversion issues.
-                -- It is derived from the config option channelMaxWindowSize.
-                let maxQueueSize = max 1 $ fromIntegral $ min
-                        (1024 * 1024 * 1024)
-                        (channelMaxWindowSize $ connConfig connection)
+
                 env          <- newTVar mempty
                 pty          <- newTVar Nothing
                 thread       <- newTVar Nothing
-                stdin        <- newTByteStringQueue maxQueueSize
-                stdout       <- newTByteStringQueue maxQueueSize
-                stderr       <- newTByteStringQueue maxQueueSize
                 confirmation <- openApplicationChannel localChannelId $
                     ChannelApplicationSession Session
                         { sessEnvironment = env
                         , sessTerminal    = pty
                         , sessThread      = thread
-                        , sessStdin       = stdin
-                        , sessStdout      = stdout
-                        , sessStderr      = stderr
                         }
                 pure (Right confirmation)
             ChannelType {} ->
@@ -138,9 +128,14 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
 
         openApplicationChannel :: ChannelId -> ChannelApplication -> STM ChannelOpenConfirmation
         openApplicationChannel localChannelId application = do
+            let maxQueueSize = max 1 $ fromIntegral $ min maxBoundIntWord32
+                                        (channelMaxQueueSize $ connConfig connection)
             channels      <- readTVar (connChannels connection)
-            wsLocal       <- newTVar (channelMaxWindowSize $ connConfig connection)
+            wsLocal       <- newTVar maxQueueSize
             wsRemote      <- newTVar initialWindowSize
+            stdin         <- Q.newTStreamingQueue maxQueueSize wsLocal
+            stdout        <- Q.newTStreamingQueue maxQueueSize wsRemote
+            stderr        <- Q.newTStreamingQueue maxQueueSize wsRemote
             eofSent       <- newTVar False
             eofReceived   <- newTVar False
             closeSent     <- newTVar False
@@ -154,6 +149,9 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
                   , chanMaxPacketSizeRemote = maxPacketSize
                   , chanWindowSizeLocal     = wsLocal
                   , chanWindowSizeRemote    = wsRemote
+                  , chanStdin               = stdin
+                  , chanStdout              = stdout
+                  , chanStderr              = stderr
                   , chanEofSent             = eofSent
                   , chanEofReceived         = eofReceived
                   , chanCloseSent           = closeSent
@@ -165,7 +163,7 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
             pure $ ChannelOpenConfirmation
                 remoteChannelId
                 localChannelId
-                (channelMaxWindowSize $ connConfig connection)
+                maxQueueSize
                 (channelMaxPacketSize $ connConfig connection)
 
 connectionChannelEof :: Connection identity -> ChannelEof -> IO ()
@@ -191,28 +189,18 @@ connectionChannelData connection (ChannelData localChannelId payload) = atomical
     channel <- getChannelSTM connection localChannelId
     eofReceived <- readTVar (chanEofReceived channel)
     when eofReceived $ exception "data after eof"
-    ws  <- readTVar (chanWindowSizeLocal channel)
-    when (payloadLen > ws) $ exception "window size underrun"
-    writeTVar (chanWindowSizeLocal channel) $! ws - payloadLen
-    case chanApplication channel of
-        -- `enqueueUnlimited` might exceed the queue limit, but is necessary as this
-        -- transaction must never block. Inbound flow control is done by window size
-        -- management!
-        ChannelApplicationSession session -> enqueueUnlimited (sessStdin session) payload
+    enqueued <- Q.enqueue (chanStdin channel) payload <|> pure 0
+    when (enqueued /= payloadLen) (exception "window size underrun")
     where
         exception msg = throwSTM $ Disconnect DisconnectProtocolError msg mempty
         payloadLen    = fromIntegral $ BS.length payload
 
 connectionChannelWindowAdjust :: Connection identity -> ChannelWindowAdjust -> IO ()
-connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId increase) = atomically $ do
+connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId increment) = atomically $ do
     channel <- getChannelSTM connection channelId
-    windowSize <- readTVar (chanWindowSizeRemote channel)
-    let windowSize' = fromIntegral windowSize + fromIntegral increase :: Word64
-    -- Conversion to Word64 necessary for overflow check.
-    when (windowSize' > 2 ^ (32 :: Word64) - 1) $
-        throwSTM $ Disconnect DisconnectProtocolError "window size overflow" mempty
-    -- Conversion from Word64 to Word32 never undefined as guaranteed by previous check.
-    writeTVar (chanWindowSizeRemote channel) $! fromIntegral windowSize'
+    Q.addWindowSpace (chanStdout channel) increment <|> exception "window size overflow"
+    where
+        exception msg = throwSTM $ Disconnect DisconnectProtocolError msg mempty
 
 connectionChannelRequest :: forall identity. Connection identity -> ChannelRequest -> IO (Maybe (Either ChannelFailure ChannelSuccess))
 connectionChannelRequest connection (ChannelRequest channelId request) = join $ atomically $ do
@@ -252,7 +240,7 @@ connectionChannelRequest connection (ChannelRequest channelId request) = join $ 
                 exception  e = throwSTM $ Disconnect DisconnectProtocolError e mempty
 
         sessionExec :: Channel identity -> Session
-                    -> (TByteStringQueue -> TByteStringQueue -> TByteStringQueue -> IO ExitCode) -> IO ()
+                    -> (Q.TStreamingQueue -> Q.TStreamingQueue -> Q.TStreamingQueue -> IO ExitCode) -> IO () 
         sessionExec channel session handler =
             -- Two threads are forked: a worker thread running as Async and a dangling
             -- supervisor thread.
@@ -264,7 +252,7 @@ connectionChannelRequest connection (ChannelRequest channelId request) = join $ 
             where
                 -- The worker thread is the user supplied action from the configuration.
                 work :: IO ExitCode
-                work = handler (sessStdin session) (sessStdout session) (sessStderr session)
+                work = handler (chanStdin channel) (chanStdout channel) (chanStderr channel)
 
                 -- The supervisor thread waits for several event sources simultaneously,
                 -- handles them and loops until the session thread has terminated and exit
@@ -274,10 +262,12 @@ connectionChannelRequest connection (ChannelRequest channelId request) = join $ 
                     Left  msgs -> mapM_ (connSend connection) msgs
                     Right msgs -> mapM_ (connSend connection) msgs >> supervise workerAsync
                     where
-                        w0 = Left  <$> waitClose
-                        w1 = Left  <$> waitExit workerAsync
-                        w2 = Right <$> waitStdout
-                        w3 = Right <$> waitStderr
+                        -- NB: The order is critical: Another order would cause a close
+                        -- or eof to be sent before all data has been flushed.
+                        w0 = Right <$> waitStdout
+                        w1 = Right <$> waitStderr
+                        w2 = Left  <$> waitClose
+                        w3 = Left  <$> waitExit workerAsync
                         w4 = Right <$> waitLocalWindowAdjust
 
                 waitClose :: STM [Message]
@@ -285,68 +275,31 @@ connectionChannelRequest connection (ChannelRequest channelId request) = join $ 
 
                 waitExit :: Async.Async ExitCode -> STM [Message]
                 waitExit thread = do
-                    msg <- Async.waitCatchSTM thread >>= \case
+                    exitMsg <- Async.waitCatchSTM thread >>= \case
                         Right c -> pure $ exitMessage $ ChannelRequestExitStatus c
                         Left  _ -> pure $ exitMessage $ ChannelRequestExitSignal "ILL" False "" ""
-                    alreadyClosed <- chanClosed channel
-                    if alreadyClosed then pure mempty else do
-                        chanClose channel
-                        pure [msg, MsgChannelClose $ ChannelClose $ chanIdRemote channel]
+                    chanClose channel
+                    pure [eofMessage channel, exitMsg, closeMessage channel]
                     where
-                        exitMessage :: ChannelRequestSession -> Message
-                        exitMessage = MsgChannelRequest . ChannelRequest (chanIdRemote channel) . runPut . put
+                        eofMessage   = MsgChannelEof . ChannelEof . chanIdRemote
+                        exitMessage  = MsgChannelRequest . ChannelRequest (chanIdRemote channel) . runPut . put
+                        closeMessage = MsgChannelClose . ChannelClose . chanIdRemote
 
                 waitStdout :: STM [Message]
                 waitStdout = do
-                    window <- askRemoteWindowAvailable
-                    bs <- dequeue (sessStdout session) (fromIntegral window)
-                    decRemoteWindow $ BS.length bs
+                    bs <- Q.dequeue (chanStdout channel) (chanMaxPacketSizeRemote channel)
                     pure [MsgChannelData $ ChannelData (chanIdRemote channel) bs]
 
                 waitStderr :: STM [Message]
                 waitStderr = do
-                    window <- askRemoteWindowAvailable
-                    bs <- dequeue (sessStderr session) (fromIntegral window)
-                    decRemoteWindow $ BS.length bs
+                    bs <- Q.dequeue (chanStderr channel) (chanMaxPacketSizeRemote channel)
                     pure [MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 bs]
 
                 waitLocalWindowAdjust :: STM [Message]
                 waitLocalWindowAdjust = do
-                    -- 1st condition: window size must be below half of its maximum
-                    windowSize <- readTVar (chanWindowSizeLocal channel) :: STM Word32
-                    check $ windowSize < maxWindowSize `div` 2
-                    -- 2nd condition: queue size must be below half of its capacity
-                    -- in order to avoid byte-wise adjustment and flapping
-                    queueSize  <- sizeTByteStringQueue (sessStdin session)
-                    check $ queueSize < maxQueueSize `div` 2
-                    let increaseBy = min
-                            (maxWindowSize - windowSize)
-                            (fromIntegral $ maxQueueSize - queueSize) :: Word32
-                    writeTVar (chanWindowSizeLocal channel) $! windowSize + increaseBy
+                    check =<< Q.askWindowSpaceAdjustRecommended (chanStdin channel)
+                    increaseBy <- Q.fillWindowSpace (chanStdin channel)
                     pure [MsgChannelWindowAdjust $ ChannelWindowAdjust (chanIdRemote channel) increaseBy]
-                    where
-                        maxWindowSize = channelMaxWindowSize (connConfig connection)
-                        maxQueueSize  = maxSizeTByteStringQueue (sessStdin session)
-
-                askRemoteWindowAvailable :: STM Int
-                askRemoteWindowAvailable = do
-                    -- The standard (RFC 4254) is a bit vague about window size calculation.
-                    -- See https://marc.info/?l=openssh-unix-dev&m=118466419618541&w=2
-                    -- for a clarification.
-                    windowSize <- fromIntegral <$> readTVar (chanWindowSizeRemote channel) :: STM Word64
-                    maxPacketSize <- fromIntegral <$> pure (chanMaxPacketSizeRemote channel) :: STM Word64
-                    let window = min windowSize maxPacketSize
-                    -- Transaction fails here if no window space is available.
-                    check (window > 0)
-                    -- Int is only guaranteed up to 2^29-1. Conversion to Word64 and comparison
-                    -- with maxBound shall rule out undefined behaviour by potential integer overflow.
-                    pure $ fromIntegral $ min (fromIntegral (maxBound :: Int)) window
-
-                -- Decrement the outbound window by the specified number of bytes.
-                decRemoteWindow :: Int -> STM ()
-                decRemoteWindow i = do
-                    windowSize <- readTVar (chanWindowSizeRemote channel)
-                    writeTVar (chanWindowSizeRemote channel) $! windowSize - fromIntegral i
 
 getChannelSTM :: Connection identity -> ChannelId -> STM (Channel identity)
 getChannelSTM connection channelId = do

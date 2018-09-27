@@ -16,3 +16,9 @@ version  = Version ("SSH-2.0-hssh_" `mappend` v)
 
 maxPacketLength :: Word32
 maxPacketLength = 35000
+
+maxBoundIntWord32 :: Num a => a
+maxBoundIntWord32 = fromIntegral $ min maxBoundInt maxBoundWord32
+    where
+        maxBoundInt    = fromIntegral (maxBound :: Int)    :: Word64
+        maxBoundWord32 = fromIntegral (maxBound :: Word32) :: Word64
