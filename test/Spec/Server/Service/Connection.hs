@@ -38,6 +38,12 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
         , connectionChannelOpen04
         , connectionChannelOpen05
         ]
+
+    , testGroup "connectionChannelClose"
+        [ connectionChannelClose01
+        , connectionChannelClose02
+        , connectionChannelClose03
+        ]
     
     , testGroup "connectionChannelRequest"
         [ connectionChannelRequest01
@@ -171,8 +177,81 @@ connectionChannelOpen05 = testCase "open unknown channel type" $ do
         opn = ChannelOpen (ChannelType "unknown") rid rws rps
         msg0 = Left (ChannelOpenFailure rid ChannelOpenUnknownChannelType "" "")
 
+connectionChannelClose01 :: TestTree
+connectionChannelClose01 = testCase "fail on invalid channel id" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf () undefined
+    assertThrows "exp" exp $ connectionChannelClose conn cls
+    where
+        cls = ChannelClose (ChannelId 0)
+        exp = Disconnect DisconnectProtocolError "invalid channel id" mempty
+
+connectionChannelClose02 :: TestTree
+connectionChannelClose02 = testCase "reuse local channel id when close acknowledged" $ do
+    msgs <- newTChanIO
+    let sender msg = atomically $ writeTChan msgs msg
+    let receiver   = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler } () sender
+    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
+    assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
+    assertEqual "msg2" msg2 =<< receiver
+    assertEqual "msg3" msg3 =<< receiver
+    assertEqual "msg4" msg4 =<< receiver
+    assertEqual "msg5" msg5 =<< connectionChannelClose conn cls
+    assertEqual "msg6" msg6 =<< connectionChannelOpen conn opn
+    where
+        lid = ChannelId 0
+        rid = ChannelId 23
+        lws = 100
+        lps = 200
+        rws = 123
+        rps = 456
+        opn = ChannelOpen (ChannelType "session") rid rws rps
+        cls = ChannelClose lid
+        req = ChannelRequest lid "shell" True mempty
+        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
+        msg1 = Just (Right (ChannelSuccess rid))
+        msg2 = MsgChannelEof (ChannelEof rid)
+        msg3 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
+        msg4 = MsgChannelClose (ChannelClose rid)
+        msg5 = Nothing
+        msg6 = msg0
+        handler = const $ pure ExitSuccess
+
+connectionChannelClose03 :: TestTree
+connectionChannelClose03 = testCase "don't reuse local channel id unless close acknowledged" $ do
+    msgs <- newTChanIO
+    let sender msg = atomically $ writeTChan msgs msg
+    let receiver   = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler } () sender
+    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
+    assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
+    assertEqual "msg2" msg2 =<< receiver
+    assertEqual "msg3" msg3 =<< receiver
+    assertEqual "msg4" msg4 =<< receiver
+    assertEqual "msg5" msg5 =<< connectionChannelOpen conn opn
+    where
+        lid = ChannelId 0
+        rid = ChannelId 23
+        lws = 100
+        lps = 200
+        rws = 123
+        rps = 456
+        opn = ChannelOpen (ChannelType "session") rid rws rps
+        cls = ChannelClose lid
+        req = ChannelRequest lid "shell" True mempty
+        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
+        msg1 = Just (Right (ChannelSuccess rid))
+        msg2 = MsgChannelEof (ChannelEof rid)
+        msg3 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
+        msg4 = MsgChannelClose (ChannelClose rid)
+        msg5 = Right (ChannelOpenConfirmation rid (ChannelId 1) lws lps)
+        handler = const $ pure ExitSuccess
+
 connectionChannelRequest01 :: TestTree
-connectionChannelRequest01 = testCase "request for non-existing channel" $ do
+connectionChannelRequest01 = testCase "fail on invalid channel id" $ do
     conf <- newDefaultConfig
     conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
     assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
@@ -191,7 +270,7 @@ connectionChannelRequest01 = testCase "request for non-existing channel" $ do
         exp0 = Disconnect DisconnectProtocolError "invalid channel id" mempty
 
 connectionChannelRequest02 :: TestTree
-connectionChannelRequest02 = testCase "unknown request" $ do
+connectionChannelRequest02 = testCase "reject unknown / unimplemented requests" $ do
     conf <- newDefaultConfig
     conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
     assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
@@ -209,7 +288,7 @@ connectionChannelRequest02 = testCase "unknown request" $ do
         msg1 = Just (Left (ChannelFailure rid))
 
 connectionChannelRequest03 :: TestTree
-connectionChannelRequest03 = testCase "session environment request" $ do
+connectionChannelRequest03 = testCase "accept session environment request" $ do
     conf <- newDefaultConfig
     conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
     assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
@@ -227,7 +306,7 @@ connectionChannelRequest03 = testCase "session environment request" $ do
         msg1 = Nothing
 
 connectionChannelRequestPty01 :: TestTree
-connectionChannelRequestPty01 = testCase "request pty" $ do
+connectionChannelRequestPty01 = testCase "accept pty request" $ do
     conf <- newDefaultConfig
     bracket (connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps} () undefined) connectionClose $ \conn -> do
         assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn

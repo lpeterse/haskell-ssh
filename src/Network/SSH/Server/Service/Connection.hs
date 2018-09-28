@@ -69,7 +69,6 @@ data SessionState
     = SessionState
     { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
     , sessPtySettings :: TVar (Maybe PtySettings)
-    , sessThread      :: TVar (Maybe ThreadId)
     }
 
 connectionOpen :: Config identity -> identity -> (Message -> IO ()) -> IO (Connection identity)
@@ -99,12 +98,10 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
             ChannelType "session" -> do
                 env          <- newTVar mempty
                 pty          <- newTVar Nothing
-                thread       <- newTVar Nothing
                 confirmation <- openApplicationChannel localChannelId $
                     ChannelApplicationSession SessionState
                         { sessEnvironment = env
                         , sessPtySettings = pty
-                        , sessThread      = thread
                         }
                 pure (Right confirmation)
             ChannelType {} ->
