@@ -1,4 +1,4 @@
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ExistentialQuantification #-}
 module Network.SSH.Server.Config where
 
 import           Control.Exception
@@ -6,6 +6,7 @@ import qualified Crypto.PubKey.Ed25519  as Ed25519
 import qualified Data.ByteString        as BS
 import           Data.List.NonEmpty     (NonEmpty)
 import           Data.Word
+import qualified Data.Map.Strict        as M
 import           System.Exit
 
 import           Network.SSH.Algorithms
@@ -20,10 +21,8 @@ data Config identity = Config {
     , keyExchangeAlgorithms         :: NonEmpty KeyExchangeAlgorithm
     , encryptionAlgorithms          :: NonEmpty EncryptionAlgorithm
     , onAuthRequest                 :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
-    , onShellRequest                :: forall stdin stdout stderr. (DuplexStream stdin, DuplexStream stdout, DuplexStream stderr)
-                                    => Maybe (identity -> stdin -> stdout -> stderr -> IO ExitCode)
-    , onExecRequest                 :: forall stdin stdout stderr. (DuplexStream stdin, DuplexStream stdout, DuplexStream stderr)
-                                    => Maybe (identity -> stdin -> stdout -> stderr -> Command -> IO ExitCode)
+    , onShellRequest                :: Maybe (Session identity -> IO ExitCode)
+    , onExecRequest                 :: Maybe (Session identity -> Command -> IO ExitCode)
     , onSend                        :: Message -> IO ()
     , onReceive                     :: Message -> IO ()
     , onDisconnect                  :: Either SomeException Disconnect -> IO ()
@@ -32,6 +31,15 @@ data Config identity = Config {
     , channelMaxPacketSize          :: Word32
     , maxTimeBeforeRekey            :: Word64
     , maxDataBeforeRekey            :: Word64
+    }
+
+data Session identity
+  = forall stdin stdout stderr. (InputStream stdin, OutputStream stdout, OutputStream stderr) => Session
+    { identity    :: identity
+    , environment :: M.Map BS.ByteString BS.ByteString
+    , stdin       :: stdin
+    , stdout      :: stdout
+    , stderr      :: stderr
     }
 
 newDefaultConfig :: IO (Config identity)

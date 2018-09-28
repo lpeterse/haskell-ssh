@@ -38,21 +38,19 @@ data Connection identity
     = Connection
     { connConfig       :: Config identity
     , connIdentity     :: identity
-    , connChannels     :: TVar (M.Map ChannelId (Channel identity))
+    , connChannels     :: TVar (M.Map ChannelId Channel)
     , connSend         :: Message -> IO ()
     , connClose        :: STM ()
     , connClosed       :: STM Bool
     }
 
-data Channel identity
+data Channel
     = Channel
-    { chanConnection          :: Connection identity
-    , chanApplication         :: ChannelApplication
-    , chanIdLocal             :: ChannelId
+    { chanApplication         :: ChannelApplication
     , chanIdRemote            :: ChannelId
     , chanMaxPacketSizeRemote :: Word32
-    , chanWindowSizeLocal     :: TVar Word32
-    , chanWindowSizeRemote    :: TVar Word32
+    --, chanWindowSizeLocal     :: TVar Word32
+    --, chanWindowSizeRemote    :: TVar Word32
     , chanStdin               :: Q.TStreamingQueue
     , chanStdout              :: Q.TStreamingQueue
     , chanStderr              :: Q.TStreamingQueue
@@ -65,10 +63,10 @@ data Channel identity
     }
 
 data ChannelApplication
-    = ChannelApplicationSession Session
+    = ChannelApplicationSession SessionState
 
-data Session
-    = Session
+data SessionState
+    = SessionState
     { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
     , sessPtySettings :: TVar (Maybe PtySettings)
     , sessThread      :: TVar (Maybe ThreadId)
@@ -103,7 +101,7 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
                 pty          <- newTVar Nothing
                 thread       <- newTVar Nothing
                 confirmation <- openApplicationChannel localChannelId $
-                    ChannelApplicationSession Session
+                    ChannelApplicationSession SessionState
                         { sessEnvironment = env
                         , sessPtySettings = pty
                         , sessThread      = thread
@@ -142,13 +140,11 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
             closeReceived <- newTVar False
             closed        <- newTVar False
             let channel = Channel {
-                    chanConnection          = connection
-                  , chanApplication         = application
-                  , chanIdLocal             = localChannelId
+                    chanApplication         = application
                   , chanIdRemote            = remoteChannelId
                   , chanMaxPacketSizeRemote = maxPacketSize
-                  , chanWindowSizeLocal     = wsLocal
-                  , chanWindowSizeRemote    = wsRemote
+                  --, chanWindowSizeLocal     = wsLocal
+                  --, chanWindowSizeRemote    = wsRemote
                   , chanStdin               = stdin
                   , chanStdout              = stdout
                   , chanStderr              = stderr
@@ -206,25 +202,25 @@ connectionChannelRequest :: forall identity. Connection identity -> ChannelReque
 connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat) = join $ atomically $ do
     channel <- getChannelSTM connection channelId
     case chanApplication channel of
-        ChannelApplicationSession session -> case typ of
+        ChannelApplicationSession sessionState -> case typ of
             "env" -> interpret $ \(ChannelRequestEnv name value) -> do
-                env <- readTVar (sessEnvironment session)
-                writeTVar (sessEnvironment session) $! M.insert name value env
+                env <- readTVar (sessEnvironment sessionState)
+                writeTVar (sessEnvironment sessionState) $! M.insert name value env
                 pure $ success channel
             "pty-req" -> interpret $ \(ChannelRequestPty settings) -> do
-                writeTVar (sessPtySettings session) (Just settings)
+                writeTVar (sessPtySettings sessionState) (Just settings)
                 pure $ success channel
             "shell" -> interpret $ \ChannelRequestShell ->
                 case onShellRequest (connConfig connection) of
                     Nothing-> pure $ failure channel
                     Just exec -> pure $ do
-                        sessionExec channel session $ exec (connIdentity connection)
+                        sessionExec channel sessionState exec
                         success channel
             "exec" -> interpret $ \(ChannelRequestExec command) ->
                 case onExecRequest (connConfig connection) of
                     Nothing-> pure $ failure channel
                     Just exec -> pure $ do
-                        sessionExec channel session $ \s0 s1 s2-> exec (connIdentity connection) s0 s1 s2 command
+                        sessionExec channel sessionState $ flip exec command
                         success channel
             -- "signal" ->
             -- "exit-status" ->
@@ -233,7 +229,7 @@ connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat)
             _ -> pure $ failure channel
     where
         exception e     = throwSTM $ Disconnect DisconnectProtocolError e mempty
-        interpret f     = fromMaybe (exception "invalid channel request") (f <$> runGet get dat)
+        interpret f     = maybe (exception "invalid channel request") f (runGet get dat)
         success channel
             | wantReply = pure $ Just $ Right $ ChannelSuccess (chanIdRemote channel)
             | otherwise = pure Nothing
@@ -241,21 +237,21 @@ connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat)
             | wantReply = pure $ Just $ Left  $ ChannelFailure (chanIdRemote channel)
             | otherwise = pure Nothing
 
-        sessionExec :: Channel identity -> Session
-                    -> (Q.TStreamingQueue -> Q.TStreamingQueue -> Q.TStreamingQueue -> IO ExitCode) -> IO () 
-        sessionExec channel session handler =
+        sessionExec :: Channel -> SessionState -> (Session identity -> IO ExitCode) -> IO ()
+        sessionExec channel sessState handle = do
+            session <- Session (connIdentity connection)
+                <$> readTVarIO (sessEnvironment sessState)
+                <*> pure (chanStdin channel)
+                <*> pure (chanStdout channel)
+                <*> pure (chanStderr channel)
             -- Two threads are forked: a worker thread running as Async and a dangling
             -- supervisor thread.
             -- -> The worker thread does never outlive the supervisor thread (`withAsync`).
             -- -> The supervisor thread terminates itself when either the worker thread
             --    has terminated (`waitExit`) or if the channel/connection has been closed
             --    (`waitClose`).
-            void $ forkIO $ Async.withAsync work supervise
+            void $ forkIO $ Async.withAsync (handle session) supervise
             where
-                -- The worker thread is the user supplied action from the configuration.
-                work :: IO ExitCode
-                work = handler (chanStdin channel) (chanStdout channel) (chanStderr channel)
-
                 -- The supervisor thread waits for several event sources simultaneously,
                 -- handles them and loops until the session thread has terminated and exit
                 -- has been signaled or the channel/connection got closed.
@@ -303,7 +299,7 @@ connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat)
                     increaseBy <- Q.fillWindowSpace (chanStdin channel)
                     pure [MsgChannelWindowAdjust $ ChannelWindowAdjust (chanIdRemote channel) increaseBy]
 
-getChannelSTM :: Connection identity -> ChannelId -> STM (Channel identity)
+getChannelSTM :: Connection identity -> ChannelId -> STM Channel
 getChannelSTM connection channelId = do
     channels <- readTVar (connChannels connection)
     case M.lookup channelId channels of

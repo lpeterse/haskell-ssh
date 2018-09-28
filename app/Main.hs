@@ -71,15 +71,8 @@ main = do
                 void $ forkIO $ serveStream `finally` S.close stream
                 atomically $ check =<< readTVar ownershipTransferred
 
-runExec
-    :: (InputStream stdin, OutputStream stdout)
-    => identity
-    -> stdin
-    -> stdout
-    -> stderr
-    -> command
-    -> IO ExitCode
-runExec _identity stdin stdout _stderr _command = withAsync receiver $ const $ do
+runExec :: Server.Session identity -> BS.ByteString -> IO ExitCode
+runExec (Server.Session identity env stdin stdout stderr) _command = withAsync receiver $ const $ do
     forM_ [1 ..] $ \i -> do
         void $ sendAll stdout
             (BS.pack (map (fromIntegral . fromEnum) (show (i :: Int))) `mappend` "\n" :: BS.ByteString)

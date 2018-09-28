@@ -178,16 +178,17 @@ connectionChannelRequest01 = testCase "request for non-existing channel" $ do
     assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
     assertThrows "exp0" exp0 $ connectionChannelRequest conn req
     where
-        lid = ChannelId 0
+        lid0 = ChannelId 0
+        lid1 = ChannelId 1
         rid = ChannelId 23
         lws = 100
         lps = 200
         rws = 123
         rps = 456
         opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "env" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        exp0 = Disconnect DisconnectProtocolError "invalid channel request" mempty
+        req = ChannelRequest lid1 "env" True mempty
+        msg0 = Right (ChannelOpenConfirmation rid lid0 lws lps)
+        exp0 = Disconnect DisconnectProtocolError "invalid channel id" mempty
 
 connectionChannelRequest02 :: TestTree
 connectionChannelRequest02 = testCase "unknown request" $ do
@@ -287,7 +288,7 @@ connectionChannelRequestShell02 = testCase "with handler exit(0)" $ withTimeout 
     let sender msg = atomically $ writeTChan msgs msg
     let receiver   = atomically $ readTChan msgs
     conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () sender) connectionClose $ \conn -> do
+    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } idnt sender) connectionClose $ \conn -> do
         assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
         assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
         assertEqual "msg2" msg2 =<< receiver
@@ -307,7 +308,10 @@ connectionChannelRequestShell02 = testCase "with handler exit(0)" $ withTimeout 
         msg2 = MsgChannelEof (ChannelEof rid)
         msg3 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
         msg4 = MsgChannelClose (ChannelClose rid)
-        handler _ _ _ _ = pure ExitSuccess
+        idnt = "identity"
+        handler (Session i _ _ _ _) 
+            | i == idnt = pure ExitSuccess
+            | otherwise = pure (ExitFailure 1)
 
 connectionChannelRequestShell03 :: TestTree
 connectionChannelRequestShell03 = testCase "with handler exit(0) after writing to stdout" $ withTimeout $ do
@@ -338,8 +342,8 @@ connectionChannelRequestShell03 = testCase "with handler exit(0) after writing t
         msg3 = MsgChannelEof (ChannelEof rid)
         msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
         msg5 = MsgChannelClose (ChannelClose rid)
-        handler identity stdin stdout stderr = do
-            sendAll stdout "ABCDEF"            
+        handler (Session identity env stdin stdout stderr) = do
+            sendAll stdout "ABCDEF"
             pure ExitSuccess
 
 connectionChannelRequestShell04 :: TestTree
@@ -372,7 +376,7 @@ connectionChannelRequestShell04 = testCase "with handler exit(1) after echoing s
         msg3 = MsgChannelEof (ChannelEof rid)
         msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\SOH")
         msg5 = MsgChannelClose (ChannelClose rid)
-        handler identity stdin stdout stderr = do
+        handler (Session identity env stdin stdout stderr) = do
             receive stdin 1024 >>= sendAll stdout
             pure (ExitFailure 1)
 
@@ -406,7 +410,7 @@ connectionChannelRequestShell05 = testCase "with handler exit(1) after echoing s
         msg3 = MsgChannelEof (ChannelEof rid)
         msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\SOH")
         msg5 = MsgChannelClose (ChannelClose rid)
-        handler _ stdin _ stderr = do
+        handler (Session _ _ stdin _ stderr) = do
             receive stdin 1024 >>= sendAll stderr >> pure ()
             pure (ExitFailure 1)
 
@@ -436,7 +440,7 @@ connectionChannelRequestShell06 = testCase "with handler throwing exception" $ w
         msg2 = MsgChannelEof (ChannelEof rid)
         msg3 = MsgChannelRequest (ChannelRequest rid "exit-signal" False "\NUL\NUL\NUL\ETXILL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL")
         msg4 = MsgChannelClose (ChannelClose rid)
-        handler _ _ _ _ = error "nasty handler"
+        handler _ = error "nasty handler"
 
 connectionChannelRequestShell07 :: TestTree
 connectionChannelRequestShell07 = testCase "with handler running while close by client" $ withTimeout $ do
@@ -458,10 +462,10 @@ connectionChannelRequestShell07 = testCase "with handler running while close by 
         opn = ChannelOpen (ChannelType "session") rid rws rps
         cls = ChannelClose lid
         req = ChannelRequest lid "shell" True mempty
-        handler _ _ _ _ = threadDelay 10000000 >> pure ExitSuccess
         msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
         msg1 = Just (Right (ChannelSuccess rid))
         msg2 = Just (ChannelClose rid)
+        handler _ = threadDelay 10000000 >> pure ExitSuccess
 
 connectionChannelRequestShell08 :: TestTree
 connectionChannelRequestShell08 = testCase "with handler and inbound flow control" $ withTimeout $ do
@@ -469,7 +473,7 @@ connectionChannelRequestShell08 = testCase "with handler and inbound flow contro
     tmvar0 <- newEmptyTMVarIO
     tmvar1 <- newEmptyTMVarIO
     tmvar2 <- newEmptyTMVarIO
-    let handler _ stdin _ _= do
+    let handler (Session _ _ stdin _ _) = do
             atomically $ takeTMVar tmvar0
             atomically . putTMVar tmvar1 =<< receive stdin 1
             atomically $ takeTMVar tmvar0
@@ -510,7 +514,7 @@ connectionChannelRequestShell09 = testCase "with handler and outbound flow contr
     tmvar0 <- newEmptyTMVarIO
     tmvar1 <- newEmptyTMVarIO
     tmvar2 <- newEmptyTMVarIO
-    let handler _ _ stdout _= do
+    let handler (Session _ _ _ stdout _) = do
             i <- send stdout "1234567890"
             atomically $ putTMVar tmvar0 i
             j <- send stdout "ABCD"
