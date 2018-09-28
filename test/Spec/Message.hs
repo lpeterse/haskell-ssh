@@ -25,39 +25,46 @@ tests = testGroup "Network.SSH.Message"
 
 testParserIdentity :: TestTree
 testParserIdentity = testGroup "put . get == id"
-    [ QC.testProperty ":: Disconnect"               (parserIdentity :: Disconnect               -> Property)
-    , QC.testProperty ":: DisconnectReason"         (parserIdentity :: DisconnectReason         -> Property)
-    , QC.testProperty ":: Ignore"                   (parserIdentity :: Ignore                   -> Property)
-    , QC.testProperty ":: Unimplemented"            (parserIdentity :: Unimplemented            -> Property)
-    , QC.testProperty ":: Debug"                    (parserIdentity :: Debug                    -> Property)
-    , QC.testProperty ":: ServiceRequest"           (parserIdentity :: ServiceRequest           -> Property)
-    , QC.testProperty ":: ServiceAccept"            (parserIdentity :: ServiceAccept            -> Property)
-    , QC.testProperty ":: KexInit"                  (parserIdentity :: KexInit                  -> Property)
-    , QC.testProperty ":: KexNewKeys"               (parserIdentity :: KexNewKeys               -> Property)
-    , QC.testProperty ":: KexEcdhInit"              (parserIdentity :: KexEcdhInit              -> Property)
-    , QC.testProperty ":: KexEcdhReply"             (parserIdentity :: KexEcdhReply             -> Property)
-    , QC.testProperty ":: UserAuthRequest"          (parserIdentity :: UserAuthRequest          -> Property)
-    , QC.testProperty ":: UserAuthFailure"          (parserIdentity :: UserAuthFailure          -> Property)
-    , QC.testProperty ":: UserAuthSuccess"          (parserIdentity :: UserAuthSuccess          -> Property)
-    , QC.testProperty ":: UserAuthBanner"           (parserIdentity :: UserAuthBanner           -> Property)
-    , QC.testProperty ":: UserAuthPublicKeyOk"      (parserIdentity :: UserAuthPublicKeyOk      -> Property)
-    , QC.testProperty ":: ChannelOpen"              (parserIdentity :: ChannelOpen              -> Property)
-    , QC.testProperty ":: ChannelOpenConfirmation"  (parserIdentity :: ChannelOpenConfirmation  -> Property)
-    , QC.testProperty ":: ChannelOpenFailure"       (parserIdentity :: ChannelOpenFailure       -> Property)
-    , QC.testProperty ":: ChannelOpenFailureReason" (parserIdentity :: ChannelOpenFailureReason -> Property)
-    , QC.testProperty ":: ChannelWindowAdjust"      (parserIdentity :: ChannelWindowAdjust      -> Property)
-    , QC.testProperty ":: ChannelData"              (parserIdentity :: ChannelData              -> Property)
-    , QC.testProperty ":: ChannelExtendedData"      (parserIdentity :: ChannelExtendedData      -> Property)
-    , QC.testProperty ":: ChannelEof"               (parserIdentity :: ChannelEof               -> Property)
-    , QC.testProperty ":: ChannelClose"             (parserIdentity :: ChannelClose             -> Property)
-    , QC.testProperty ":: ChannelRequest"           (parserIdentity :: ChannelRequest           -> Property)
-    , QC.testProperty ":: ChannelRequestSession"    (parserIdentity :: ChannelRequestSession    -> Property)
-    , QC.testProperty ":: ChannelSuccess"           (parserIdentity :: ChannelSuccess           -> Property)
-    , QC.testProperty ":: ChannelFailure"           (parserIdentity :: ChannelFailure           -> Property)
-    , QC.testProperty ":: Version"                  (parserIdentity :: Version                  -> Property)
-    , QC.testProperty ":: PublicKey"                (parserIdentity :: PublicKey                -> Property)
-    , QC.testProperty ":: Signature"                (parserIdentity :: Signature                -> Property)
-    , QC.testProperty ":: Message"                  (parserIdentity :: Message                  -> Property)
+    [ QC.testProperty ":: Disconnect"                 (parserIdentity :: Disconnect                 -> Property)
+    , QC.testProperty ":: DisconnectReason"           (parserIdentity :: DisconnectReason           -> Property)
+    , QC.testProperty ":: Ignore"                     (parserIdentity :: Ignore                     -> Property)
+    , QC.testProperty ":: Unimplemented"              (parserIdentity :: Unimplemented              -> Property)
+    , QC.testProperty ":: Debug"                      (parserIdentity :: Debug                      -> Property)
+    , QC.testProperty ":: ServiceRequest"             (parserIdentity :: ServiceRequest             -> Property)
+    , QC.testProperty ":: ServiceAccept"              (parserIdentity :: ServiceAccept              -> Property)
+    , QC.testProperty ":: KexInit"                    (parserIdentity :: KexInit                    -> Property)
+    , QC.testProperty ":: KexNewKeys"                 (parserIdentity :: KexNewKeys                 -> Property)
+    , QC.testProperty ":: KexEcdhInit"                (parserIdentity :: KexEcdhInit                -> Property)
+    , QC.testProperty ":: KexEcdhReply"               (parserIdentity :: KexEcdhReply               -> Property)
+    , QC.testProperty ":: UserAuthRequest"            (parserIdentity :: UserAuthRequest            -> Property)
+    , QC.testProperty ":: UserAuthFailure"            (parserIdentity :: UserAuthFailure            -> Property)
+    , QC.testProperty ":: UserAuthSuccess"            (parserIdentity :: UserAuthSuccess            -> Property)
+    , QC.testProperty ":: UserAuthBanner"             (parserIdentity :: UserAuthBanner             -> Property)
+    , QC.testProperty ":: UserAuthPublicKeyOk"        (parserIdentity :: UserAuthPublicKeyOk        -> Property)
+    , QC.testProperty ":: ChannelOpen"                (parserIdentity :: ChannelOpen                -> Property)
+    , QC.testProperty ":: ChannelOpenConfirmation"    (parserIdentity :: ChannelOpenConfirmation    -> Property)
+    , QC.testProperty ":: ChannelOpenFailure"         (parserIdentity :: ChannelOpenFailure         -> Property)
+    , QC.testProperty ":: ChannelOpenFailureReason"   (parserIdentity :: ChannelOpenFailureReason   -> Property)
+    , QC.testProperty ":: ChannelWindowAdjust"        (parserIdentity :: ChannelWindowAdjust        -> Property)
+    , QC.testProperty ":: ChannelData"                (parserIdentity :: ChannelData                -> Property)
+    , QC.testProperty ":: ChannelExtendedData"        (parserIdentity :: ChannelExtendedData        -> Property)
+    , QC.testProperty ":: ChannelEof"                 (parserIdentity :: ChannelEof                 -> Property)
+    , QC.testProperty ":: ChannelClose"               (parserIdentity :: ChannelClose               -> Property)
+    , QC.testProperty ":: ChannelRequest"             (parserIdentity :: ChannelRequest             -> Property)
+    , QC.testProperty ":: ChannelRequestEnv"          (parserIdentity :: ChannelRequestEnv          -> Property)
+    , QC.testProperty ":: ChannelRequestPty"          (parserIdentity :: ChannelRequestPty          -> Property)
+    , QC.testProperty ":: ChannelRequestWindowChange" (parserIdentity :: ChannelRequestWindowChange -> Property)
+    , QC.testProperty ":: ChannelRequestShell"        (parserIdentity :: ChannelRequestShell        -> Property)
+    , QC.testProperty ":: ChannelRequestExec"         (parserIdentity :: ChannelRequestExec         -> Property)
+    , QC.testProperty ":: ChannelRequestSignal"       (parserIdentity :: ChannelRequestSignal       -> Property)
+    , QC.testProperty ":: ChannelRequestExitSignal"   (parserIdentity :: ChannelRequestExitSignal   -> Property)
+    , QC.testProperty ":: ChannelRequestExitStatus"   (parserIdentity :: ChannelRequestExitStatus   -> Property)
+    , QC.testProperty ":: ChannelSuccess"             (parserIdentity :: ChannelSuccess             -> Property)
+    , QC.testProperty ":: ChannelFailure"             (parserIdentity :: ChannelFailure             -> Property)
+    , QC.testProperty ":: Version"                    (parserIdentity :: Version                    -> Property)
+    , QC.testProperty ":: PublicKey"                  (parserIdentity :: PublicKey                  -> Property)
+    , QC.testProperty ":: Signature"                  (parserIdentity :: Signature                  -> Property)
+    , QC.testProperty ":: Message"                    (parserIdentity :: Message                    -> Property)
     ]
     where
         parserIdentity :: (Encoding a, Eq a, Show a) => a -> Property
@@ -65,39 +72,46 @@ testParserIdentity = testGroup "put . get == id"
 
 testLengthProperty :: TestTree
 testLengthProperty = testGroup "length (put x) == len x"
-    [ QC.testProperty ":: Disconnect"               (lengthProperty :: Disconnect               -> Property)
-    , QC.testProperty ":: DisconnectReason"         (lengthProperty :: DisconnectReason         -> Property)
-    , QC.testProperty ":: Ignore"                   (lengthProperty :: Ignore                   -> Property)
-    , QC.testProperty ":: Unimplemented"            (lengthProperty :: Unimplemented            -> Property)
-    , QC.testProperty ":: Debug"                    (lengthProperty :: Debug                    -> Property)
-    , QC.testProperty ":: ServiceRequest"           (lengthProperty :: ServiceRequest           -> Property)
-    , QC.testProperty ":: ServiceAccept"            (lengthProperty :: ServiceAccept            -> Property)
-    , QC.testProperty ":: KexInit"                  (lengthProperty :: KexInit                  -> Property)
-    , QC.testProperty ":: KexNewKeys"               (lengthProperty :: KexNewKeys               -> Property)
-    , QC.testProperty ":: KexEcdhInit"              (lengthProperty :: KexEcdhInit              -> Property)
-    , QC.testProperty ":: KexEcdhReply"             (lengthProperty :: KexEcdhReply             -> Property)
-    , QC.testProperty ":: UserAuthRequest"          (lengthProperty :: UserAuthRequest          -> Property)
-    , QC.testProperty ":: UserAuthFailure"          (lengthProperty :: UserAuthFailure          -> Property)
-    , QC.testProperty ":: UserAuthSuccess"          (lengthProperty :: UserAuthSuccess          -> Property)
-    , QC.testProperty ":: UserAuthBanner"           (lengthProperty :: UserAuthBanner           -> Property)
-    , QC.testProperty ":: UserAuthPublicKeyOk"      (lengthProperty :: UserAuthPublicKeyOk      -> Property)
-    , QC.testProperty ":: ChannelOpen"              (lengthProperty :: ChannelOpen              -> Property)
-    , QC.testProperty ":: ChannelOpenConfirmation"  (lengthProperty :: ChannelOpenConfirmation  -> Property)
-    , QC.testProperty ":: ChannelOpenFailure"       (lengthProperty :: ChannelOpenFailure       -> Property)
-    , QC.testProperty ":: ChannelOpenFailureReason" (lengthProperty :: ChannelOpenFailureReason -> Property)
-    , QC.testProperty ":: ChannelWindowAdjust"      (lengthProperty :: ChannelWindowAdjust      -> Property)
-    , QC.testProperty ":: ChannelData"              (lengthProperty :: ChannelData              -> Property)
-    , QC.testProperty ":: ChannelExtendedData"      (lengthProperty :: ChannelExtendedData      -> Property)
-    , QC.testProperty ":: ChannelEof"               (lengthProperty :: ChannelEof               -> Property)
-    , QC.testProperty ":: ChannelClose"             (lengthProperty :: ChannelClose             -> Property)
-    , QC.testProperty ":: ChannelRequest"           (lengthProperty :: ChannelRequest           -> Property)
-    , QC.testProperty ":: ChannelRequestSession"    (lengthProperty :: ChannelRequestSession    -> Property)
-    , QC.testProperty ":: ChannelSuccess"           (lengthProperty :: ChannelSuccess           -> Property)
-    , QC.testProperty ":: ChannelFailure"           (lengthProperty :: ChannelFailure           -> Property)
-    , QC.testProperty ":: Version"                  (lengthProperty :: Version                  -> Property)
-    , QC.testProperty ":: PublicKey"                (lengthProperty :: PublicKey                -> Property)
-    , QC.testProperty ":: Signature"                (lengthProperty :: Signature                -> Property)
-    , QC.testProperty ":: Message"                  (lengthProperty :: Message                  -> Property)
+    [ QC.testProperty ":: Disconnect"                 (lengthProperty :: Disconnect                 -> Property)
+    , QC.testProperty ":: DisconnectReason"           (lengthProperty :: DisconnectReason           -> Property)
+    , QC.testProperty ":: Ignore"                     (lengthProperty :: Ignore                     -> Property)
+    , QC.testProperty ":: Unimplemented"              (lengthProperty :: Unimplemented              -> Property)
+    , QC.testProperty ":: Debug"                      (lengthProperty :: Debug                      -> Property)
+    , QC.testProperty ":: ServiceRequest"             (lengthProperty :: ServiceRequest             -> Property)
+    , QC.testProperty ":: ServiceAccept"              (lengthProperty :: ServiceAccept              -> Property)
+    , QC.testProperty ":: KexInit"                    (lengthProperty :: KexInit                    -> Property)
+    , QC.testProperty ":: KexNewKeys"                 (lengthProperty :: KexNewKeys                 -> Property)
+    , QC.testProperty ":: KexEcdhInit"                (lengthProperty :: KexEcdhInit                -> Property)
+    , QC.testProperty ":: KexEcdhReply"               (lengthProperty :: KexEcdhReply               -> Property)
+    , QC.testProperty ":: UserAuthRequest"            (lengthProperty :: UserAuthRequest            -> Property)
+    , QC.testProperty ":: UserAuthFailure"            (lengthProperty :: UserAuthFailure            -> Property)
+    , QC.testProperty ":: UserAuthSuccess"            (lengthProperty :: UserAuthSuccess            -> Property)
+    , QC.testProperty ":: UserAuthBanner"             (lengthProperty :: UserAuthBanner             -> Property)
+    , QC.testProperty ":: UserAuthPublicKeyOk"        (lengthProperty :: UserAuthPublicKeyOk        -> Property)
+    , QC.testProperty ":: ChannelOpen"                (lengthProperty :: ChannelOpen                -> Property)
+    , QC.testProperty ":: ChannelOpenConfirmation"    (lengthProperty :: ChannelOpenConfirmation    -> Property)
+    , QC.testProperty ":: ChannelOpenFailure"         (lengthProperty :: ChannelOpenFailure         -> Property)
+    , QC.testProperty ":: ChannelOpenFailureReason"   (lengthProperty :: ChannelOpenFailureReason   -> Property)
+    , QC.testProperty ":: ChannelWindowAdjust"        (lengthProperty :: ChannelWindowAdjust        -> Property)
+    , QC.testProperty ":: ChannelData"                (lengthProperty :: ChannelData                -> Property)
+    , QC.testProperty ":: ChannelExtendedData"        (lengthProperty :: ChannelExtendedData        -> Property)
+    , QC.testProperty ":: ChannelEof"                 (lengthProperty :: ChannelEof                 -> Property)
+    , QC.testProperty ":: ChannelClose"               (lengthProperty :: ChannelClose               -> Property)
+    , QC.testProperty ":: ChannelRequest"             (lengthProperty :: ChannelRequest             -> Property)
+    , QC.testProperty ":: ChannelRequestEnv"          (lengthProperty :: ChannelRequestEnv          -> Property)
+    , QC.testProperty ":: ChannelRequestPty"          (lengthProperty :: ChannelRequestPty          -> Property)
+    , QC.testProperty ":: ChannelRequestWindowChange" (lengthProperty :: ChannelRequestWindowChange -> Property)
+    , QC.testProperty ":: ChannelRequestShell"        (lengthProperty :: ChannelRequestShell        -> Property)
+    , QC.testProperty ":: ChannelRequestExec"         (lengthProperty :: ChannelRequestExec         -> Property)
+    , QC.testProperty ":: ChannelRequestSignal"       (lengthProperty :: ChannelRequestSignal       -> Property)
+    , QC.testProperty ":: ChannelRequestExitSignal"   (lengthProperty :: ChannelRequestExitSignal   -> Property)
+    , QC.testProperty ":: ChannelRequestExitStatus"   (lengthProperty :: ChannelRequestExitStatus   -> Property)
+    , QC.testProperty ":: ChannelSuccess"             (lengthProperty :: ChannelSuccess             -> Property)
+    , QC.testProperty ":: ChannelFailure"             (lengthProperty :: ChannelFailure             -> Property)
+    , QC.testProperty ":: Version"                    (lengthProperty :: Version                    -> Property)
+    , QC.testProperty ":: PublicKey"                  (lengthProperty :: PublicKey                  -> Property)
+    , QC.testProperty ":: Signature"                  (lengthProperty :: Signature                  -> Property)
+    , QC.testProperty ":: Message"                    (lengthProperty :: Message                    -> Property)
     ]
     where
         lengthProperty :: (Encoding a, Eq a, Show a) => a -> Property
@@ -240,16 +254,31 @@ instance Arbitrary ChannelClose where
     arbitrary = ChannelClose <$> arbitrary
 
 instance Arbitrary ChannelRequest where
-    arbitrary = ChannelRequest <$> arbitrary <*> arbitrary
+    arbitrary = ChannelRequest <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
-instance Arbitrary ChannelRequestSession where
-    arbitrary = oneof
-        [ ChannelRequestPty        <$> arbitrary <*> arbitrary
-        , ChannelRequestShell      <$> arbitrary
-        , ChannelRequestExitStatus <$> (arbitrary >>= \i-> pure $ if i == 0 then ExitSuccess else ExitFailure (abs i))
-        , ChannelRequestExitSignal <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-        , ChannelRequestOther      <$> arbitrary <*> arbitrary
-        ]
+instance Arbitrary ChannelRequestEnv where
+    arbitrary = ChannelRequestEnv <$> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelRequestPty where
+    arbitrary = ChannelRequestPty <$> arbitrary
+
+instance Arbitrary ChannelRequestWindowChange where
+    arbitrary = ChannelRequestWindowChange <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelRequestShell where
+    arbitrary = pure ChannelRequestShell
+
+instance Arbitrary ChannelRequestExec where
+    arbitrary = ChannelRequestExec <$> arbitrary
+
+instance Arbitrary ChannelRequestSignal where
+    arbitrary = ChannelRequestSignal <$> arbitrary
+
+instance Arbitrary ChannelRequestExitStatus where
+    arbitrary = ChannelRequestExitStatus <$> (arbitrary >>= \i-> pure $ if i == 0 then ExitSuccess else ExitFailure (abs i))
+
+instance Arbitrary ChannelRequestExitSignal where
+    arbitrary = ChannelRequestExitSignal <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary ChannelSuccess where
     arbitrary = ChannelSuccess <$> arbitrary

@@ -57,7 +57,14 @@ module Network.SSH.Message
   , ChannelClose (..)
     -- ** ChannelRequest (98)
   , ChannelRequest (..)
-  , ChannelRequestSession (..)
+  , ChannelRequestEnv (..)
+  , ChannelRequestPty (..)
+  , ChannelRequestWindowChange (..)
+  , ChannelRequestShell (..)
+  , ChannelRequestExec (..)
+  , ChannelRequestSignal (..)
+  , ChannelRequestExitStatus (..)
+  , ChannelRequestExitSignal (..)
     -- ** ChannelSuccess (99)
   , ChannelSuccess (..)
     -- ** ChannelFailure (100)
@@ -279,40 +286,58 @@ data ChannelClose
     deriving (Eq, Show)
 
 data ChannelRequest
-    = ChannelRequest ChannelId BS.ByteString
+    = ChannelRequest
+    { crChannel       :: ChannelId
+    , crType          :: BS.ByteString
+    , crWantReply     :: Bool
+    , crData          :: BS.ByteString
+    } deriving (Eq, Show)
+
+data ChannelRequestEnv
+    = ChannelRequestEnv
+    { crVariableName  :: BS.ByteString
+    , crVariableValue :: BS.ByteString
+    } deriving (Eq, Show)
+
+data ChannelRequestPty
+    = ChannelRequestPty
+    { crPtySettings   :: PtySettings
+    } deriving (Eq, Show)
+
+data ChannelRequestWindowChange
+    = ChannelRequestWindowChange
+    { crWidth         :: Word32
+    , crHeight        :: Word32
+    , crWidthPixels   :: Word32
+    , crHeightPixels  :: Word32
+    } deriving (Eq, Show)
+
+data ChannelRequestShell
+    = ChannelRequestShell
     deriving (Eq, Show)
 
-data ChannelRequestSession
-    = ChannelRequestPty
-        { crWantReply   :: Bool
-        , crPtySettings :: PtySettings
-        }
-    | ChannelRequestShell
-        { crWantReply     :: Bool
-        }
-    | ChannelRequestExec
-        { crWantReply :: Bool
-        , crCommand   :: BS.ByteString
-        }
-    | ChannelRequestExitStatus
-        { crExitStatus    :: ExitCode
-        }
-    | ChannelRequestExitSignal
-        { crSignalName   :: BS.ByteString
-        , crCodeDumped   :: Bool
-        , crErrorMessage :: BS.ByteString
-        , crLanguageTag  :: BS.ByteString
-        }
-    | ChannelRequestEnv
-        { crWantReply     :: Bool
-        , crVariableName  :: BS.ByteString
-        , crVariableValue :: BS.ByteString
-        }
-    | ChannelRequestOther
-        { crOther     :: BS.ByteString
-        , crWantReply :: Bool
-        }
-    deriving (Eq, Show)
+data ChannelRequestExec
+    = ChannelRequestExec
+    { crCommand       :: BS.ByteString
+    } deriving (Eq, Show)
+
+data ChannelRequestSignal
+    = ChannelRequestSignal
+    { crSignal        :: BS.ByteString
+    } deriving (Eq, Show)
+
+data ChannelRequestExitStatus
+    = ChannelRequestExitStatus
+    { crExitStatus    :: ExitCode
+    } deriving (Eq, Show)
+
+data ChannelRequestExitSignal
+    = ChannelRequestExitSignal
+    { crSignalName    :: BS.ByteString
+    , crCodeDumped    :: Bool
+    , crErrorMessage  :: BS.ByteString
+    , crLanguageTag   :: BS.ByteString
+    } deriving (Eq, Show)
 
 data ChannelSuccess
     = ChannelSuccess ChannelId
@@ -710,58 +735,49 @@ instance Encoding ChannelClose where
     get = expectWord8 97 >> ChannelClose <$> get
 
 instance Encoding ChannelRequest where
-    len (ChannelRequest cid req) = lenWord8 + len cid + lenByteString req
-    put (ChannelRequest cid req) = putWord8 98 >> put cid >> putByteString req
-    get = expectWord8 98 >> ChannelRequest <$> get <*> getRemainingByteString
+    len (ChannelRequest cid typ _     dat) = lenWord8 + len cid + lenString typ + lenBool + lenByteString dat
+    put (ChannelRequest cid typ reply dat) = putWord8 98 >> put cid >> putString typ >> putBool reply >> putByteString dat
+    get = expectWord8 98 >> ChannelRequest <$> get <*> getString <*> getBool <*> getRemainingByteString
 
-instance Encoding ChannelRequestSession where
-    len = \case
-        ChannelRequestEnv _ name value ->
-            lenString ("env" :: BS.ByteString) + lenBool + lenString name + lenString value
-        ChannelRequestPty _ ts ->
-            lenString ("pty-req" :: BS.ByteString) + lenBool + len ts
-        ChannelRequestShell _ ->
-            lenString ("shell" :: BS.ByteString) + lenBool
-        ChannelRequestExec _ command ->
-            lenString ("exec" :: BS.ByteString) + lenBool + lenString command
-        ChannelRequestExitStatus _ ->
-            lenString ("exit-status" :: BS.ByteString) + lenBool + lenWord32
-        ChannelRequestExitSignal signame _ errmsg lang ->
-            lenString ("exit-signal" :: BS.ByteString) + lenBool + lenString signame +
-            lenBool + lenString errmsg + lenString lang
-        ChannelRequestOther other _ ->
-            lenString other + lenBool
-    put = \case
-        ChannelRequestEnv wantReply name value ->
-            putString ("env" :: BS.ByteString) >> putBool wantReply >> putString name >> putString value
-        ChannelRequestPty wantReply ts ->
-            putString ("pty-req" :: BS.ByteString) >> putBool wantReply >> put ts
-        ChannelRequestShell wantReply ->
-            putString ("shell" :: BS.ByteString) >> putBool wantReply
-        ChannelRequestExec wantReply command ->
-            putString ("exec" :: BS.ByteString) >> putBool wantReply >> putString command
-        ChannelRequestExitStatus status ->
-            putString ("exit-status" :: BS.ByteString) >> putBool False >> put status
-        ChannelRequestExitSignal signame coredump errmsg lang ->
-            putString ("exit-signal" :: BS.ByteString) >> putBool False >> putString signame >>
-            putBool coredump >> putString errmsg >> putString lang
-        ChannelRequestOther other wantReply ->
-            putString other >> putBool wantReply
-    get = getString >>= \case
-        "env" ->
-            ChannelRequestEnv <$> getBool <*> getString <*> getString
-        "pty-req" ->
-            ChannelRequestPty <$> getBool <*> get
-        "shell" ->
-            ChannelRequestShell <$> getBool
-        "exec" ->
-            ChannelRequestExec <$> getBool <*> getString
-        "exit-status" ->
-            getFalse >> ChannelRequestExitStatus <$> get
-        "exit-signal" ->
-            getFalse >> ChannelRequestExitSignal <$> getString <*> getBool <*> getString <*> getString
-        other ->
-            ChannelRequestOther other <$> getBool
+instance Encoding ChannelRequestEnv where
+    len (ChannelRequestEnv name value) = lenString name + lenString value
+    put (ChannelRequestEnv name value) = putString name >> putString value
+    get = ChannelRequestEnv <$> getString <*> getString
+
+instance Encoding ChannelRequestPty where
+    len (ChannelRequestPty settings) = len settings
+    put (ChannelRequestPty settings) = put settings
+    get = ChannelRequestPty <$> get
+
+instance Encoding ChannelRequestWindowChange where
+    len _ = 4 * lenWord32
+    put (ChannelRequestWindowChange x0 x1 x2 x3) = putWord32 x0 >> putWord32 x1 >> putWord32 x2 >> putWord32 x3
+    get = ChannelRequestWindowChange <$> getWord32 <*> getWord32 <*> getWord32 <*> getWord32
+
+instance Encoding ChannelRequestShell where
+    len _ = 0
+    put _ = pure ()
+    get   = pure ChannelRequestShell
+
+instance Encoding ChannelRequestExec where
+    len (ChannelRequestExec command) = lenString command
+    put (ChannelRequestExec command) = putString command
+    get = ChannelRequestExec <$> getString
+
+instance Encoding ChannelRequestSignal where
+    len (ChannelRequestSignal signame) = lenString signame
+    put (ChannelRequestSignal signame) = putString signame
+    get = ChannelRequestSignal <$> getString
+
+instance Encoding ChannelRequestExitStatus where
+    len (ChannelRequestExitStatus code) = len code
+    put (ChannelRequestExitStatus code) = put code
+    get = ChannelRequestExitStatus <$> get
+
+instance Encoding ChannelRequestExitSignal where
+    len (ChannelRequestExitSignal signame core msg lang) = lenString signame + lenBool + lenString msg + lenString lang
+    put (ChannelRequestExitSignal signame core msg lang) = putString signame >> putBool core >> putString msg >> putString lang
+    get = ChannelRequestExitSignal <$> getString <*> getBool <*> getString <*> getString
 
 instance Encoding ChannelSuccess where
     len (ChannelSuccess cid) = lenWord8 + len cid

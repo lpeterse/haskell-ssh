@@ -24,6 +24,7 @@ import           Control.Monad                (join, void, when)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM, retry)
 import qualified Data.ByteString              as BS
 import qualified Data.Map.Strict              as M
+import           Data.Maybe
 import           Data.Word
 import           System.Exit
 
@@ -69,7 +70,7 @@ data ChannelApplication
 data Session
     = Session
     { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
-    , sessTerminal    :: TVar (Maybe ())
+    , sessPtySettings :: TVar (Maybe PtySettings)
     , sessThread      :: TVar (Maybe ThreadId)
     }
 
@@ -98,14 +99,13 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
             pure $ Left $ openFailure ChannelOpenResourceShortage
         Just localChannelId -> case channelType of
             ChannelType "session" -> do
-
                 env          <- newTVar mempty
                 pty          <- newTVar Nothing
                 thread       <- newTVar Nothing
                 confirmation <- openApplicationChannel localChannelId $
                     ChannelApplicationSession Session
                         { sessEnvironment = env
-                        , sessTerminal    = pty
+                        , sessPtySettings = pty
                         , sessThread      = thread
                         }
                 pure (Right confirmation)
@@ -203,41 +203,43 @@ connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId incremen
         exception msg = throwSTM $ Disconnect DisconnectProtocolError msg mempty
 
 connectionChannelRequest :: forall identity. Connection identity -> ChannelRequest -> IO (Maybe (Either ChannelFailure ChannelSuccess))
-connectionChannelRequest connection (ChannelRequest channelId request) = join $ atomically $ do
+connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat) = join $ atomically $ do
     channel <- getChannelSTM connection channelId
     case chanApplication channel of
-        ChannelApplicationSession session -> interpretAsSessionRequest channel session request
-        -- Dispatch other channel request types here!
-    where
-        interpretAsSessionRequest :: Channel identity -> Session -> BS.ByteString -> STM (IO (Maybe (Either ChannelFailure ChannelSuccess)))
-        interpretAsSessionRequest channel session req = case runGet get req of
-            Nothing -> exception "invalid session channel request"
-            Just sessionRequest -> case sessionRequest of
-                ChannelRequestEnv wantReply name value -> do
-                    env <- readTVar (sessEnvironment session)
-                    writeTVar (sessEnvironment session) $! M.insert name value env
-                    pure $ success wantReply
-                ChannelRequestPty _wantReply _ptySettings ->
-                    exception "pty-req not yet implemented"
-                ChannelRequestShell wantReply -> case onShellRequest (connConfig connection) of
-                    Nothing-> pure $ failure wantReply
+        ChannelApplicationSession session -> case typ of
+            "env" -> interpret $ \(ChannelRequestEnv name value) -> do
+                env <- readTVar (sessEnvironment session)
+                writeTVar (sessEnvironment session) $! M.insert name value env
+                pure $ success channel
+            "pty-req" -> interpret $ \(ChannelRequestPty settings) -> do
+                writeTVar (sessPtySettings session) (Just settings)
+                pure $ success channel
+            "shell" -> interpret $ \ChannelRequestShell ->
+                case onShellRequest (connConfig connection) of
+                    Nothing-> pure $ failure channel
                     Just exec -> pure $ do
                         sessionExec channel session $ exec (connIdentity connection)
-                        success wantReply
-                ChannelRequestExec wantReply command -> case onExecRequest (connConfig connection) of
-                    Nothing-> pure $ failure wantReply
+                        success channel
+            "exec" -> interpret $ \(ChannelRequestExec command) ->
+                case onExecRequest (connConfig connection) of
+                    Nothing-> pure $ failure channel
                     Just exec -> pure $ do
                         sessionExec channel session $ \s0 s1 s2-> exec (connIdentity connection) s0 s1 s2 command
-                        success wantReply
-                ChannelRequestOther _ wantReply -> pure $ failure wantReply
-                ChannelRequestExitStatus {} -> pure $ success False
-                ChannelRequestExitSignal {} -> pure $ success False
-            where
-                success True = pure $ Just $ Right $ ChannelSuccess (chanIdRemote channel)
-                success _    = pure Nothing
-                failure True = pure $ Just $ Left  $ ChannelFailure (chanIdRemote channel)
-                failure _    = pure Nothing
-                exception  e = throwSTM $ Disconnect DisconnectProtocolError e mempty
+                        success channel
+            -- "signal" ->
+            -- "exit-status" ->
+            -- "exit-signal" ->
+            -- "window-change" ->
+            _ -> pure $ failure channel
+    where
+        exception e     = throwSTM $ Disconnect DisconnectProtocolError e mempty
+        interpret f     = fromMaybe (exception "invalid channel request") (f <$> runGet get dat)
+        success channel
+            | wantReply = pure $ Just $ Right $ ChannelSuccess (chanIdRemote channel)
+            | otherwise = pure Nothing
+        failure channel
+            | wantReply = pure $ Just $ Left  $ ChannelFailure (chanIdRemote channel)
+            | otherwise = pure Nothing
 
         sessionExec :: Channel identity -> Session
                     -> (Q.TStreamingQueue -> Q.TStreamingQueue -> Q.TStreamingQueue -> IO ExitCode) -> IO () 
@@ -275,15 +277,15 @@ connectionChannelRequest connection (ChannelRequest channelId request) = join $ 
 
                 waitExit :: Async.Async ExitCode -> STM [Message]
                 waitExit thread = do
-                    exitMsg <- Async.waitCatchSTM thread >>= \case
-                        Right c -> pure $ exitMessage $ ChannelRequestExitStatus c
-                        Left  _ -> pure $ exitMessage $ ChannelRequestExitSignal "ILL" False "" ""
+                    exitMessage <- Async.waitCatchSTM thread >>= \case
+                        Right c -> pure $ req "exit-status" $ runPut $ put $ ChannelRequestExitStatus c
+                        Left  _ -> pure $ req "exit-signal" $ runPut $ put $ ChannelRequestExitSignal "ILL" False "" ""
                     chanClose channel
-                    pure [eofMessage channel, exitMsg, closeMessage channel]
+                    pure [eofMessage, exitMessage, closeMessage]
                     where
-                        eofMessage   = MsgChannelEof . ChannelEof . chanIdRemote
-                        exitMessage  = MsgChannelRequest . ChannelRequest (chanIdRemote channel) . runPut . put
-                        closeMessage = MsgChannelClose . ChannelClose . chanIdRemote
+                        req typ      = MsgChannelRequest . ChannelRequest (chanIdRemote channel) typ False 
+                        eofMessage   = MsgChannelEof $ ChannelEof (chanIdRemote channel)
+                        closeMessage = MsgChannelClose $ ChannelClose (chanIdRemote channel)
 
                 waitStdout :: STM [Message]
                 waitStdout = do
