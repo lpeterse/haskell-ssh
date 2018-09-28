@@ -22,33 +22,25 @@ import           Test.Tasty.HUnit
 
 tests :: TestTree
 tests = testGroup "Network.SSH.Server.Service.Connection"
-    [ testCase "connectionOpen yields open connection" $ do
-        c <- connectionOpen undefined undefined undefined
-        assertBool "connection closed state" . not =<< connectionClosed c
-
-    , testCase "connectionClose closes connection" $ do
-        c <- connectionOpen undefined undefined undefined
-        connectionClose c
-        assertBool "connection closed state" =<< connectionClosed c
-    
-    , testGroup "connectionChannelOpen"
+    [ testGroup "connectionChannelOpen"
         [ connectionChannelOpen01
         , connectionChannelOpen02
         , connectionChannelOpen03
         , connectionChannelOpen04
         , connectionChannelOpen05
         ]
-
     , testGroup "connectionChannelClose"
         [ connectionChannelClose01
         , connectionChannelClose02
         , connectionChannelClose03
         ]
-    
     , testGroup "connectionChannelRequest"
         [ connectionChannelRequest01
         , connectionChannelRequest02
         , connectionChannelRequest03
+        , testGroup "env requests"
+            [ connectionChannelRequestEnv01
+            ]
         , testGroup "pty requests"
             [ connectionChannelRequestPty01
             ]
@@ -64,7 +56,6 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
             , connectionChannelRequestShell09
             ]
         ]
-
     , testGroup "connectionChannelData"
         [ connectionChannelData01
         , connectionChannelData02
@@ -304,6 +295,24 @@ connectionChannelRequest03 = testCase "accept session environment request" $ do
         req = ChannelRequest lid "env" False "\NUL\NUL\NUL\ACKLC_ALL\NUL\NUL\NUL\ven_US.UTF-8"
         msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
         msg1 = Nothing
+
+connectionChannelRequestEnv01 :: TestTree
+connectionChannelRequestEnv01 = testCase "fail on invalid request" $ do
+    conf <- newDefaultConfig
+    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
+    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
+    assertThrows "exp0" exp0 $ connectionChannelRequest conn req
+    where
+        lid = ChannelId 0
+        rid = ChannelId 23
+        lws = 100
+        lps = 200
+        rws = 123
+        rps = 456
+        opn = ChannelOpen (ChannelType "session") rid rws rps
+        req = ChannelRequest lid "env" True mempty -- mempty is invalid
+        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
+        exp0 = Disconnect DisconnectProtocolError "invalid channel request" mempty
 
 connectionChannelRequestPty01 :: TestTree
 connectionChannelRequestPty01 = testCase "accept pty request" $ do

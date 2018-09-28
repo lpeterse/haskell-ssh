@@ -114,9 +114,7 @@ serveTransport config clientVersion serverVersion transport = do
                 switchDecryptionContext transport
                 continue
             ----------------- higer layer messages ------------------
-            _ -> do
-                dispatch msg
-                continue
+            _ -> dispatch msg continue
 
 withAsyncWatchdog :: Config identity -> Transport -> IO () -> IO a -> IO a
 withAsyncWatchdog config transport rekey run = withAsync runWatchdog
