@@ -15,6 +15,7 @@ import           Control.Concurrent.STM.TMVar
 import           Network.SSH.Server.Service.Connection
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
+import           Network.SSH.Server.Internal
 import           Network.SSH.Stream (send, sendAll, receive)
 
 import           Test.Tasty
@@ -22,7 +23,16 @@ import           Test.Tasty.HUnit
 
 tests :: TestTree
 tests = testGroup "Network.SSH.Server.Service.Connection"
-    [ testGroup "connectionChannelOpen"
+    [ testGroup "dispatcher"
+        [ dispatcher01
+        , dispatcher02
+        , dispatcher03
+        , dispatcher04
+        , dispatcher05
+        , dispatcher06
+        , dispatcher07
+        ]
+    , testGroup "connectionChannelOpen"
         [ connectionChannelOpen01
         , connectionChannelOpen02
         , connectionChannelOpen03
@@ -43,6 +53,7 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
             ]
         , testGroup "pty requests"
             [ connectionChannelRequestPty01
+            , connectionChannelRequestPty02
             ]
         , testGroup "shell requests"
             [ connectionChannelRequestShell01
@@ -54,6 +65,10 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
             , connectionChannelRequestShell07
             , connectionChannelRequestShell08
             , connectionChannelRequestShell09
+            ]
+        , testGroup "exec requests"
+            [ connectionChannelRequestExec01
+            , connectionChannelRequestExec02
             ]
         ]
     , testGroup "connectionChannelData"
@@ -69,6 +84,191 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
         , connectionChannelWindowAdjust02
         ]
     ]
+
+dispatcher01 :: TestTree
+dispatcher01 = testCase "MsgChannelOpen" $ do
+    chan <- newTChanIO
+    let sender msg = atomically $ writeTChan chan msg
+    let receiver   = atomically $ readTChan chan
+    conf <- newDefaultConfig
+    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () msg0 $
+        Continuation $ \continue-> do
+            assertEqual "msg1" msg1 =<< receiver
+            continue msg2 $ Continuation $ \_ ->
+                assertEqual "msg3" msg3 =<< receiver
+    where
+        lid = ChannelId 0
+        rid = ChannelId 1
+        lws = 1
+        lps = 2
+        rws = 3
+        rps = 4
+        msg0 = MsgChannelOpen (ChannelOpen (ChannelType "foobar") rid rws rps)
+        msg1 = MsgChannelOpenFailure (ChannelOpenFailure rid ChannelOpenUnknownChannelType mempty mempty)
+        msg2 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
+        msg3 = MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
+
+dispatcher02 :: TestTree
+dispatcher02 = testCase "MsgChannelClose" $ do
+    chan <- newTChanIO
+    let sender msg = atomically $ writeTChan chan msg
+    let receiver   = atomically $ readTChan chan
+    conf <- newDefaultConfig
+    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () msg0 $
+        Continuation $ \continue-> do
+            assertEqual "msg1" msg1 =<< receiver
+            continue msg2 $ Continuation $ \_ ->
+                assertEqual "msg3" msg3 =<< receiver
+    where
+        lid = ChannelId 0
+        rid = ChannelId 1
+        lws = 1
+        lps = 2
+        rws = 3
+        rps = 4
+        msg0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
+        msg1 = MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
+        msg2 = MsgChannelClose (ChannelClose lid)
+        msg3 = MsgChannelClose (ChannelClose rid)
+
+dispatcher03 :: TestTree
+dispatcher03 = testCase "MsgChannelEof" $ do
+    chan <- newTChanIO
+    allDone <- newTVarIO False
+    let sender msg = atomically $ writeTChan chan msg
+    let receiver   = atomically $ readTChan chan
+    conf <- newDefaultConfig
+    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () msg0 $
+        Continuation $ \continue-> do
+            assertEqual "msg1" msg1 =<< receiver
+            continue msg2 $ Continuation $ \_ ->
+                atomically $ writeTVar allDone True
+    assertEqual "allDone" True =<< readTVarIO allDone
+    where
+        lid = ChannelId 0
+        rid = ChannelId 1
+        lws = 1
+        lps = 2
+        rws = 3
+        rps = 4
+        msg0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
+        msg1 = MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
+        msg2 = MsgChannelEof (ChannelEof lid)
+
+dispatcher04 :: TestTree
+dispatcher04 = testCase "MsgChannelRequest" $ do
+    chan <- newTChanIO
+    tmvar <- newEmptyTMVarIO
+    allDone <- newTVarIO False
+    let sender msg = atomically $ writeTChan chan msg
+    let receiver   = atomically $ tryReadTChan chan
+    let handler (Session idnt _ _ _ stdout _) = do
+            send stdout "A"
+            atomically (putTMVar tmvar idnt)
+            pure ExitSuccess 
+    conf <- newDefaultConfig
+    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler } sender idnt req0 $
+        Continuation $ \continue0-> do
+            assertEqual "res0" res0 =<< receiver
+            continue0 req1 $ Continuation $ \continue1 -> do
+                assertEqual "res1" res1 =<< receiver
+                continue1 req2 $ Continuation $ \continue2 -> do
+                    assertEqual "res2" res2 =<< receiver
+                    continue1 req3 $ Continuation $ \continue3 -> do
+                        assertEqual "res3" res3 =<< receiver
+                        continue1 req4 $ Continuation $ \continue4 -> do
+                            assertEqual "res4" res4 =<< receiver
+                            assertEqual "idnt" idnt =<< atomically (readTMVar tmvar)
+                            atomically $ writeTVar allDone True
+    assertEqual "allDone" True =<< readTVarIO allDone
+    where
+        lid = ChannelId 0
+        rid = ChannelId 1
+        lws = 1
+        lps = 2
+        rws = 3
+        rps = 4
+        idnt = "identity" :: String
+        req0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
+        res0 = Just $ MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
+        req1 = MsgChannelRequest (ChannelRequest lid "env" True "\NUL\NUL\NUL\ACKLC_ALL\NUL\NUL\NUL\ven_US.UTF-8")
+        res1 = Just $ MsgChannelSuccess (ChannelSuccess rid)
+        req2 = MsgChannelRequest (ChannelRequest lid "env" False "\NUL\NUL\NUL\ACKLC_ALL\NUL\NUL\NUL\ven_US.UTF-8")
+        res2 = Nothing
+        req3 = MsgChannelRequest (ChannelRequest lid "---" True mempty)
+        res3 = Just $ MsgChannelFailure (ChannelFailure rid)
+        req4 = MsgChannelRequest (ChannelRequest lid "shell" True mempty)
+        res4 = Just $ MsgChannelSuccess (ChannelSuccess rid)
+
+dispatcher05 :: TestTree
+dispatcher05 = testCase "MsgChannelData" $ do
+    chan <- newTChanIO
+    allDone <- newTVarIO False
+    let sender msg = atomically $ writeTChan chan msg
+    let receiver   = atomically $ tryReadTChan chan
+    conf <- newDefaultConfig
+    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () req0 $
+        Continuation $ \continue0-> do
+            assertEqual "res0" res0 =<< receiver
+            continue0 req1 $ Continuation $ \continue1 -> do
+                assertEqual "res1" res1 =<< receiver
+                atomically $ writeTVar allDone True
+    assertEqual "allDone" True =<< readTVarIO allDone
+    where
+        lid = ChannelId 0
+        rid = ChannelId 1
+        lws = 1
+        lps = 2
+        rws = 3
+        rps = 4
+        req0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
+        res0 = Just $ MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
+        req1 = MsgChannelData (ChannelData lid "A")
+        res1 = Nothing
+
+dispatcher06 :: TestTree
+dispatcher06 = testCase "MsgChannelWindowAdjust" $ do
+    chan <- newTChanIO
+    allDone <- newTVarIO False
+    let sender msg = atomically $ writeTChan chan msg
+    let receiver   = atomically $ tryReadTChan chan
+    conf <- newDefaultConfig
+    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () req0 $
+        Continuation $ \continue0-> do
+            assertEqual "res0" res0 =<< receiver
+            continue0 req1 $ Continuation $ \continue1 -> do
+                assertEqual "res1" res1 =<< receiver
+                atomically $ writeTVar allDone True
+    assertEqual "allDone" True =<< readTVarIO allDone
+    where
+        lid = ChannelId 0
+        rid = ChannelId 1
+        lws = 1
+        lps = 2
+        rws = 3
+        rps = 4
+        req0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
+        res0 = Just $ MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
+        req1 = MsgChannelWindowAdjust (ChannelWindowAdjust lid 123)
+        res1 = Nothing
+
+dispatcher07 :: TestTree
+dispatcher07 = testCase "other messages" $ do
+    chan <- newTChanIO
+    let sender msg = atomically $ writeTChan chan msg
+    let receiver   = atomically $ tryReadTChan chan
+    conf <- newDefaultConfig
+    assertThrows "exp0" exp0 $ dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () req0 $
+        Continuation $ const $ pure ()
+    where
+        lid = ChannelId 0
+        rid = ChannelId 1
+        lws = 1
+        lps = 2
+        rws = 3
+        rps = 4
+        req0 = MsgUnknown 0
+        exp0 = Disconnect DisconnectProtocolError "unexpected message type (for connection)" mempty
 
 connectionChannelOpen01 :: TestTree
 connectionChannelOpen01 = testCase "open one channel" $ do
@@ -349,13 +549,66 @@ connectionChannelRequestPty01 = testCase "accept pty request" $ do
             , "\NUL\NULK\NUL\NUL\NUL\NULZ\NUL\NUL\NUL\SOH[\NUL\NUL\NUL\SOH\\"
             , "\NUL\NUL\NUL\NUL]\NUL\NUL\NUL\NUL\NUL" ]
 
-connectionChannelRequestShell01 :: TestTree
-connectionChannelRequestShell01 = testCase "without handler" $ withTimeout $ do
+connectionChannelRequestPty02 :: TestTree
+connectionChannelRequestPty02 = testCase "shell handler gets pty settings injected" $ withTimeout $ do
+    tmvar <- newEmptyTMVarIO
     msgs <- newTChanIO
+    let handler (Session _ _ pty _ _ _) = atomically (putTMVar tmvar pty) >> pure ExitSuccess
     let sender msg = atomically $ writeTChan msgs msg
     let receiver   = atomically $ readTChan msgs
     conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Nothing, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () sender) connectionClose $ \conn -> do
+    bracket (connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler } () sender) connectionClose $ \conn -> do
+        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
+        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req0
+        assertEqual "msg2" msg2 =<< connectionChannelRequest conn req1
+        assertEqual "msg3" msg3 =<< receiver
+        assertEqual "msg4" msg4 =<< receiver
+        assertEqual "msg5" msg5 =<< receiver
+        settings <- atomically (takeTMVar tmvar)
+        assertEqual "ptyEnv"          (Just "xterm") (ptyEnv          <$> settings)
+        assertEqual "ptyWidthCols"    (Just     272) (ptyWidthCols    <$> settings)
+        assertEqual "ptyHeightRows"   (Just      73) (ptyHeightRows   <$> settings)
+        assertEqual "ptyWidthPixels"  (Just    1904) (ptyWidthPixels  <$> settings)
+        assertEqual "ptyHeightPixels" (Just    1022) (ptyHeightPixels <$> settings)
+    where
+        lid =  ChannelId 0
+        rid  = ChannelId 23
+        lws  = 100
+        lps  = 200
+        rws  = 123
+        rps  = 456
+        opn  = ChannelOpen (ChannelType "session") rid rws rps
+        req0 = ChannelRequest lid "pty-req" True pty0
+        req1 = ChannelRequest lid "shell" True mempty
+        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
+        msg1 = Just (Right (ChannelSuccess rid))
+        msg2 = Just (Right (ChannelSuccess rid))
+        msg3 = MsgChannelEof (ChannelEof rid)
+        msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
+        msg5 = MsgChannelClose (ChannelClose rid)
+        pty0 = mconcat
+            [ "\NUL\NUL\NUL\ENQxterm\NUL\NUL\SOH\DLE"
+            , "\NUL\NUL\NULI\NUL\NUL\ap\NUL\NUL\ETX\254\NUL\NUL\SOH\ENQ\129\NUL"
+            , "\NUL\150\NUL\128\NUL\NUL\150\NUL\SOH\NUL\NUL\NUL\ETX\STX\NUL\NUL"
+            , "\NUL\FS\ETX\NUL\NUL\NUL\DEL\EOT\NUL\NUL\NUL\NAK\ENQ\NUL\NUL\NUL"
+            , "\EOT\ACK\NUL\NUL\NUL\NUL\a\NUL\NUL\NUL\NUL\b\NUL\NUL\NUL\DC1\t"
+            , "\NUL\NUL\NUL\DC3\n\NUL\NUL\NUL\SUB\f\NUL\NUL\NUL\DC2\r\NUL\NUL"
+            , "\NUL\ETB\SO\NUL\NUL\NUL\SYN\DC2\NUL\NUL\NUL\SI\RS\NUL\NUL\NUL"
+            , "\SOH\US\NUL\NUL\NUL\NUL \NUL\NUL\NUL\NUL!\NUL\NUL\NUL\NUL\"\NUL"
+            , "\NUL\NUL\NUL#\NUL\NUL\NUL\NUL$\NUL\NUL\NUL\SOH%\NUL\NUL\NUL\NUL&"
+            , "\NUL\NUL\NUL\SOH'\NUL\NUL\NUL\NUL(\NUL\NUL\NUL\NUL)\NUL\NUL\NUL"
+            , "\SOH*\NUL\NUL\NUL\SOH2\NUL\NUL\NUL\SOH3\NUL\NUL\NUL\SOH4\NUL\NUL"
+            , "\NUL\NUL5\NUL\NUL\NUL\SOH6\NUL\NUL\NUL\SOH7\NUL\NUL\NUL\SOH8\NUL"
+            , "\NUL\NUL\NUL9\NUL\NUL\NUL\NUL:\NUL\NUL\NUL\NUL;\NUL\NUL\NUL\SOH"
+            , "<\NUL\NUL\NUL\SOH=\NUL\NUL\NUL\SOH>\NUL\NUL\NUL\NULF\NUL\NUL\NUL"
+            , "\SOHG\NUL\NUL\NUL\NULH\NUL\NUL\NUL\SOHI\NUL\NUL\NUL\NULJ\NUL\NUL"
+            , "\NUL\NULK\NUL\NUL\NUL\NULZ\NUL\NUL\NUL\SOH[\NUL\NUL\NUL\SOH\\"
+            , "\NUL\NUL\NUL\NUL]\NUL\NUL\NUL\NUL\NUL" ]
+
+connectionChannelRequestShell01 :: TestTree
+connectionChannelRequestShell01 = testCase "without handler" $ withTimeout $ do
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onShellRequest = Nothing, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined) connectionClose $ \conn -> do
         assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
         assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
     where
@@ -397,9 +650,9 @@ connectionChannelRequestShell02 = testCase "with handler exit(0)" $ withTimeout 
         msg3 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
         msg4 = MsgChannelClose (ChannelClose rid)
         idnt = "identity"
-        handler (Session i _ _ _ _) 
-            | i == idnt = pure ExitSuccess
-            | otherwise = pure (ExitFailure 1)
+        handler (Session i _ pty _ _ _) 
+            | i == idnt && pty == Nothing = pure ExitSuccess
+            | otherwise                   = pure (ExitFailure 1)
 
 connectionChannelRequestShell03 :: TestTree
 connectionChannelRequestShell03 = testCase "with handler exit(0) after writing to stdout" $ withTimeout $ do
@@ -430,7 +683,7 @@ connectionChannelRequestShell03 = testCase "with handler exit(0) after writing t
         msg3 = MsgChannelEof (ChannelEof rid)
         msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
         msg5 = MsgChannelClose (ChannelClose rid)
-        handler (Session identity env stdin stdout stderr) = do
+        handler (Session _ _ _ _ stdout _) = do
             sendAll stdout "ABCDEF"
             pure ExitSuccess
 
@@ -464,7 +717,7 @@ connectionChannelRequestShell04 = testCase "with handler exit(1) after echoing s
         msg3 = MsgChannelEof (ChannelEof rid)
         msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\SOH")
         msg5 = MsgChannelClose (ChannelClose rid)
-        handler (Session identity env stdin stdout stderr) = do
+        handler (Session _ _ _ stdin stdout _) = do
             receive stdin 1024 >>= sendAll stdout
             pure (ExitFailure 1)
 
@@ -498,7 +751,7 @@ connectionChannelRequestShell05 = testCase "with handler exit(1) after echoing s
         msg3 = MsgChannelEof (ChannelEof rid)
         msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\SOH")
         msg5 = MsgChannelClose (ChannelClose rid)
-        handler (Session _ _ stdin _ stderr) = do
+        handler (Session _ _ _ stdin _ stderr) = do
             receive stdin 1024 >>= sendAll stderr >> pure ()
             pure (ExitFailure 1)
 
@@ -561,7 +814,7 @@ connectionChannelRequestShell08 = testCase "with handler and inbound flow contro
     tmvar0 <- newEmptyTMVarIO
     tmvar1 <- newEmptyTMVarIO
     tmvar2 <- newEmptyTMVarIO
-    let handler (Session _ _ stdin _ _) = do
+    let handler (Session _ _ _ stdin _ _) = do
             atomically $ takeTMVar tmvar0
             atomically . putTMVar tmvar1 =<< receive stdin 1
             atomically $ takeTMVar tmvar0
@@ -602,7 +855,7 @@ connectionChannelRequestShell09 = testCase "with handler and outbound flow contr
     tmvar0 <- newEmptyTMVarIO
     tmvar1 <- newEmptyTMVarIO
     tmvar2 <- newEmptyTMVarIO
-    let handler (Session _ _ _ stdout _) = do
+    let handler (Session _ _ _ _ stdout _) = do
             i <- send stdout "1234567890"
             atomically $ putTMVar tmvar0 i
             j <- send stdout "ABCD"
@@ -649,6 +902,55 @@ connectionChannelRequestShell09 = testCase "with handler and outbound flow contr
         msg09 = MsgChannelEof (ChannelEof rid)
         msg10 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
         msg11 = MsgChannelClose (ChannelClose rid)
+
+connectionChannelRequestExec01 :: TestTree
+connectionChannelRequestExec01 = testCase "without handler" $ withTimeout $ do
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onExecRequest = Nothing, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined) connectionClose $ \conn -> do
+        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
+        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
+    where
+        lid  = ChannelId 0
+        rid  = ChannelId 23
+        lws  = 100
+        lps  = 200
+        rws  = 123
+        rps  = 456
+        opn  = ChannelOpen (ChannelType "session") rid rws rps
+        req  = ChannelRequest lid "exec" True "\NUL\NUL\NUL\NUL"
+        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
+        msg1 = Just (Left (ChannelFailure rid))
+
+connectionChannelRequestExec02 :: TestTree
+connectionChannelRequestExec02 = testCase "with handler exit(0)" $ withTimeout $ do
+    msgs <- newTChanIO
+    let sender msg = atomically $ writeTChan msgs msg
+    let receiver   = atomically $ readTChan msgs
+    conf <- newDefaultConfig
+    bracket (connectionOpen conf { onExecRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } idnt sender) connectionClose $ \conn -> do
+        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
+        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
+        assertEqual "msg2" msg2 =<< receiver
+        assertEqual "msg3" msg3 =<< receiver
+        assertEqual "msg4" msg4 =<< receiver
+    where
+        lid  = ChannelId 0
+        rid  = ChannelId 23
+        lws  = 100
+        lps  = 200
+        rws  = 123
+        rps  = 456
+        opn  = ChannelOpen (ChannelType "session") rid rws rps
+        req  = ChannelRequest lid "exec" True "\NUL\NUL\NUL\NUL"
+        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
+        msg1 = Just (Right (ChannelSuccess rid))
+        msg2 = MsgChannelEof (ChannelEof rid)
+        msg3 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
+        msg4 = MsgChannelClose (ChannelClose rid)
+        idnt = "identity" :: String
+        handler (Session i _ _ _ _ _) command
+            | i == idnt && command == mempty = pure ExitSuccess
+            | otherwise = pure (ExitFailure 1)
 
 connectionChannelData01 :: TestTree
 connectionChannelData01 = testCase "channel data" $ do

@@ -77,23 +77,25 @@ dispatcher config send idnt msg0 cont0 =
             continue (f connection)
 
         handle connection = \case
-            MsgChannelOpen x              -> connectionChannelOpen     connection x >>= \case
-                Left y  -> send (MsgChannelOpenFailure y)
-                Right y -> send (MsgChannelOpenConfirmation y)
-            MsgChannelClose x             -> connectionChannelClose        connection x >>= \case
-                Nothing -> pure ()
-                Just y  -> send (MsgChannelClose y)
-            MsgChannelEof x               -> connectionChannelEof          connection x
-            MsgChannelRequest x           -> connectionChannelRequest      connection x >>= \case
-                Nothing -> pure ()
-                Just (Left y) -> send (MsgChannelFailure y)
-                Just (Right y) -> send (MsgChannelSuccess y)
-            MsgChannelWindowAdjust x      -> connectionChannelWindowAdjust connection x
-            MsgChannelData x              -> connectionChannelData         connection x
-            msg -> do
-                print msg
-                connectionClose connection -- FIXME
-                throwIO $ Disconnect DisconnectProtocolError "unexpected message type (2)" mempty
+            MsgChannelOpen req ->
+                connectionChannelOpen connection req >>= \case
+                    Left res  -> send (MsgChannelOpenFailure res)
+                    Right res -> send (MsgChannelOpenConfirmation res)
+            MsgChannelClose req ->
+                connectionChannelClose connection req >>= mapM_ (send . MsgChannelClose)
+            MsgChannelEof req ->
+                connectionChannelEof connection req
+            MsgChannelData req ->
+                connectionChannelData connection req
+            MsgChannelWindowAdjust req ->
+                connectionChannelWindowAdjust connection req
+            MsgChannelRequest req ->
+                connectionChannelRequest connection req >>= mapM_ (\case
+                    Right res -> send (MsgChannelSuccess res)
+                    Left res  -> send (MsgChannelFailure res))
+            _ -> exception "unexpected message type (for connection)"
+
+        exception msg = throwIO $ Disconnect DisconnectProtocolError msg mempty
 
 connectionOpen :: Config identity -> identity -> (Message -> IO ()) -> IO (Connection identity)
 connectionOpen config identity send = do
@@ -250,6 +252,7 @@ connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat)
         sessionExec channel sessState handle = do
             session <- Session (connIdentity connection)
                 <$> readTVarIO (sessEnvironment sessState)
+                <*> readTVarIO (sessPtySettings sessState)
                 <*> pure (chanStdin channel)
                 <*> pure (chanStdout channel)
                 <*> pure (chanStderr channel)

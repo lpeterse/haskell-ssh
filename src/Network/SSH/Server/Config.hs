@@ -37,6 +37,7 @@ data Session identity
   = forall stdin stdout stderr. (InputStream stdin, OutputStream stdout, OutputStream stderr) => Session
     { identity    :: identity
     , environment :: M.Map BS.ByteString BS.ByteString
+    , ptySettings :: Maybe PtySettings
     , stdin       :: stdin
     , stdout      :: stdout
     , stderr      :: stderr
