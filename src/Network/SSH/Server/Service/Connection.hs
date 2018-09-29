@@ -7,7 +7,6 @@ module Network.SSH.Server.Service.Connection
     ( Connection ()
     , connectionOpen
     , connectionClose
-    , connectionClosed
     , connectionChannelOpen
     , connectionChannelEof
     , connectionChannelClose
@@ -69,13 +68,9 @@ data SessionState
     , sessPtySettings :: TVar (Maybe PtySettings)
     }
 
-withConnection :: Config identity -> identity -> Sender -> (Connection identity -> IO a) -> IO a
-withConnection config idnt sender runWith =
-    bracket (connectionOpen config idnt sender) connectionClose runWith
-
 dispatcher :: Config identity -> Sender -> identity -> MessageDispatcher a
 dispatcher config send idnt msg0 cont0 =
-    withConnection config idnt send $ \conn -> f conn msg0 cont0
+    bracket (connectionOpen config idnt send) connectionClose (\c-> f c msg0 cont0)
     where 
         f connection msg (Continuation continue) = do
             handle connection msg
@@ -113,9 +108,6 @@ connectionOpen config identity send = do
 
 connectionClose :: Connection identity -> IO ()
 connectionClose = atomically . connClose
-
-connectionClosed :: Connection identity -> IO Bool
-connectionClosed = atomically . connClosed
 
 connectionChannelOpen :: Connection identity -> ChannelOpen -> IO (Either ChannelOpenFailure ChannelOpenConfirmation)
 connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) = atomically $ do

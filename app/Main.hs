@@ -46,7 +46,7 @@ main = do
             { Server.hostKeys           = pure privateKey
             , Server.onAuthRequest      = \username _ _ -> pure (Just username)
             , Server.onExecRequest      = Just runExec
-            , Server.onSend = \msg -> putStrLn ("sent: " ++ show msg)
+            -- , Server.onSend = \msg -> putStrLn ("sent: " ++ show msg)
             , Server.onReceive = \msg -> putStrLn ("received: " ++ show msg)
             , Server.onDisconnect       = \dis -> putStrLn
                                               ("disconnect: " ++ show dis)
@@ -79,7 +79,7 @@ runExec (Server.Session identity env stdin stdout stderr) _command = withAsync r
     forM_ [1 ..] $ \i -> do
         void $ sendAll stdout
             (BS.pack (map (fromIntegral . fromEnum) (show (i :: Int))) `mappend` "\n" :: BS.ByteString)
-        threadDelay 100000
+        threadDelay 1000
     pure (ExitFailure 23)
     where
         receiver = forever $ do
@@ -90,7 +90,7 @@ runExec (Server.Session identity env stdin stdout stderr) _command = withAsync r
 instance DuplexStream (S.Socket f S.Stream p) where
 
 instance InputStream  (S.Socket f S.Stream p) where
-    receive stream len = BA.convert <$> S.receive stream len S.msgNoSignal
+    receive stream len = S.receive stream len S.msgNoSignal
 
 instance OutputStream  (S.Socket f S.Stream p)  where
-    send stream bytes = S.send stream (BA.convert bytes) S.msgNoSignal
+    send stream bytes = S.send stream bytes S.msgNoSignal

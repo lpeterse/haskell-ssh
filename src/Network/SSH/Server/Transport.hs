@@ -58,12 +58,12 @@ sendMessage :: (Show msg, Encoding msg) => Transport -> msg -> IO ()
 sendMessage transport@Transport { transportStream = stream } msg = do
     let plainText = runPut (put msg) :: BS.ByteString
     encrypt     <- readTVarIO (transportEncryptionContext transport)
+    bytesSent   <- readTVarIO (transportBytesSent transport)
     packetsSent <- readTVarIO (transportPacketsSent transport)
     cipherText  <- encrypt packetsSent plainText
-    atomically $ modifyTVar' (transportBytesSent transport)
-                             (+ fromIntegral (BS.length cipherText))
-    atomically $ modifyTVar' (transportPacketsSent transport) (+ 1)
     void $ sendAll stream cipherText
+    atomically $ writeTVar (transportBytesSent transport)   $! bytesSent + fromIntegral (BS.length cipherText)
+    atomically $ writeTVar (transportPacketsSent transport) $! packetsSent + 1
 
 receiveMessage :: Encoding msg => Transport -> IO msg
 receiveMessage transport@Transport { transportStream = stream } = do
