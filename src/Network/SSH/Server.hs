@@ -33,11 +33,13 @@ import           Control.Monad.STM              ( atomically
 import           Data.Maybe
 
 import           Network.SSH.Message
+import           Network.SSH.Server.Internal
 import           Network.SSH.Server.Config
-import           Network.SSH.Server.Service
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Transport.KeyExchange
 import           Network.SSH.Stream
+import qualified Network.SSH.Server.Service.UserAuth as U
+import qualified Network.SSH.Server.Service.Connection as C
 
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = withDisconnectHandler config $ do
@@ -51,11 +53,9 @@ serve config stream = withDisconnectHandler config $ do
     -- The transport context has exclusive access to the stream handle.
     -- This assures that no plain text will ever be transmitted after
     -- an encryption context has been established.
-    withTransport stream
-                       (serveTransport config clientVersion serverVersion)
+    withTransport stream (serveTransport config clientVersion serverVersion)
 
-serveTransport
-    :: Config identity -> Version -> Version -> Transport -> IO Disconnect
+serveTransport :: Config identity -> Version -> Version -> Transport -> IO Disconnect
 serveTransport config clientVersion serverVersion transport = do
     -- The `sendMessage` operation on the `transport` is not thread-safe.
     -- A background thread is started to serialize writes from different
@@ -82,39 +82,40 @@ serveTransport config clientVersion serverVersion transport = do
             -- next higher layer. All other layers are on top of it
             -- and all messages are passed through it (and eventually
             -- rejected as long is the user is not authenticated).
-            withServiceLayer config session enqueue
-                -- The next call waits for incoming messages
-                -- and dispatches them either to the transport layer handling functions
-                -- or to the connection layer. It terminates when receiving a disconnect
-                -- message from the client or when an exception occurs.
-                $ processInboundMessages kexNextStep
+            -- withServiceLayer config session enqueue
+            -- The next call waits for incoming messages
+            -- and dispatches them either to the transport layer handling functions
+            -- or to the connection layer. It terminates when receiving a disconnect
+            -- message from the client or when an exception occurs.
+            processInboundMessages kexNextStep (U.dispatcher config session enqueue (C.dispatcher config enqueue))
   where
-    processInboundMessages
-        :: (KexStep -> IO ()) -> (Message -> IO ()) -> IO Disconnect
-    processInboundMessages kexNextStep dispatch = fix $ \continue -> do
-        msg <- receiveMessage transport
-        onReceive config msg
-        case msg of
-            ----------------- transport layer messages -------------
-            MsgDisconnect x ->
-                pure x
-            MsgDebug {} ->
-                continue
-            MsgIgnore {} ->
-                continue
-            MsgUnimplemented {} ->
-                continue
-            MsgKexInit kexInit -> do
-                kexNextStep (KexProcessInit kexInit)
-                continue
-            MsgKexEcdhInit kexEcdhInit -> do
-                kexNextStep (KexProcessEcdhInit kexEcdhInit)
-                continue
-            MsgKexNewKeys{} -> do
-                switchDecryptionContext transport
-                continue
-            ----------------- higer layer messages ------------------
-            _ -> dispatch msg continue
+    processInboundMessages :: (KexStep -> IO ()) -> MessageDispatcher Disconnect -> IO Disconnect
+    processInboundMessages kexNextStep = g
+        where 
+            g dispatch = do
+                msg <- receiveMessage transport
+                onReceive config msg
+                case msg of
+                    ----------------- transport layer messages -------------
+                    MsgDisconnect x ->
+                        pure x
+                    MsgDebug {} ->
+                        g dispatch
+                    MsgIgnore {} ->
+                        g dispatch
+                    MsgUnimplemented {} ->
+                        g dispatch
+                    MsgKexInit kexInit -> do
+                        kexNextStep (KexProcessInit kexInit)
+                        g dispatch
+                    MsgKexEcdhInit kexEcdhInit -> do
+                        kexNextStep (KexProcessEcdhInit kexEcdhInit)
+                        g dispatch
+                    MsgKexNewKeys{} -> do
+                        switchDecryptionContext transport
+                        g dispatch
+                    ----------------- higer layer messages ------------------
+                    _ -> dispatch msg (Continuation g)
 
 withAsyncWatchdog :: Config identity -> Transport -> IO () -> IO a -> IO a
 withAsyncWatchdog config transport rekey run = withAsync runWatchdog

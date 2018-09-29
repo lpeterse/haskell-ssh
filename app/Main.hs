@@ -25,6 +25,7 @@ import qualified System.Socket.Family.Inet6    as S
 import qualified System.Socket.Protocol.Default
                                                as S
 import qualified System.Socket.Type.Stream     as S
+import           System.Mem
 
 import           Network.SSH.Constants
 import           Network.SSH.Key
@@ -53,8 +54,10 @@ main = do
             , Server.maxTimeBeforeRekey = 60
             , Server.maxDataBeforeRekey = 1024 * 1024
             }
-    bracket open close (accept config)
+    withAsync gc $ \_ ->
+        bracket open close (accept config)
   where
+    gc = forever $ threadDelay 60000000 >> performGC
     open  = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
     close = S.close
     accept config s = do

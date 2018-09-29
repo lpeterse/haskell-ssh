@@ -14,6 +14,7 @@ module Network.SSH.Server.Service.Connection
     , connectionChannelRequest
     , connectionChannelData
     , connectionChannelWindowAdjust
+    , dispatcher
     ) where
 
 import           Control.Applicative
@@ -22,6 +23,7 @@ import qualified Control.Concurrent.Async     as Async
 import           Control.Concurrent.STM.TVar
 import           Control.Monad                (join, void, when)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
+import           Control.Exception            (throwIO, bracket)
 import qualified Data.ByteString              as BS
 import qualified Data.Map.Strict              as M
 import           Data.Word
@@ -30,6 +32,7 @@ import           System.Exit
 import           Network.SSH.Encoding
 import           Network.SSH.Constants
 import           Network.SSH.Message
+import           Network.SSH.Server.Internal
 import           Network.SSH.Server.Config hiding (identity)
 import qualified Network.SSH.TStreamingQueue as Q
 
@@ -66,11 +69,36 @@ data SessionState
     , sessPtySettings :: TVar (Maybe PtySettings)
     }
 
-type OnMatch a    = Message -> IO a
-type OnMismatch a = Message -> IO a
+withConnection :: Config identity -> identity -> Sender -> (Connection identity -> IO a) -> IO a
+withConnection config idnt sender runWith =
+    bracket (connectionOpen config idnt sender) connectionClose runWith
 
-dispatchMessage :: Message -> OnMatch a -> OnMismatch a -> IO a
-dispatchMessage = undefined
+dispatcher :: Config identity -> Sender -> identity -> MessageDispatcher a
+dispatcher config send idnt msg0 cont0 =
+    withConnection config idnt send $ \conn -> f conn msg0 cont0
+    where 
+        f connection msg (Continuation continue) = do
+            handle connection msg
+            continue (f connection)
+
+        handle connection = \case
+            MsgChannelOpen x              -> connectionChannelOpen     connection x >>= \case
+                Left y  -> send (MsgChannelOpenFailure y)
+                Right y -> send (MsgChannelOpenConfirmation y)
+            MsgChannelClose x             -> connectionChannelClose        connection x >>= \case
+                Nothing -> pure ()
+                Just y  -> send (MsgChannelClose y)
+            MsgChannelEof x               -> connectionChannelEof          connection x
+            MsgChannelRequest x           -> connectionChannelRequest      connection x >>= \case
+                Nothing -> pure ()
+                Just (Left y) -> send (MsgChannelFailure y)
+                Just (Right y) -> send (MsgChannelSuccess y)
+            MsgChannelWindowAdjust x      -> connectionChannelWindowAdjust connection x
+            MsgChannelData x              -> connectionChannelData         connection x
+            msg -> do
+                print msg
+                connectionClose connection -- FIXME
+                throwIO $ Disconnect DisconnectProtocolError "unexpected message type (2)" mempty
 
 connectionOpen :: Config identity -> identity -> (Message -> IO ()) -> IO (Connection identity)
 connectionOpen config identity send = do
