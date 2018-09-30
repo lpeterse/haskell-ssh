@@ -6,6 +6,7 @@ module Network.SSH.Server.Transport.KeyExchange
   ( KexStep (..)
   , performInitialKeyExchange
   , newKexInit
+  , deriveKeys
   ) where
 
 import           Control.Concurrent.MVar
@@ -13,12 +14,10 @@ import           Control.Concurrent.STM.TVar
 import           Control.Exception            (throwIO)
 import           Control.Monad                (void)
 import           Control.Monad.STM            (atomically)
-import           Control.Applicative
 import qualified Crypto.Hash                  as Hash
 import qualified Crypto.PubKey.Curve25519     as Curve25519
 import qualified Crypto.PubKey.Ed25519        as Ed25519
 import qualified Data.ByteArray               as BA
-import qualified Data.ByteString              as BS
 import           Data.List
 import qualified Data.List.NonEmpty           as NEL
 import           System.Clock
@@ -150,7 +149,7 @@ newKexStepHandler config transport clientVersion serverVersion sendMsg msid = do
                         putMVar msid s
                         pure s
 
-                setCryptoContexts transport $ chacha20poly1305Context $ deriveKeys secret hash session
+                setChaCha20Poly1305Context transport Server $ deriveKeys secret hash session
 
                 atomically . writeTVar (transportLastRekeyingTime         transport) =<< fromIntegral . sec <$> getTime Monotonic
                 atomically $ writeTVar (transportLastRekeyingDataSent     transport) =<< readTVar (transportBytesSent     transport)
@@ -221,10 +220,10 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
         put       qs
         putAsMPInt k
 
-deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> SessionId -> BS.ByteString -> [BA.ScrubbedBytes]
-deriveKeys secret hash (SessionId sess) i = BA.convert <$> k1 : f [k1]
+deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> SessionId -> KeyStreams
+deriveKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> (k1 i) : f [k1 i]
     where
-    k1   = Hash.hashFinalize    $
+    k1 i = Hash.hashFinalize $
         flip Hash.hashUpdate sess $
         Hash.hashUpdate st i :: Hash.Digest Hash.SHA256
     f ks = kx : f (ks ++ [kx])

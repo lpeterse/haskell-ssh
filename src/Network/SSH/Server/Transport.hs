@@ -1,6 +1,7 @@
 {-# LANGUAGE ExistentialQuantification, OverloadedStrings, MultiWayIf #-}
 module Network.SSH.Server.Transport
     ( Transport()
+    , Role (..)
     , withTransport
     , sendMessage
     , receiveMessage
@@ -9,6 +10,7 @@ module Network.SSH.Server.Transport
     , sendServerVersion
     , receiveClientVersion
     , askRekeyingRequired
+    , setChaCha20Poly1305Context
     )
 where
 
@@ -26,6 +28,10 @@ import           Network.SSH.Constants
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport.Internal
 import           Network.SSH.Server.Transport.Encryption
+
+data Role
+    = Client
+    | Server
 
 withTransport :: DuplexStream stream => stream -> (Transport -> IO a) -> IO a
 withTransport stream runWith = do
@@ -53,6 +59,20 @@ switchDecryptionContext :: Transport -> IO ()
 switchDecryptionContext transport = atomically $ do
     writeTVar (transportDecryptionContext transport)
         =<< readTVar (transportDecryptionContextNext transport)
+
+setChaCha20Poly1305Context :: Transport -> Role -> KeyStreams -> IO ()
+setChaCha20Poly1305Context transport role (KeyStreams keys) = atomically $ do
+    writeTVar (transportEncryptionContextNext transport) $! case role of
+        Server -> chaCha20Poly1305EncryptionContext headerKeySC mainKeySC
+        Client -> chaCha20Poly1305EncryptionContext headerKeyCS mainKeyCS
+    writeTVar (transportDecryptionContextNext transport) $! case role of
+        Server -> chaCha20Poly1305DecryptionContext headerKeyCS mainKeyCS
+        Client -> chaCha20Poly1305DecryptionContext headerKeySC mainKeySC
+    where
+    -- Derive the required encryption/decryption keys.
+    -- The integrity keys etc. are not needed with chacha20.
+    mainKeyCS : headerKeyCS : _ = keys "C"
+    mainKeySC : headerKeySC : _ = keys "D"
 
 sendMessage :: (Show msg, Encoding msg) => Transport -> msg -> IO ()
 sendMessage transport@Transport { transportStream = stream } msg = do

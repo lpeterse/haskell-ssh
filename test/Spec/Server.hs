@@ -8,6 +8,7 @@ import           Control.Monad
 import           Control.Monad.STM
 import           Control.Concurrent.STM.TMVar
 import qualified Data.ByteString as BS
+import qualified Data.ByteArray as BA
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.Hash              as Hash
@@ -21,6 +22,7 @@ import           Network.SSH.Constants
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Encoding
+import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Transport.KeyExchange
 
 import           Spec.Util
@@ -68,10 +70,26 @@ testVersionStringExchange02 = testCase "server sends version string after client
 
 testKeyExchange01 :: TestTree
 testKeyExchange01 = testCase "happy path" $ do
+    tmvar <- newEmptyTMVarIO
     (clientSocket, serverSocket) <- newSocketPair
-    config <- newDefaultConfig
-    withAsync (serve config serverSocket `finally` close serverSocket) $ const $ do
-        exchangeKeys config clientSocket
+    defaultConfig <- newDefaultConfig
+    let config = defaultConfig { onDisconnect = atomically . putTMVar tmvar } 
+    withAsync (serve config serverSocket `finally` close serverSocket) $ \thread -> do
+        void $ sendAll clientSocket (clientVersion <> "\r\n")
+        assertEqual "server version" (serverVersion <> "\r\n") =<< receive clientSocket (BS.length serverVersion + 2)
+        withTransport clientSocket $ \transport-> do
+            void $ exchangeKeys config cv sv transport
+            sendMessage transport disconnect
+            waitCatch thread >>= \case
+                Left e -> assertFailure (show e)
+                Right () -> atomically (tryReadTMVar tmvar) >>= \case
+                    Just (Right d) -> assertEqual "disconnect" disconnect d
+                    Just (Left e)  -> assertFailure (show e)
+                    Nothing        -> assertFailure "onDisconnect should have been called"
+    where
+        cv@(Version clientVersion) = Version "SSH-2.0-OpenSSH_4.3"
+        sv@(Version serverVersion) = version
+        disconnect = Disconnect DisconnectByApplication "yolo" mempty
 
 testKeyExchange02 :: TestTree
 testKeyExchange02 = testCase "graceful disconnect after version string" $ do
@@ -168,13 +186,11 @@ assertCorrectSignature csk cpk cv sv cki ski ser =
             put       spk
             putAsMPInt secret
 
-exchangeKeys :: Config identity -> DummySocket -> IO ()
-exchangeKeys config clientSocket = do
-    void $ sendAll clientSocket (clientVersion <> "\r\n")
-    assertEqual "server version" (serverVersion <> "\r\n") =<< receive clientSocket (BS.length serverVersion + 2)
+exchangeKeys :: Config identity -> Version -> Version -> Transport -> IO SessionId
+exchangeKeys config cv sv transport = do
     cki <- newKexInit config
-    sendPlainMessage clientSocket cki
-    ski <- receivePlainMessage clientSocket
+    sendMessage transport cki
+    ski <- receiveMessage transport
     assertEqual "kex algorithms" ["curve25519-sha256@libssh.org"] (kexAlgorithms ski)
     assertEqual "kex algorithms server hostkey" ["ssh-ed25519"] (kexServerHostKeyAlgorithms ski)
     assertEqual "kex algorithms encryption client -> server" ["chacha20-poly1305@openssh.com"] (kexEncryptionAlgorithmsClientToServer ski)
@@ -188,11 +204,29 @@ exchangeKeys config clientSocket = do
     assertEqual "kex first packet follows" False (kexFirstPacketFollows ski)
     csk <- Curve25519.generateSecretKey
     cpk <- pure (Curve25519.toPublic csk)
-    sendPlainMessage clientSocket (KexEcdhInit cpk)
-    ser <- receivePlainMessage clientSocket 
+    sendMessage transport (KexEcdhInit cpk)
+    ser <- receiveMessage transport 
     assertCorrectSignature csk cpk cv sv cki ski ser
-    sendPlainMessage clientSocket KexNewKeys
-    assertEqual "new keys" KexNewKeys =<< receivePlainMessage clientSocket
-    where
-        cv@(Version clientVersion) = Version "SSH-2.0-OpenSSH_4.3"
-        sv@(Version serverVersion) = version
+    -- set crypto context (client role)
+    let shk = kexServerHostKey ser
+        spk = kexServerEphemeralKey ser
+        sec = Curve25519.dh spk csk
+        sid = SessionId $ BA.convert hash
+        hash :: Hash.Digest Hash.SHA256
+        hash = Hash.hash $ runPut $ do
+            putString  cv
+            putString  sv
+            putWord32  (len cki)
+            put        cki
+            putWord32  (len ski)
+            put        ski
+            put        shk
+            put        cpk
+            put        spk
+            putAsMPInt sec
+    setChaCha20Poly1305Context transport Client $ deriveKeys sec hash sid
+    assertEqual "new keys" (MsgKexNewKeys KexNewKeys) =<< receiveMessage transport
+    sendMessage transport KexNewKeys
+    switchEncryptionContext transport
+    switchDecryptionContext transport
+    pure sid
