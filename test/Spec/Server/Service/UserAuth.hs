@@ -1,27 +1,20 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Spec.Server.Service.UserAuth ( tests ) where
     
-import           Control.Applicative
-import           Control.Concurrent (threadDelay)
-import           Control.Concurrent.Async
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.STM
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
-import           Control.Concurrent.STM.TMVar
 import           Crypto.Error
-import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
 import qualified Data.ByteString          as BS
-import           System.Exit
 
 import           Network.SSH.Server.Service.UserAuth
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Internal
-import           Network.SSH.Stream (send, sendAll, receive)
 
 import           Test.Tasty
 import           Test.Tasty.HUnit

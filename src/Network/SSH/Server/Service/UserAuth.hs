@@ -3,9 +3,7 @@
 module Network.SSH.Server.Service.UserAuth where
 
 import           Control.Exception (throwIO)
-import qualified Crypto.Hash.Algorithms       as Hash
 import qualified Crypto.PubKey.Ed25519        as Ed25519
-import qualified Crypto.PubKey.RSA.PKCS15     as RSA.PKCS15
 import qualified Data.ByteString              as BS
 
 import           Network.SSH.Encoding
