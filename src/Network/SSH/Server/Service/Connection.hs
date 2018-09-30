@@ -93,7 +93,7 @@ dispatcher config send idnt msg0 cont0 =
                 connectionChannelRequest connection req >>= mapM_ (\case
                     Right res -> send (MsgChannelSuccess res)
                     Left res  -> send (MsgChannelFailure res))
-            _ -> exception "unexpected message type (for connection)"
+            _ -> exception "unexpected message type (connection module)"
 
         exception msg = throwIO $ Disconnect DisconnectProtocolError msg mempty
 

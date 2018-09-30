@@ -15,50 +15,50 @@ import           Network.SSH.Server.Config
 import           Network.SSH.Server.Internal
 
 dispatcher :: forall identity a. Config identity -> SessionId -> Sender -> (identity -> MessageDispatcher a) -> MessageDispatcher a
-dispatcher config session send withIdentity = dispatchAuth0
+dispatcher config session send withIdentity = dispatchState0
     where
-        dispatchAuth0 :: MessageDispatcher a
-        dispatchAuth0 msg (Continuation continue) = case msg of
+        exception code msg = throwIO $ Disconnect code msg mempty
+        exceptionServiceNotAvailable = exception DisconnectServiceNotAvailable mempty
+        exceptionUnexpectedMessageType = exception DisconnectProtocolError "unexpected message type (user auth module)"
+
+        supportedAuthMethods =
+            MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
+        unconditionallyConfirmPublicKeyIsOk algo pk =
+            MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
+
+        dispatchState0 :: MessageDispatcher a
+        dispatchState0 msg (Continuation continue) = case msg of
             MsgServiceRequest (ServiceRequest (ServiceName srv@"ssh-userauth")) -> do
                 send $ MsgServiceAccept (ServiceAccept (ServiceName srv))
-                continue dispatchAuth1
-            MsgServiceRequest _ -> do
-                throwIO $ Disconnect DisconnectServiceNotAvailable mempty mempty
-            _ ->
-                throwIO $ Disconnect DisconnectProtocolError "unexpected message type (0)" mempty
+                continue dispatchState1
+            MsgServiceRequest _ -> exceptionServiceNotAvailable
+            _ -> exceptionUnexpectedMessageType
 
-        dispatchAuth1 :: MessageDispatcher a
-        dispatchAuth1 msg (Continuation continue) = case msg of
+        dispatchState1 :: MessageDispatcher a
+        dispatchState1 msg (Continuation continue) = case msg of
             MsgUserAuthRequest (UserAuthRequest user service method) -> case method of
                 AuthPublicKey algo pk msig -> case msig of
                     Nothing -> do
                         send $ unconditionallyConfirmPublicKeyIsOk algo pk
-                        continue dispatchAuth1
+                        continue dispatchState1
                     Just sig
                         | verifyAuthSignature session user service algo pk sig -> do
                             onAuthRequest config user service pk >>= \case
                                 Nothing -> do
                                     send supportedAuthMethods
-                                    continue dispatchAuth1
-                                Just identity -> case service of
+                                    continue dispatchState1
+                                Just idnt -> case service of
                                     (ServiceName "ssh-connection") -> do
                                         send $ MsgUserAuthSuccess UserAuthSuccess
-                                        continue (withIdentity identity)
-                                    _ -> do
-                                        send supportedAuthMethods
-                                        continue dispatchAuth1
+                                        continue (withIdentity idnt)
+                                    _ -> exceptionServiceNotAvailable
                         | otherwise -> do
                             send supportedAuthMethods
-                            continue dispatchAuth1
+                            continue dispatchState1
                 _ -> do
                     send supportedAuthMethods
-                    continue dispatchAuth1
-            _ -> throwIO $ Disconnect DisconnectProtocolError "unexpected message type" mempty
-            where
-                supportedAuthMethods =
-                    MsgUserAuthFailure $ UserAuthFailure [AuthMethodName "publickey"] False
-                unconditionallyConfirmPublicKeyIsOk algo pk =
-                    MsgUserAuthPublicKeyOk $ UserAuthPublicKeyOk algo pk
+                    continue dispatchState1
+            _ -> exceptionUnexpectedMessageType
 
 verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
 verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =

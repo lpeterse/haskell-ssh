@@ -46,7 +46,7 @@ main = do
             { Server.hostKeys           = pure privateKey
             , Server.onAuthRequest      = \username _ _ -> pure (Just username)
             , Server.onExecRequest      = Just runExec
-            -- , Server.onSend = \msg -> putStrLn ("sent: " ++ show msg)
+            , Server.onSend = \msg -> putStrLn ("sent: " ++ show msg)
             , Server.onReceive = \msg -> putStrLn ("received: " ++ show msg)
             , Server.onDisconnect       = \dis -> putStrLn
                                               ("disconnect: " ++ show dis)

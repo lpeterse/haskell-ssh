@@ -268,7 +268,7 @@ dispatcher07 = testCase "other messages" $ do
         rws = 3
         rps = 4
         req0 = MsgUnknown 0
-        exp0 = Disconnect DisconnectProtocolError "unexpected message type (for connection)" mempty
+        exp0 = Disconnect DisconnectProtocolError "unexpected message type (connection module)" mempty
 
 connectionChannelOpen01 :: TestTree
 connectionChannelOpen01 = testCase "open one channel" $ do
