@@ -34,7 +34,7 @@ plainDecryptionContext _ getCipherText = do
     when (paclen > maxPacketLength) $ throwIO $ Disconnect
         DisconnectProtocolError
         "max packet length exceeded"
-        ""
+        mempty
     BS.drop 1 <$> getCipherText (fromIntegral paclen)
 
 chacha20poly1305Context

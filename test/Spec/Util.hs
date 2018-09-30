@@ -52,3 +52,20 @@ instance InputStream DummySocket where
 
 close :: DummySocket -> IO ()
 close (DummySocket q _) = atomically $ Q.terminate q
+
+receivePlainMessage :: Encoding msg => DummySocket -> IO msg
+receivePlainMessage sock = do
+    bs0 <- receiveAll sock 4
+    let size = BS.foldl (\acc w8-> acc * 256 + fromIntegral w8) 0 bs0 :: Int
+    bs1 <- receiveAll sock size
+    let padding = fromIntegral (BS.index bs1 0)
+    assertBool "4 <= len padding <= 255" (4 <= padding && padding <= 255)
+    pure $ BS.take (size - 1 - padding) $ BS.drop 1 bs1
+    case runGet get (BS.take (size - 1 - padding) $ BS.drop 1 bs1) of
+        Nothing -> assertFailure "parser error"
+        Just m  -> pure m
+
+sendPlainMessage :: Encoding msg => DummySocket -> msg -> IO ()
+sendPlainMessage sock msg = do
+    void $ sendAll sock $ runPut (putPacked $ runPut $ put msg)
+

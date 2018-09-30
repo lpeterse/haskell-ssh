@@ -4,15 +4,12 @@ module Spec.Key ( tests ) where
 import           Control.Monad         (when, zipWithM_)
 import           Crypto.Error
 import qualified Crypto.PubKey.Ed25519 as Ed25519
-import qualified Data.ByteArray        as BA
-import qualified Data.ByteArray.Parse  as BP
 import qualified Data.ByteString       as BS
 
 import           Network.SSH.Key
 
 import           Test.Tasty
 import           Test.Tasty.HUnit
-import           Test.Tasty.QuickCheck as QC
 
 tests :: TestTree
 tests = testGroup "Network.SSH.Key"

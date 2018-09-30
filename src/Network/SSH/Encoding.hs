@@ -41,6 +41,13 @@ instance Encoding BS.ByteString where
     put = putByteString
     get = G.getBytes =<< G.remaining
 
+instance (Encoding a, Encoding b) => Encoding (Either a b) where
+    len (Left x)  = len x
+    len (Right x) = len x
+    put (Left x)  = put x
+    put (Right x) = put x
+    get           = (Right <$> get) <|> (Left <$> get)
+
 getFramed :: Get a -> Get a
 getFramed g = do
     w <- getWord32

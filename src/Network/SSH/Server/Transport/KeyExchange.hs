@@ -1,9 +1,11 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE MultiWayIf        #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleInstances #-}
 module Network.SSH.Server.Transport.KeyExchange
   ( KexStep (..)
   , performInitialKeyExchange
+  , newKexInit
   ) where
 
 import           Control.Concurrent.MVar
@@ -11,6 +13,7 @@ import           Control.Concurrent.STM.TVar
 import           Control.Exception            (throwIO)
 import           Control.Monad                (void)
 import           Control.Monad.STM            (atomically)
+import           Control.Applicative
 import qualified Crypto.Hash                  as Hash
 import qualified Crypto.PubKey.Curve25519     as Curve25519
 import qualified Crypto.PubKey.Ed25519        as Ed25519
@@ -36,17 +39,21 @@ data KexStep
 
 performInitialKeyExchange ::
     Config identity -> Transport -> (Message -> IO ()) -> Version -> Version
-    -> IO (SessionId, KexStep -> IO ())
+    -> IO (Either Disconnect (SessionId, KexStep -> IO ()))
 performInitialKeyExchange config transport enqueueMessage clientVersion serverVersion = do
     msid <- newEmptyMVar
     handler <- newKexStepHandler config transport clientVersion serverVersion enqueueMessage msid
     handler KexStart
-    MsgKexInit cki <- receiveMessage transport
-    handler (KexProcessInit cki)
-    MsgKexEcdhInit clientKexEcdhInit <- receiveMessage transport
-    handler (KexProcessEcdhInit clientKexEcdhInit)
-    session <- readMVar msid
-    pure (session, handler)
+    receiveMessage transport >>= \case
+        Left d -> pure (Left d)
+        Right cki -> do
+            handler (KexProcessInit cki)
+            receiveMessage transport >>= \case
+                Left d -> pure (Left d)
+                Right cei -> do
+                    handler (KexProcessEcdhInit cei)
+                    session <- readMVar msid
+                    pure $ Right (session, handler)
 
 newKexStepHandler :: Config identity -> Transport -> Version -> Version
                   -> (Message -> IO ()) -> MVar SessionId -> IO (KexStep -> IO ())
@@ -63,7 +70,7 @@ newKexStepHandler config transport clientVersion serverVersion sendMsg msid = do
                 sendMsg (MsgKexInit ski)
                 void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
             KexProcessEcdhInit {} ->
-                throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
+                throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" mempty
 
         waitingForKexInit ski = \case
             KexStart -> do
@@ -71,13 +78,13 @@ newKexStepHandler config transport clientVersion serverVersion sendMsg msid = do
             KexProcessInit cki ->
                 void $ swapMVar continuation (waitingForKexEcdhInit ski cki)
             KexProcessEcdhInit {} ->
-                throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" ""
+                throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" mempty
 
         waitingForKexEcdhInit ski cki = \case
             KexStart -> do
                 pure () -- already in progress
             KexProcessInit {} ->
-                throwIO $ Disconnect DisconnectProtocolError "unexpected KexInit" ""
+                throwIO $ Disconnect DisconnectProtocolError "unexpected KexInit" mempty
             KexProcessEcdhInit (KexEcdhInit clientEphemeralPublicKey) -> do
                 completeEcdhExchange ski cki clientEphemeralPublicKey
                 void $ swapMVar continuation noKexInProgress
@@ -157,17 +164,17 @@ newKexStepHandler config transport clientVersion serverVersion sendMsg msid = do
 commonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
 commonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
     ("curve25519-sha256@libssh.org":_) -> pure Curve25519Sha256AtLibsshDotOrg
-    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common kex algorithm" "")
+    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common kex algorithm" mempty)
 
 commonEncAlgorithmCS :: KexInit -> KexInit -> IO EncryptionAlgorithm
 commonEncAlgorithmCS ski cki = case kexEncryptionAlgorithmsClientToServer cki `intersect` kexEncryptionAlgorithmsClientToServer ski of
     ("chacha20-poly1305@openssh.com":_) -> pure Chacha20Poly1305AtOpensshDotCom
-    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (client to server)" "")
+    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (client to server)" mempty)
 
 commonEncAlgorithmSC :: KexInit -> KexInit -> IO EncryptionAlgorithm
 commonEncAlgorithmSC ski cki = case kexEncryptionAlgorithmsServerToClient cki `intersect` kexEncryptionAlgorithmsServerToClient ski of
     ("chacha20-poly1305@openssh.com":_) -> pure Chacha20Poly1305AtOpensshDotCom
-    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (server to client)" "")
+    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (server to client)" mempty)
 
 newKexInit :: Config identity -> IO KexInit
 newKexInit config = do

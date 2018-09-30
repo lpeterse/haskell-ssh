@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Network.SSH.Server
     ( serve
     )
@@ -37,7 +38,7 @@ import           Network.SSH.Server.Internal
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
 import           Network.SSH.Server.Transport.KeyExchange
-import           Network.SSH.Stream
+import           Network.SSH.Stream (DuplexStream ())
 import qualified Network.SSH.Server.Service.UserAuth as U
 import qualified Network.SSH.Server.Service.Connection as C
 
@@ -56,12 +57,12 @@ serve config stream = withDisconnectHandler config $ do
     withTransport stream (serveTransport config clientVersion serverVersion)
 
 serveTransport :: Config identity -> Version -> Version -> Transport -> IO Disconnect
-serveTransport config clientVersion serverVersion transport = do
+serveTransport config cv sv transport = do
     -- The `sendMessage` operation on the `transport` is not thread-safe.
     -- A background thread is started to serialize writes from different
     -- threads.
-    -- => `enqueue` is a thread-safe variant of `sendMessage`.
-    withAsyncSender config transport $ \enqueue -> do
+    -- => `send` is a thread-safe variant of `sendMessage`.
+    withAsyncSender config transport $ \send ->
         -- Perform the initial key exchange.
         -- This key exchange is handled separately as the key exchange protocol
         -- shall be followed strictly and no other messages shall be accepted
@@ -70,24 +71,25 @@ serveTransport config clientVersion serverVersion transport = do
         -- running key re-exchanges and all required context.
         -- Key re-exchanges may be interleaved with regular traffic and
         -- therefore cannot be performed synchronously.
-        (session, kexNextStep) <- performInitialKeyExchange config
-                                                            transport
-                                                            enqueue
-                                                            clientVersion
-                                                            serverVersion
-        -- Install a watchdog running in background that initiates
-        -- a key re-exchange when necessary.
-        withAsyncWatchdog config transport (kexNextStep KexStart) $ do
-            -- The authentication layer is (in this implementation) the
-            -- next higher layer. All other layers are on top of it
-            -- and all messages are passed through it (and eventually
-            -- rejected as long is the user is not authenticated).
-            -- withServiceLayer config session enqueue
-            -- The next call waits for incoming messages
-            -- and dispatches them either to the transport layer handling functions
-            -- or to the connection layer. It terminates when receiving a disconnect
-            -- message from the client or when an exception occurs.
-            processInboundMessages kexNextStep (U.dispatcher config session enqueue (C.dispatcher config enqueue))
+        performInitialKeyExchange config transport send cv sv >>= \case
+            Left disconnect -> pure disconnect
+            Right (session, kexNextStep) ->
+                -- Install a watchdog running in background that initiates
+                -- a key re-exchange when necessary.
+                withAsyncWatchdog config transport (kexNextStep KexStart) $ do
+                    -- The authentication layer is (in this implementation) the
+                    -- next higher layer. All other layers are on top of it
+                    -- and all messages are passed through it (and eventually
+                    -- rejected as long is the user is not authenticated).
+                    -- withServiceLayer config session enqueue
+                    -- The next call waits for incoming messages
+                    -- and dispatches them either to the transport layer handling functions
+                    -- or to the connection layer. It terminates when receiving a disconnect
+                    -- message from the client or when an exception occurs.
+                    processInboundMessages
+                        kexNextStep $
+                        U.dispatcher config session send $
+                        C.dispatcher config send
   where
     processInboundMessages :: (KexStep -> IO ()) -> MessageDispatcher Disconnect -> IO Disconnect
     processInboundMessages kexNextStep = g
