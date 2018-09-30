@@ -75,8 +75,6 @@ serveTransport config clientVersion serverVersion transport = do
                                                             enqueue
                                                             clientVersion
                                                             serverVersion
-
-        print session
         -- Install a watchdog running in background that initiates
         -- a key re-exchange when necessary.
         withAsyncWatchdog config transport (kexNextStep KexStart) $ do

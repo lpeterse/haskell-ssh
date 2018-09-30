@@ -64,7 +64,8 @@ verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> Publ
 verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =
     case (publicKey,signature) of
         (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
-        (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
+        -- TODO: Implement RSA
+        -- (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
         _                                        -> False
     where
         signedData :: BS.ByteString
