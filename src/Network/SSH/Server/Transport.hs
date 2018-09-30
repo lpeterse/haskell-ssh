@@ -17,13 +17,19 @@ module Network.SSH.Server.Transport
 where
 
 import           Control.Concurrent.STM.TVar
-import           Control.Monad.STM              ( atomically )
+import           Control.Concurrent.STM.TChan
+import           Control.Concurrent.STM.TMVar
+import           Control.Applicative
+import           Control.Monad.STM              ( atomically, check )
 import           Control.Monad                  ( when, void )
+import           Control.Concurrent.Async
 import           System.Clock
-import           Control.Exception              ( throwIO )
+import           Control.Exception              ( throwIO, fromException, catch )
 import qualified Crypto.Cipher.ChaCha          as ChaCha
 import qualified Crypto.MAC.Poly1305           as Poly1305
 import           Data.Bits
+import           Data.Function                  ( fix )
+import           Data.Maybe
 import           Data.Word
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
@@ -38,6 +44,7 @@ import           Network.SSH.Server.Config
 data Transport
     = forall stream. (DuplexStream stream) => Transport
     {   transportStream                   :: stream
+    ,   transportQueue                    :: TChan Message
     ,   transportPacketsReceived          :: TVar Word64
     ,   transportBytesReceived            :: TVar Word64
     ,   transportPacketsSent              :: TVar Word64
@@ -53,11 +60,12 @@ data Transport
 
 data Role = Client| Server
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.ScrubbedBytes])
-type DecryptionContext  = Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
-type EncryptionContext  = Word64 -> BS.ByteString -> IO BS.ByteString
+type DecryptionContext = Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
+type EncryptionContext = Word64 -> BS.ByteString -> IO BS.ByteString
 
-withTransport :: DuplexStream stream => stream -> (Transport -> IO a) -> IO a
-withTransport stream runWith = do
+withTransport :: DuplexStream stream => Config identity -> stream -> (Transport -> IO a) -> IO a
+withTransport config stream runWith = do
+    queue      <- newTChanIO
     packsSent  <- newTVarIO 0
     bytesSent  <- newTVarIO 0
     packsRcvd  <- newTVarIO 0
@@ -70,7 +78,8 @@ withTransport stream runWith = do
     decCtx     <- newTVarIO plainDecryptionContext
     decCtxNext <- newTVarIO plainDecryptionContext
     let transport = Transport
-            { transportStream = stream
+            { transportStream                   = stream
+            , transportQueue                    = queue
             , transportPacketsSent              = packsSent
             , transportBytesSent                = bytesSent
             , transportPacketsReceived          = packsRcvd
@@ -83,7 +92,40 @@ withTransport stream runWith = do
             , transportDecryptionContext        = decCtx
             , transportDecryptionContextNext    = decCtxNext
             }
-    runWith transport
+    disconnect <- newEmptyTMVarIO
+    withAsync (runSender transport disconnect) $ \thread ->
+        link thread >> runWith transport `catch` \e -> do
+            -- In case of an exception, the sender thread shall try to
+            -- deliver a disconnect message to the client before terminating.
+            -- It might happen that the message cannot be sent in time or
+            -- the sending itself fails with an exception or the sender thread
+            -- is already dead. All cases have been considered and are
+            -- handled here: In no case does this procedure take longer than 1 second.
+            atomically $ putTMVar disconnect $ fromMaybe
+                (Disconnect DisconnectByApplication mempty mempty)
+                (fromException e)
+            timeout <- (\t -> readTVar t >>= check) <$> registerDelay 1000000
+            atomically $ timeout <|> void (waitCatchSTM thread)
+            throwIO e
+     where
+        -- The sender is an infinite loop that waits for messages to be sent
+        -- from either the transport or the connection layer.
+        -- The sender is also aware of switching the encryption context
+        -- when encountering KexNewKeys messages.
+        runSender transport disconnect = fix $ \continue -> do
+            msg <- atomically $ (MsgDisconnect <$> readTMVar disconnect)
+                            <|> readTChan (transportQueue transport)
+            onSend config msg
+            sendMessageNotThreadSafe transport msg
+            case msg of
+                -- This thread shall terminate gracefully in case the
+                -- message was a disconnect message. By specification
+                -- no other messages may follow after a disconnect message.
+                MsgDisconnect d -> pure d
+                -- A key re-exchange is taken into effect right after
+                -- the MsgKexNewKey message.
+                MsgKexNewKeys{} -> switchEncryptionContext transport >> continue
+                _               -> continue
 
 switchEncryptionContext :: Transport -> IO ()
 switchEncryptionContext transport = atomically $ do
@@ -109,9 +151,12 @@ setChaCha20Poly1305Context transport role (KeyStreams keys) = atomically $ do
     mainKeyCS : headerKeyCS : _ = keys "C"
     mainKeySC : headerKeySC : _ = keys "D"
 
-sendMessage :: (Show msg, Encoding msg) => Transport -> msg -> IO ()
-sendMessage transport@Transport { transportStream = stream } msg = do
-    let plainText = runPut (put msg) :: BS.ByteString
+sendMessage :: ToMessage msg => Transport -> msg -> IO ()
+sendMessage transport msg = do
+    atomically $ writeTChan (transportQueue transport) (toMessage msg)
+
+sendMessageNotThreadSafe :: Transport -> Message -> IO ()
+sendMessageNotThreadSafe transport@Transport { transportStream = stream } msg = do
     encrypt     <- readTVarIO (transportEncryptionContext transport)
     bytesSent   <- readTVarIO (transportBytesSent transport)
     packetsSent <- readTVarIO (transportPacketsSent transport)
@@ -119,6 +164,8 @@ sendMessage transport@Transport { transportStream = stream } msg = do
     void $ sendAll stream cipherText
     atomically $ writeTVar (transportBytesSent transport)   $! bytesSent + fromIntegral (BS.length cipherText)
     atomically $ writeTVar (transportPacketsSent transport) $! packetsSent + 1
+    where
+        plainText = runPut (put msg) :: BS.ByteString
 
 receiveMessage :: Encoding msg => Transport -> IO msg
 receiveMessage transport@Transport { transportStream = stream } = do

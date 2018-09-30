@@ -7,6 +7,7 @@
 module Network.SSH.Message
   ( -- * Message
     Message (..)
+  , ToMessage (..)
     -- ** Disconnect (1)
   , Disconnect (..)
   , DisconnectReason (..)
@@ -107,6 +108,87 @@ import           System.Exit
 
 import           Network.SSH.Encoding
 import           Network.SSH.Key
+
+class ToMessage a where
+    toMessage :: a -> Message
+
+instance ToMessage Message where
+    toMessage = id
+
+instance ToMessage Disconnect where
+    toMessage = MsgDisconnect
+
+instance ToMessage Ignore where
+    toMessage = MsgIgnore
+
+instance ToMessage Debug where
+    toMessage = MsgDebug
+
+instance ToMessage Unimplemented where
+    toMessage = MsgUnimplemented
+
+instance ToMessage ServiceRequest where
+    toMessage = MsgServiceRequest
+
+instance ToMessage ServiceAccept where
+    toMessage = MsgServiceAccept
+
+instance ToMessage KexInit where
+    toMessage = MsgKexInit
+
+instance ToMessage KexNewKeys where
+    toMessage = MsgKexNewKeys
+
+instance ToMessage KexEcdhInit where
+    toMessage = MsgKexEcdhInit
+
+instance ToMessage KexEcdhReply where
+    toMessage = MsgKexEcdhReply
+
+instance ToMessage UserAuthRequest where
+    toMessage = MsgUserAuthRequest
+
+instance ToMessage UserAuthFailure where
+    toMessage = MsgUserAuthFailure
+
+instance ToMessage UserAuthSuccess where
+    toMessage = MsgUserAuthSuccess
+
+instance ToMessage UserAuthBanner where
+    toMessage = MsgUserAuthBanner
+
+instance ToMessage UserAuthPublicKeyOk where
+    toMessage = MsgUserAuthPublicKeyOk
+
+instance ToMessage ChannelOpen where
+    toMessage = MsgChannelOpen
+
+instance ToMessage ChannelOpenConfirmation where
+    toMessage = MsgChannelOpenConfirmation
+
+instance ToMessage ChannelOpenFailure where
+    toMessage = MsgChannelOpenFailure
+
+instance ToMessage ChannelWindowAdjust where
+    toMessage = MsgChannelWindowAdjust
+
+instance ToMessage ChannelData where
+    toMessage = MsgChannelData
+
+instance ToMessage ChannelExtendedData where
+    toMessage = MsgChannelExtendedData
+
+instance ToMessage ChannelEof where
+    toMessage = MsgChannelEof
+
+instance ToMessage ChannelRequest where
+    toMessage = MsgChannelRequest
+
+instance ToMessage ChannelSuccess where
+    toMessage = MsgChannelSuccess
+
+instance ToMessage ChannelFailure where
+    toMessage = MsgChannelFailure
 
 data Message
     = MsgDisconnect              Disconnect

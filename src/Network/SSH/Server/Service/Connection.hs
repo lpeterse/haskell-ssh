@@ -239,6 +239,7 @@ connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat)
             -- "exit-status" ->
             -- "exit-signal" ->
             -- "window-change" ->
+            -- "auth-agent-req@openssh.com" ->
             _ -> pure $ failure channel
     where
         exception e     = throwSTM $ Disconnect DisconnectProtocolError e mempty
@@ -246,7 +247,9 @@ connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat)
         success channel
             | wantReply = pure $ Just $ Right $ ChannelSuccess (chanIdRemote channel)
             | otherwise = pure $ channel `seq` Nothing -- 100% test coverage ;-)
-        failure channel = pure $ Just $ Left  $ ChannelFailure (chanIdRemote channel)
+        failure channel
+            | wantReply = pure $ Just $ Left  $ ChannelFailure (chanIdRemote channel)
+            | otherwise = pure $ channel `seq` Nothing -- 100% test coverage ;-)
 
         sessionExec :: Channel -> SessionState -> (Session identity -> IO ExitCode) -> IO ()
         sessionExec channel sessState handle = do

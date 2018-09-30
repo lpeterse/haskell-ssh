@@ -77,7 +77,7 @@ testKeyExchange01 = testCase "happy path" $ do
     withAsync (serve config serverSocket `finally` close serverSocket) $ \thread -> do
         void $ sendAll clientSocket (clientVersion <> "\r\n")
         assertEqual "server version" (serverVersion <> "\r\n") =<< receive clientSocket (BS.length serverVersion + 2)
-        withTransport clientSocket $ \transport-> do
+        withTransport config clientSocket $ \transport-> do
             void $ exchangeKeys config cv sv transport
             sendMessage transport disconnect
             waitCatch thread >>= \case
