@@ -28,8 +28,6 @@ import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Transport
-import           Network.SSH.Server.Transport.Encryption
-import           Network.SSH.Server.Transport.Internal
 
 data KexStep
     = KexStart
@@ -44,12 +42,18 @@ performInitialKeyExchange config transport enqueueMessage clientVersion serverVe
     handler <- newKexStepHandler config transport clientVersion serverVersion enqueueMessage msid
     handler KexStart
     receiveMessage transport >>= \case
-        Left d -> pure (Left d)
+        Left d -> do
+            onReceive config (MsgDisconnect d)
+            pure (Left d)
         Right cki -> do
+            onReceive config (MsgKexInit cki)
             handler (KexProcessInit cki)
             receiveMessage transport >>= \case
-                Left d -> pure (Left d)
+                Left d -> do
+                    onReceive config (MsgDisconnect d)
+                    pure (Left d)
                 Right cei -> do
+                    onReceive config (MsgKexEcdhInit cei)
                     handler (KexProcessEcdhInit cei)
                     session <- readMVar msid
                     pure $ Right (session, handler)
@@ -63,6 +67,7 @@ newKexStepHandler config transport clientVersion serverVersion sendMsg msid = do
             KexStart -> do
                 ski <- newKexInit config
                 sendMsg (MsgKexInit ski)
+                updateRekeyTracking transport
                 void $ swapMVar continuation (waitingForKexInit ski)
             KexProcessInit cki -> do
                 ski <- newKexInit config
@@ -150,10 +155,6 @@ newKexStepHandler config transport clientVersion serverVersion sendMsg msid = do
                         pure s
 
                 setChaCha20Poly1305Context transport Server $ deriveKeys secret hash session
-
-                atomically . writeTVar (transportLastRekeyingTime         transport) =<< fromIntegral . sec <$> getTime Monotonic
-                atomically $ writeTVar (transportLastRekeyingDataSent     transport) =<< readTVar (transportBytesSent     transport)
-                atomically $ writeTVar (transportLastRekeyingDataReceived transport) =<< readTVar (transportBytesReceived transport)
 
                 -- The encryption context shall be switched no earlier than
                 -- before the new keys message has been transmitted.
