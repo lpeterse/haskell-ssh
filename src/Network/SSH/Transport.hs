@@ -1,9 +1,11 @@
-{-# LANGUAGE ExistentialQuantification, OverloadedStrings, MultiWayIf, GeneralizedNewtypeDeriving, TupleSections, LambdaCase #-}
+{-# LANGUAGE ExistentialQuantification, OverloadedStrings, MultiWayIf, TupleSections, LambdaCase #-}
 module Network.SSH.Transport
-    ( MonadTransport (..)
-    , TransportEnv()
-    , KeyStreams (..)
+    ( Transport()
+    , TransportConfig (..)
     , withTransport
+    , sendMessage
+    , receiveMessage
+    , getSessionId
     )
 where
 
@@ -11,9 +13,6 @@ import           Control.Applicative
 import           Control.Concurrent.MVar
 import           Control.Exception              ( throwIO )
 import           Control.Monad                  ( when, void )
-import           Control.Monad.Catch            ( MonadThrow, MonadCatch, MonadMask )
-import           Control.Monad.IO.Class
-import           Control.Monad.Trans.Reader
 import qualified Crypto.Cipher.ChaCha          as ChaCha
 import qualified Crypto.Hash                   as Hash
 import qualified Crypto.MAC.Poly1305           as Poly1305
@@ -35,14 +34,7 @@ import           Network.SSH.Constants
 import           Network.SSH.Algorithms
 import           Network.SSH.Key
 
-class MonadTransport m where
-    sendRawMessage :: BS.ByteString -> m ()
-    receiveRawMessage :: m BS.ByteString
-
-newtype TransportM a = TransportM (ReaderT TransportEnv IO a)
-    deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadCatch, MonadMask)
-
-data TransportEnv
+data Transport
     = forall stream. DuplexStream stream => TransportEnv
     { tStream            :: stream
     , tConfig            :: TransportConfig
@@ -57,6 +49,7 @@ data TransportEnv
     , tDecryptionCtx     :: MVar DecryptionContext
     , tDecryptionCtxNext :: MVar DecryptionContext
     , tKexContinuation   :: MVar KexContinuation
+    , tSessionId         :: MVar SessionId
     }
 
 data TransportConfig
@@ -66,10 +59,6 @@ data TransportConfig
     , tEncAlgorithms   :: NEL.NonEmpty EncryptionAlgorithm
     }
     | TransportClientConfig
-
-instance MonadTransport TransportM where
-    sendRawMessage bs = TransportM $ ask >>= \env-> liftIO (transportSendRawMessage env bs)
-    receiveRawMessage = TransportM $ ask >>= \env-> liftIO (transportReceiveRawMessage env)
 
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.ScrubbedBytes])
 
@@ -83,11 +72,21 @@ data KexStep
 
 newtype KexContinuation = KexContinuation (KexStep -> IO KexContinuation)
 
-runTransportM :: TransportEnv -> TransportM a -> IO a
-runTransportM st (TransportM r) = runReaderT r st
-
-withTransport :: (DuplexStream stream) => TransportConfig -> stream -> TransportM () -> IO ()
-withTransport config stream transportM = do
+withTransport :: (DuplexStream stream) => TransportConfig -> stream -> (Transport -> IO a) -> IO a
+withTransport config stream runWith = do
+    (clientVersion, serverVersion) <- case config of
+        -- Receive the peer version and reject immediately if this
+        -- is not an SSH connection attempt (before allocating
+        -- any more resources); respond with the server version string.
+        TransportServerConfig {} -> do
+            cv <- receiveVersion stream
+            sv <- sendVersion stream
+            pure (cv, sv)
+        -- Start with sending local version and then wait for response.
+        TransportClientConfig {} -> do
+            cv <- sendVersion stream
+            sv <- receiveVersion stream
+            pure (cv, sv)
     xBytesSent           <- newMVar 0
     xPacketsSent         <- newMVar 0
     xBytesReceived       <- newMVar 0
@@ -97,11 +96,12 @@ withTransport config stream transportM = do
     xDecryptionCtx       <- newMVar plainDecryptionContext
     xDecryptionCtxNext   <- newMVar plainDecryptionContext
     xKexContinuation     <- newEmptyMVar
+    xSessionId           <- newEmptyMVar
     let env = TransportEnv
             { tStream            = stream
             , tConfig            = config
-            , tClientVersion     = version -- FIXME
-            , tServerVersion     = version
+            , tClientVersion     = clientVersion
+            , tServerVersion     = serverVersion
             , tBytesSent         = xBytesSent
             , tPacketsSent       = xPacketsSent
             , tBytesReceived     = xBytesReceived
@@ -111,17 +111,23 @@ withTransport config stream transportM = do
             , tDecryptionCtx     = xDecryptionCtx
             , tDecryptionCtxNext = xDecryptionCtxNext
             , tKexContinuation   = xKexContinuation
+            , tSessionId         = xSessionId
             }
-    cookie <- newCookie
-    sessionMVar <- newEmptyMVar
-    putMVar xKexContinuation (kexContinuation env cookie sessionMVar)
-    runTransportM env transportM
+    runInitialKeyExchange env
+    runWith env
 
-transportSendMessage :: Encoding msg => TransportEnv -> msg -> IO ()
-transportSendMessage env msg =
-    transportSendRawMessage env $ runPut (put msg) 
+sendMessage :: Encoding msg => Transport -> msg -> IO ()
+sendMessage env msg =
+    transportSendRawMessage env $ runPut (put msg)
 
-transportSendRawMessage :: TransportEnv -> BS.ByteString -> IO ()
+receiveMessage :: Encoding msg => Transport -> IO msg
+receiveMessage env = do
+    raw <- transportReceiveRawMessage env
+    maybe exception pure (tryParse raw)
+    where
+        exception = throwProtocolError "invalid/unexpected message"
+
+transportSendRawMessage :: Transport -> BS.ByteString -> IO ()
 transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
     modifyMVar_ (tEncryptionCtx env) $ \encrypt -> do
         packets <- readMVar (tPacketsSent env)
@@ -133,20 +139,22 @@ transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
             Nothing         -> pure encrypt
             Just KexNewKeys -> readMVar (tEncryptionCtxNext env)
 
-transportReceiveRawMessage :: TransportEnv -> IO BS.ByteString
-transportReceiveRawMessage env@TransportEnv { tStream = stream } =
-    maybe (transportReceiveRawMessage env) pure =<< receiveMaybe
-    where
-        receiveMaybe = modifyMVar (tDecryptionCtx env) $ \decrypt -> do
-            packets <- readMVar (tPacketsReceived env)
-            plainText <- decrypt packets receiveAll'
-            modifyMVar_ (tPacketsReceived env) $ \pacs  -> pure $! pacs + 1
-            case interpreter plainText of
-                Just i  -> i >> pure (decrypt, Nothing)
-                Nothing -> case tryParse plainText of
-                    Just KexNewKeys  -> (,Nothing) <$> readMVar (tDecryptionCtxNext env)
-                    Nothing -> pure (decrypt, Just plainText)
+transportReceiveRawMessage :: Transport -> IO BS.ByteString
+transportReceiveRawMessage env =
+    maybe (transportReceiveRawMessage env) pure =<< transportReceiveRawMessageMaybe env
 
+transportReceiveRawMessageMaybe :: Transport -> IO (Maybe BS.ByteString)
+transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
+    modifyMVar (tDecryptionCtx env) $ \decrypt -> do
+        packets <- readMVar (tPacketsReceived env)
+        plainText <- decrypt packets receiveAll'
+        modifyMVar_ (tPacketsReceived env) $ \pacs  -> pure $! pacs + 1
+        case interpreter plainText of
+            Just i  -> i >> pure (decrypt, Nothing)
+            Nothing -> case tryParse plainText of
+                Just KexNewKeys  -> (,Nothing) <$> readMVar (tDecryptionCtxNext env)
+                Nothing -> pure (decrypt, Just plainText)
+    where
         receiveAll' i = do
             bs <- receiveAll stream i
             modifyMVar_ (tBytesReceived env) $ \bytes ->
@@ -160,14 +168,17 @@ transportReceiveRawMessage env@TransportEnv { tStream = stream } =
                 i1 Debug {} = pure ()
                 i2 Ignore {} = pure ()
                 i3 Unimplemented {} = pure ()
-                i4 KexInit {} = pure ()
-                i5 KexEcdhInit {} = pure ()
+                i4 x@KexInit     {} = kexContinue env (Init x)
+                i5 x@KexEcdhInit {} = kexContinue env (InitEcdh x)
+
+getSessionId :: Transport -> IO SessionId
+getSessionId = readMVar . tSessionId
 
 -------------------------------------------------------------------------------
 -- CRYPTO ---------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
-setChaCha20Poly1305Context :: TransportEnv -> KeyStreams -> IO ()
+setChaCha20Poly1305Context :: Transport -> KeyStreams -> IO ()
 setChaCha20Poly1305Context env (KeyStreams keys) = do
     void $ swapMVar (tEncryptionCtxNext env) $! case tConfig env of
         TransportServerConfig {} -> chaCha20Poly1305EncryptionContext headerKeySC mainKeySC
@@ -187,10 +198,8 @@ plainEncryptionContext _ plainText = pure $ runPut (putPacked plainText)
 plainDecryptionContext :: DecryptionContext
 plainDecryptionContext _ getCipherText = do
     paclen <- runGet getWord32 =<< getCipherText 4
-    when (paclen > maxPacketLength) $ throwIO $ Disconnect
-        DisconnectProtocolError
-        "max packet length exceeded"
-        mempty
+    when (paclen > maxPacketLength) $
+        throwProtocolError "max packet length exceeded"
     BS.drop 1 <$> getCipherText (fromIntegral paclen)
 
 chaCha20Poly1305EncryptionContext :: BA.ByteArrayAccess key => key -> key -> Word64 -> BS.ByteString -> IO BS.ByteString
@@ -250,11 +259,8 @@ chaCha20Poly1305DecryptionContext headerKey mainKey packetsReceived getCipher = 
         else do
             let plain = fst (ChaCha.combine ccMain' pac)
             case BS.uncons plain of
-                Nothing -> throwIO $ Disconnect DisconnectProtocolError
-                                                "packet structure"
-                                                ""
-                Just (h, t) ->
-                    pure $ BS.take (BS.length t - fromIntegral h) t
+                Nothing     -> throwProtocolError "packet structure"
+                Just (h, t) -> pure $ BS.take (BS.length t - fromIntegral h) t
 
 -- The sequence number is always the lower 32 bits of the number of
 -- packets received - 1. By specification, it wraps around every 2^32 packets.
@@ -277,19 +283,37 @@ nonce i =
 -- KEY EXCHANGE ---------------------------------------------------------------
 -------------------------------------------------------------------------------
 
-kexContinuation :: TransportEnv -> Cookie -> MVar SessionId -> KexContinuation
-kexContinuation env cookie sessionMVar = kex0
+runInitialKeyExchange :: Transport -> IO ()
+runInitialKeyExchange env = do
+    cookie <- newCookie
+    putMVar (tKexContinuation env) (kexContinuation env cookie)
+    kexContinue env Start
+    dontAcceptMessageUntilKexComplete
+    where
+        dontAcceptMessageUntilKexComplete = do
+            transportReceiveRawMessageMaybe env >>= \case
+                Just _  -> throwIO $ Disconnect DisconnectProtocolError "invalid message during key exchange" mempty
+                Nothing -> tryReadMVar (tSessionId env) >>= \case
+                    Nothing -> dontAcceptMessageUntilKexComplete
+                    Just _  -> pure ()
+
+kexContinue :: Transport -> KexStep -> IO ()
+kexContinue env step = do
+    modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f step
+
+kexContinuation :: Transport -> Cookie -> KexContinuation
+kexContinuation env cookie = kex0
     where
         kex0 :: KexContinuation
         kex0 = KexContinuation $ \case
             Start -> do
                 let ski = kexInit (tConfig env) cookie
-                transportSendMessage env ski
+                sendMessage env ski
                 -- updateRekeyTracking transport
                 pure (kex1 ski)
             Init cki -> do
                 let ski = kexInit (tConfig env) cookie
-                transportSendMessage env ski
+                sendMessage env ski
                 pure (kex2 ski cki)
             InitEcdh {} ->
                 throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" mempty
@@ -358,20 +382,20 @@ kexContinuation env cookie sessionMVar = kex0
             let hostKey = PublicKeyEd25519 pubKey
                 ephmKey = serverEphemeralPublicKey
                 signature = SignatureEd25519 $ Ed25519.sign secKey pubKey hash
-            transportSendMessage env (KexEcdhReply hostKey ephmKey signature)
+            sendMessage env (KexEcdhReply hostKey ephmKey signature)
 
-            session <- tryReadMVar sessionMVar >>= \case
+            session <- tryReadMVar (tSessionId env) >>= \case
                 Just s -> pure s
-                Nothing -> 
+                Nothing ->
                     let s = SessionId (BA.convert hash)
-                    in  putMVar sessionMVar s >> pure s
+                    in  putMVar (tSessionId env) s >> pure s
 
             setChaCha20Poly1305Context env $ deriveKeys secret hash session
 
             -- The encryption context shall be switched no earlier than
             -- before the new keys message has been transmitted.
             -- It's the sender's thread responsibility to switch the context.
-            transportSendMessage env KexNewKeys
+            sendMessage env KexNewKeys
 
 commonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
 commonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
@@ -444,3 +468,37 @@ deriveKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> (k1 
     st =
         flip Hash.hashUpdate hash $
         Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
+
+-------------------------------------------------------------------------------
+-- UTIL -----------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+throwProtocolError :: BS.ByteString -> IO a
+throwProtocolError e = throwIO $ Disconnect DisconnectProtocolError e mempty
+
+-- The maximum length of the version string is 255 chars including CR+LF.
+-- The version string is usually short and transmitted within
+-- a single TCP segment. The concatenation is therefore unlikely to happen
+-- for regular use cases, but nonetheless required for correctness.
+-- It is furthermore assumed that the client does not send any more data
+-- after the version string before having received a response from the server;
+-- otherwise parsing will fail. This is done in order to not having to deal with leftovers.
+receiveVersion :: (InputStream stream) => stream -> IO Version
+receiveVersion stream = receive stream 257 >>= f
+  where
+    f bs
+        | BS.null bs = throwException
+        | BS.length bs >= 257 = throwException
+        | BS.last bs == 10 = case runGet get bs of
+            Nothing -> throwException
+            Just v  -> pure v
+        | otherwise = do
+            bs' <- receive stream (255 - BS.length bs)
+            if BS.null bs' then throwException else f (bs <> bs')
+    throwException =
+        throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""
+
+sendVersion :: (OutputStream stream) => stream -> IO Version
+sendVersion stream = do
+    void $ sendAll stream $ runPut $ put version
+    pure version
