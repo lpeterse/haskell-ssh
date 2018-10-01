@@ -14,6 +14,9 @@ import           System.Exit
 type Put = P.Put
 type Get = G.Get
 
+tryParse :: Encoding a => BS.ByteString -> Maybe a
+tryParse = runGet get
+
 runPut :: Put -> BS.ByteString
 runPut = P.runPut
 

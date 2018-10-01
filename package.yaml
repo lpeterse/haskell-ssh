@@ -29,6 +29,8 @@ dependencies:
 - memory
 - stm
 - clock
+- transformers
+- exceptions
 
 library:
   source-dirs: src
