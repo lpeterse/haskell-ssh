@@ -6,6 +6,7 @@ module Network.SSH.Key
     (   KeyPair (..)
     ,   PublicKey (..)
     ,   decodePrivateKeyFile
+    ,   toPublicKey
     ) where
 
 import           Control.Applicative    (many, (<|>))
@@ -33,6 +34,9 @@ data PublicKey
     | PublicKeyRSA     RSA.PublicKey
     | PublicKeyOther   BA.Bytes
     deriving (Eq, Show)
+
+toPublicKey :: KeyPair -> PublicKey
+toPublicKey (KeyPairEd25519 pk _) = PublicKeyEd25519 pk
 
 decodePrivateKeyFile :: ( MonadFail m, BA.ByteArray input, IsString input, Show input
                         , BA.ByteArray passphrase, BA.ByteArray comment )

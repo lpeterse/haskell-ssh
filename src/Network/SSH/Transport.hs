@@ -25,7 +25,6 @@ import           Data.List
 import qualified Data.List.NonEmpty            as NEL
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
---import           System.Clock
 
 import           Network.SSH.Encoding
 import           Network.SSH.Stream
@@ -54,11 +53,15 @@ data Transport
 
 data TransportConfig
     = TransportServerConfig
-    { tHostKeys        :: NEL.NonEmpty KeyPair
-    , tKexAlgorithms   :: NEL.NonEmpty KeyExchangeAlgorithm
-    , tEncAlgorithms   :: NEL.NonEmpty EncryptionAlgorithm
+    { tHostKeys          :: NEL.NonEmpty KeyPair
+    , tKexAlgorithms     :: NEL.NonEmpty KeyExchangeAlgorithm
+    , tEncAlgorithms     :: NEL.NonEmpty EncryptionAlgorithm
     }
     | TransportClientConfig
+    { tHostKeyAlgorithms :: NEL.NonEmpty HostKeyAlgorithm
+    , tKexAlgorithms     :: NEL.NonEmpty KeyExchangeAlgorithm
+    , tEncAlgorithms     :: NEL.NonEmpty EncryptionAlgorithm
+    }
 
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.ScrubbedBytes])
 
@@ -66,11 +69,11 @@ type DecryptionContext = Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
 type EncryptionContext = Word64 -> BS.ByteString -> IO BS.ByteString
 
 data KexStep
-    = Start
-    | Init     KexInit
-    | InitEcdh KexEcdhInit
+    = Init       KexInit
+    | EcdhInit   KexEcdhInit
+    | EcdhReply  KexEcdhReply
 
-newtype KexContinuation = KexContinuation (KexStep -> IO KexContinuation)
+newtype KexContinuation = KexContinuation (Maybe KexStep -> IO KexContinuation)
 
 withTransport :: (DuplexStream stream) => TransportConfig -> stream -> (Transport -> IO a) -> IO a
 withTransport config stream runWith = do
@@ -132,9 +135,11 @@ transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
     modifyMVar_ (tEncryptionCtx env) $ \encrypt -> do
         packets <- readMVar (tPacketsSent env)
         cipherText <- encrypt packets plainText
+        -- NB: Increase packet counter before sending in order
+        --     to avoid nonce reuse in exceptional cases!
+        modifyMVar_ (tPacketsSent env) $ \pacs  -> pure $! pacs + 1
         sent <- sendAll stream cipherText
         modifyMVar_ (tBytesSent env)   $ \bytes -> pure $! bytes + fromIntegral sent
-        modifyMVar_ (tPacketsSent env) $ \pacs  -> pure $! pacs + 1
         case tryParse plainText of
             Nothing         -> pure encrypt
             Just KexNewKeys -> readMVar (tEncryptionCtxNext env)
@@ -152,7 +157,8 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
         case interpreter plainText of
             Just i  -> i >> pure (decrypt, Nothing)
             Nothing -> case tryParse plainText of
-                Just KexNewKeys  -> (,Nothing) <$> readMVar (tDecryptionCtxNext env)
+                Just KexNewKeys  -> do
+                    (,Nothing) <$> readMVar (tDecryptionCtxNext env)
                 Nothing -> pure (decrypt, Just plainText)
     where
         receiveAll' i = do
@@ -161,15 +167,16 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
                 pure $! bytes + fromIntegral (BS.length bs)
             pure bs
 
-        interpreter plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5
+        interpreter plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5 <|> f i6
             where
                 f i = i <$> tryParse plainText
-                i0 Disconnect {} = print "DISCONNECT"
-                i1 Debug {} = pure ()
-                i2 Ignore {} = pure ()
-                i3 Unimplemented {} = pure ()
-                i4 x@KexInit     {} = kexContinue env (Init x)
-                i5 x@KexEcdhInit {} = kexContinue env (InitEcdh x)
+                i0 Disconnect     {} = errorNotImplemented
+                i1 Debug          {} = pure ()
+                i2 Ignore         {} = pure ()
+                i3 Unimplemented  {} = pure ()
+                i4 x@KexInit      {} = kexContinue env (Init x)
+                i5 x@KexEcdhInit  {} = kexContinue env (EcdhInit x)
+                i6 x@KexEcdhReply {} = kexContinue env (EcdhReply x)
 
 getSessionId :: Transport -> IO SessionId
 getSessionId = readMVar . tSessionId
@@ -286,116 +293,137 @@ nonce i =
 runInitialKeyExchange :: Transport -> IO ()
 runInitialKeyExchange env = do
     cookie <- newCookie
-    putMVar (tKexContinuation env) (kexContinuation env cookie)
-    kexContinue env Start
+    putMVar (tKexContinuation env) $ case tConfig env of
+        TransportClientConfig {} -> kexClientContinuation env cookie
+        TransportServerConfig {} -> kexServerContinuation env cookie
+    kexTrigger env
     dontAcceptMessageUntilKexComplete
     where
         dontAcceptMessageUntilKexComplete = do
             transportReceiveRawMessageMaybe env >>= \case
-                Just _  -> throwIO $ Disconnect DisconnectProtocolError "invalid message during key exchange" mempty
+                Just _  -> errorInvalidTransition
                 Nothing -> tryReadMVar (tSessionId env) >>= \case
                     Nothing -> dontAcceptMessageUntilKexComplete
                     Just _  -> pure ()
 
+kexTrigger :: Transport -> IO ()
+kexTrigger env = do
+    modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f Nothing
+
 kexContinue :: Transport -> KexStep -> IO ()
 kexContinue env step = do
-    modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f step
+    modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f (Just step)
 
-kexContinuation :: Transport -> Cookie -> KexContinuation
-kexContinuation env cookie = kex0
+kexClientContinuation :: Transport -> Cookie -> KexContinuation
+kexClientContinuation env cookie = clientKex0
     where
-        kex0 :: KexContinuation
-        kex0 = KexContinuation $ \case
-            Start -> do
-                let ski = kexInit (tConfig env) cookie
-                sendMessage env ski
-                -- updateRekeyTracking transport
-                pure (kex1 ski)
-            Init cki -> do
-                let ski = kexInit (tConfig env) cookie
-                sendMessage env ski
-                pure (kex2 ski cki)
-            InitEcdh {} ->
-                throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" mempty
+        clientKex0 :: KexContinuation
+        clientKex0 = KexContinuation $ \case
+            Nothing -> do
+                sendMessage env cki
+                pure (clientKex1 cki)
+            Just (Init ski) -> do
+                cekSecret <- Curve25519.generateSecretKey
+                let cek = Curve25519.toPublic cekSecret
+                sendMessage env cki
+                sendMessage env (KexEcdhInit cek)
+                pure (clientKex2 cki ski cek cekSecret)
+            _ -> errorInvalidTransition
+            where
+                cki = kexInit (tConfig env) cookie
 
-        kex1 :: KexInit -> KexContinuation
-        kex1 ski = KexContinuation $ \case
-            Start -> do
-                pure (kex1 ski) -- already in progress
-            Init cki ->
-                pure (kex2 cki ski)
-            InitEcdh {} ->
-                throwIO $ Disconnect DisconnectProtocolError "unexpected KexEcdhInit" mempty
+        clientKex1 :: KexInit -> KexContinuation
+        clientKex1 cki = KexContinuation $ \case
+            Nothing ->
+                pure (clientKex1 cki)
+            Just (Init ski) -> do
+                cekSecret <- Curve25519.generateSecretKey
+                let cek = Curve25519.toPublic cekSecret
+                sendMessage env (KexEcdhInit cek)
+                pure (clientKex2 cki ski cek cekSecret)
+            _ -> errorInvalidTransition
 
-        kex2 :: KexInit -> KexInit -> KexContinuation
-        kex2 cki ski = KexContinuation $ \case
-            Start -> do
-                pure (kex2 cki ski) -- already in progress
-            Init {} ->
-                throwIO $ Disconnect DisconnectProtocolError "unexpected KexInit" mempty
-            InitEcdh (KexEcdhInit clientEphemeralPublicKey) -> do
-                completeEcdhExchange cki ski clientEphemeralPublicKey
-                pure kex0
+        clientKex2 :: KexInit -> KexInit -> Curve25519.PublicKey -> Curve25519.SecretKey -> KexContinuation
+        clientKex2 cki ski cek cekSecret = KexContinuation $ \case
+            Nothing ->
+                pure (clientKex2 cki ski cek cekSecret)
+            Just (EcdhReply ecdhReply) -> do
+                consumeEcdhReply cki ski cek cekSecret ecdhReply
+                pure clientKex0
+            _ -> errorInvalidTransition
 
-        completeEcdhExchange :: KexInit -> KexInit -> Curve25519.PublicKey -> IO ()
-        completeEcdhExchange cki ski clientEphemeralPublicKey = do
+        consumeEcdhReply :: KexInit -> KexInit -> Curve25519.PublicKey -> Curve25519.SecretKey -> KexEcdhReply -> IO ()
+        consumeEcdhReply cki ski cek cekSecret ecdhReply = do
             kexAlgorithm   <- commonKexAlgorithm   ski cki
             encAlgorithmCS <- commonEncAlgorithmCS ski cki
             encAlgorithmSC <- commonEncAlgorithmSC ski cki
-
-            -- TODO: Dispatch here when implementing support for more algorithms.
             case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
                 (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
-                    completeCurve25519KeyExchange ski ski clientEphemeralPublicKey
+                    withVerifiedSignature shk hash sig $ do
+                        sid <- trySetSessionId env (BA.convert hash)
+                        setChaCha20Poly1305Context env $ deriveKeys sec hash sid
+                        sendMessage env KexNewKeys
+            where
+                cv   = tClientVersion env
+                sv   = tServerVersion env
+                shk  = kexServerHostKey ecdhReply
+                sek  = kexServerEphemeralKey ecdhReply
+                sec  = Curve25519.dh sek cekSecret
+                sig  = kexHashSignature ecdhReply
+                hash = exchangeHash cv sv cki ski shk cek sek sec
 
-        completeCurve25519KeyExchange :: KexInit -> KexInit -> Curve25519.PublicKey -> IO ()
-        completeCurve25519KeyExchange cki ski clientEphemeralPublicKey = do
-            -- Generate a Curve25519 keypair for elliptic curve Diffie-Hellman key exchange.
-            serverEphemeralSecretKey <- Curve25519.generateSecretKey
-            serverEphemeralPublicKey <- pure $ Curve25519.toPublic serverEphemeralSecretKey
+kexServerContinuation :: Transport -> Cookie -> KexContinuation
+kexServerContinuation env cookie = serverKex0
+    where
+        serverKex0 :: KexContinuation
+        serverKex0 = KexContinuation $ \case
+            Nothing -> do
+                sendMessage env ski
+                pure (serverKex1 ski)
+            Just (Init cki) -> do
+                sendMessage env ski
+                pure (serverKex2 cki ski)
+            _ -> errorInvalidTransition
+            where
+                ski = kexInit (tConfig env) cookie
 
-            KeyPairEd25519 pubKey secKey <- do
-                let isEd25519 KeyPairEd25519 {} = True
-                    -- TODO: Required when more algorithms are implemented.
-                    -- isEd25519 _                 = False
-                case NEL.filter isEd25519 (tHostKeys $ tConfig env) of -- FIXME
-                    (x:_) -> pure x
-                    _     -> undefined -- impossible
+        serverKex1 :: KexInit -> KexContinuation
+        serverKex1 ski = KexContinuation $ \case
+            Nothing-> do
+                pure (serverKex1 ski)
+            Just (Init cki) ->
+                pure (serverKex2 cki ski)
+            _ -> errorInvalidTransition
 
-            let secret = Curve25519.dh
-                    clientEphemeralPublicKey
-                    serverEphemeralSecretKey
+        serverKex2 :: KexInit -> KexInit -> KexContinuation
+        serverKex2 cki ski = KexContinuation $ \case
+            Nothing -> do
+                pure (serverKex2 cki ski)
+            Just (EcdhInit (KexEcdhInit cek)) -> do
+                emitEcdhReply cki ski cek
+                pure serverKex0
+            _ -> errorInvalidTransition
 
-            let hash = exchangeHash
-                    (tClientVersion env)
-                    (tServerVersion env)
-                    cki
-                    ski
-                    (PublicKeyEd25519 pubKey)
-                    clientEphemeralPublicKey
-                    serverEphemeralPublicKey
-                    secret
-
-            -- The reply is shall be sent with the old encryption context.
-            -- This is the case as long as the KexNewKeys message has not
-            -- been transmitted.
-            let hostKey = PublicKeyEd25519 pubKey
-                ephmKey = serverEphemeralPublicKey
-                signature = SignatureEd25519 $ Ed25519.sign secKey pubKey hash
-            sendMessage env (KexEcdhReply hostKey ephmKey signature)
-
-            session <- tryReadMVar (tSessionId env) >>= \case
-                Just s -> pure s
-                Nothing ->
-                    let s = SessionId (BA.convert hash)
-                    in  putMVar (tSessionId env) s >> pure s
-
-            setChaCha20Poly1305Context env $ deriveKeys secret hash session
-
-            -- The encryption context shall be switched no earlier than
-            -- before the new keys message has been transmitted.
-            -- It's the sender's thread responsibility to switch the context.
-            sendMessage env KexNewKeys
+        emitEcdhReply :: KexInit -> KexInit -> Curve25519.PublicKey -> IO ()
+        emitEcdhReply cki ski cek = do
+            kexAlgorithm   <- commonKexAlgorithm   ski cki
+            encAlgorithmCS <- commonEncAlgorithmCS ski cki
+            encAlgorithmSC <- commonEncAlgorithmSC ski cki
+            case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
+                (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) -> do
+                    sekSecret <- Curve25519.generateSecretKey
+                    let cv   = tClientVersion env
+                        sv   = tServerVersion env
+                        skp  = NEL.head (tHostKeys $ tConfig env)
+                        shk  = toPublicKey skp
+                        sek  = Curve25519.toPublic sekSecret
+                        sec  = Curve25519.dh cek sekSecret
+                        hash = exchangeHash cv sv cki ski shk cek sek sec
+                    withSignature skp hash $ \sig -> do
+                        sid <- trySetSessionId env (SessionId $ BA.convert hash)
+                        setChaCha20Poly1305Context env $ deriveKeys sec hash sid
+                        sendMessage env (KexEcdhReply shk sek sig)
+                        sendMessage env KexNewKeys
 
 commonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
 commonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
@@ -413,25 +441,33 @@ commonEncAlgorithmSC ski cki = case kexEncryptionAlgorithmsServerToClient cki `i
     _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (server to client)" mempty)
 
 kexInit :: TransportConfig -> Cookie -> KexInit
-kexInit TransportServerConfig { tKexAlgorithms = kexAlgos, tEncAlgorithms = encAlgos, tHostKeys = hostKeys } cookie =
-    KexInit
-        {   kexCookie                              = cookie
-        ,   kexAlgorithms                          = NEL.toList $ fmap f kexAlgos
-        ,   kexServerHostKeyAlgorithms             = NEL.toList $ NEL.nub $ fmap g hostKeys
-        ,   kexEncryptionAlgorithmsClientToServer  = NEL.toList $ fmap h encAlgos
-        ,   kexEncryptionAlgorithmsServerToClient  = NEL.toList $ fmap h encAlgos
-        ,   kexMacAlgorithmsClientToServer         = []
-        ,   kexMacAlgorithmsServerToClient         = []
-        ,   kexCompressionAlgorithmsClientToServer = ["none"]
-        ,   kexCompressionAlgorithmsServerToClient = ["none"]
-        ,   kexLanguagesClientToServer             = []
-        ,   kexLanguagesServerToClient             = []
-        ,   kexFirstPacketFollows                  = False
-        }
+kexInit config cookie = case config of
+    TransportServerConfig { tKexAlgorithms = kexAlgos, tEncAlgorithms = encAlgos, tHostKeys = hostKeys } ->
+        ki kexAlgos encAlgos (fmap hostAlgo hostKeys)
+    TransportClientConfig { tKexAlgorithms = kexAlgos, tEncAlgorithms = encAlgos, tHostKeyAlgorithms = hostAlgos } ->
+        ki kexAlgos encAlgos hostAlgos
     where
-        f Curve25519Sha256AtLibsshDotOrg  = "curve25519-sha256@libssh.org"
-        g KeyPairEd25519 {}               = "ssh-ed25519"
-        h Chacha20Poly1305AtOpensshDotCom = "chacha20-poly1305@openssh.com"
+        ki kexAlgos encAlgos hostAlgos = KexInit
+            {   kexCookie                              = cookie
+            ,   kexAlgorithms                          = NEL.toList $ fmap algorithmName kexAlgos
+            ,   kexServerHostKeyAlgorithms             = NEL.toList $ fmap algorithmName hostAlgos
+            ,   kexEncryptionAlgorithmsClientToServer  = NEL.toList $ fmap algorithmName encAlgos
+            ,   kexEncryptionAlgorithmsServerToClient  = NEL.toList $ fmap algorithmName encAlgos
+            ,   kexMacAlgorithmsClientToServer         = []
+            ,   kexMacAlgorithmsServerToClient         = []
+            ,   kexCompressionAlgorithmsClientToServer = [algorithmName None]
+            ,   kexCompressionAlgorithmsServerToClient = [algorithmName None]
+            ,   kexLanguagesClientToServer             = []
+            ,   kexLanguagesServerToClient             = []
+            ,   kexFirstPacketFollows                  = False
+            }
+        hostAlgo KeyPairEd25519 {} = SshEd25519
+
+trySetSessionId :: Transport -> SessionId -> IO SessionId
+trySetSessionId env sidDef =
+    tryReadMVar (tSessionId env) >>= \case
+        Nothing  -> putMVar (tSessionId env) sidDef >> pure sidDef
+        Just sid -> pure sid
 
 exchangeHash ::
     Version ->               -- client version string
@@ -469,9 +505,31 @@ deriveKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> (k1 
         flip Hash.hashUpdate hash $
         Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
 
+withSignature :: BA.ByteArrayAccess hash => KeyPair -> hash -> (Signature -> IO a) -> IO a
+withSignature key hash handler = case key of
+    KeyPairEd25519 pk sk -> handler $ SignatureEd25519 $ Ed25519.sign sk pk hash
+
+withVerifiedSignature :: BA.ByteArrayAccess hash => PublicKey -> hash -> Signature -> IO a -> IO a
+withVerifiedSignature key hash sig action = case (key, sig) of
+    (PublicKeyEd25519 k, SignatureEd25519 s)
+        | Ed25519.verify k hash s -> action
+    _ -> errorInvalidSignature
+
 -------------------------------------------------------------------------------
 -- UTIL -----------------------------------------------------------------------
 -------------------------------------------------------------------------------
+
+errorInvalidTransition :: IO a
+errorInvalidTransition = throwIO $
+    Disconnect DisconnectKeyExchangeFailed "invalid transition" mempty
+
+errorInvalidSignature :: IO a
+errorInvalidSignature = throwIO $
+    Disconnect DisconnectKeyExchangeFailed "invalid signature" mempty
+
+errorNotImplemented :: IO a
+errorNotImplemented = throwIO $
+    Disconnect DisconnectByApplication "not implemented" mempty
 
 throwProtocolError :: BS.ByteString -> IO a
 throwProtocolError e = throwIO $ Disconnect DisconnectProtocolError e mempty
@@ -483,18 +541,19 @@ throwProtocolError e = throwIO $ Disconnect DisconnectProtocolError e mempty
 -- It is furthermore assumed that the client does not send any more data
 -- after the version string before having received a response from the server;
 -- otherwise parsing will fail. This is done in order to not having to deal with leftovers.
+-- FIXME: use some kind of peek on the stream
 receiveVersion :: (InputStream stream) => stream -> IO Version
-receiveVersion stream = receive stream 257 >>= f
+receiveVersion stream = f mempty 0
   where
-    f bs
-        | BS.null bs = throwException
-        | BS.length bs >= 257 = throwException
-        | BS.last bs == 10 = case runGet get bs of
-            Nothing -> throwException
-            Just v  -> pure v
+    f acc i
+        | i > 255   = throwException
         | otherwise = do
-            bs' <- receive stream (255 - BS.length bs)
-            if BS.null bs' then throwException else f (bs <> bs')
+            bs <- receive stream 1
+            if BS.head bs == 10
+                then case runGet get (acc <> bs) of
+                    Nothing -> throwException
+                    Just v  -> pure v
+                else f (acc <> bs) (i + 1)
     throwException =
         throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""
 

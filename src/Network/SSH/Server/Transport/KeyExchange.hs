@@ -10,17 +10,14 @@ module Network.SSH.Server.Transport.KeyExchange
   ) where
 
 import           Control.Concurrent.MVar
-import           Control.Concurrent.STM.TVar
 import           Control.Exception            (throwIO)
 import           Control.Monad                (void)
-import           Control.Monad.STM            (atomically)
 import qualified Crypto.Hash                  as Hash
 import qualified Crypto.PubKey.Curve25519     as Curve25519
 import qualified Crypto.PubKey.Ed25519        as Ed25519
 import qualified Data.ByteArray               as BA
 import           Data.List
 import qualified Data.List.NonEmpty           as NEL
-import           System.Clock
 
 import           Network.SSH.Algorithms
 import           Network.SSH.Encoding

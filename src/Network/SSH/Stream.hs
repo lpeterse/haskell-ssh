@@ -21,6 +21,7 @@ sendAll stream bs = sendAll' 0
             | offset >= len = pure len
             | otherwise = do
                 sent <- send stream (BS.drop offset bs)
+                when (sent <= 0) (throwIO $ userError "eof")
                 sendAll' (offset + sent)
 
 receiveAll :: (InputStream stream) => stream -> Int -> IO BS.ByteString

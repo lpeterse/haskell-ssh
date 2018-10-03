@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE MultiWayIf        #-}
+{-# LANGUAGE MultiWayIf, OverloadedStrings        #-}
 module Network.SSH.TStreamingQueue where
 
 import           Control.Concurrent.STM.TChan
@@ -15,6 +15,7 @@ import           Prelude                 hiding ( head
 
 import qualified Network.SSH.Stream            as S
 import           Network.SSH.Constants
+import           Network.SSH.Message
 
 data TStreamingQueue
     = TStreamingQueue
@@ -107,7 +108,7 @@ dequeue q maxBufSize = do
         f s j = do
             bs <- takeTMVar (qHead q) <|> readTChan (qTail q) <|> pure mempty
             if | BS.null bs -> do
-                    writeTVar (qSize q) $! s - (requested - j)
+                    writeTVar (qSize q) 0
                     pure []
                | fromIntegral (BS.length bs) <= j ->
                     (bs:) <$> f s (j - fromIntegral (BS.length bs))
