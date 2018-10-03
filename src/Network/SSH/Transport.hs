@@ -57,11 +57,15 @@ data TransportConfig
     { tHostKeys          :: NEL.NonEmpty KeyPair
     , tKexAlgorithms     :: NEL.NonEmpty KeyExchangeAlgorithm
     , tEncAlgorithms     :: NEL.NonEmpty EncryptionAlgorithm
+    , tOnSend            :: BS.ByteString -> IO ()
+    , tOnReceive         :: BS.ByteString -> IO ()
     }
     | TransportClientConfig
     { tHostKeyAlgorithms :: NEL.NonEmpty HostKeyAlgorithm
     , tKexAlgorithms     :: NEL.NonEmpty KeyExchangeAlgorithm
     , tEncAlgorithms     :: NEL.NonEmpty EncryptionAlgorithm
+    , tOnSend            :: BS.ByteString -> IO ()
+    , tOnReceive         :: BS.ByteString -> IO ()
     }
 
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.ScrubbedBytes])
@@ -148,6 +152,7 @@ transportReceiveMessage env = do
 transportSendRawMessage :: Transport -> BS.ByteString -> IO ()
 transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
     modifyMVar_ (tEncryptionCtx env) $ \encrypt -> do
+        tOnSend (tConfig env) plainText
         packets <- readMVar (tPacketsSent env)
         cipherText <- encrypt packets plainText
         -- NB: Increase packet counter before sending in order
@@ -168,6 +173,7 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
     modifyMVar (tDecryptionCtx env) $ \decrypt -> do
         packets <- readMVar (tPacketsReceived env)
         plainText <- decrypt packets receiveAll'
+        tOnReceive (tConfig env) plainText
         modifyMVar_ (tPacketsReceived env) $ \pacs  -> pure $! pacs + 1
         case interpreter plainText of
             Just i  -> i >> pure (decrypt, Nothing)

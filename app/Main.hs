@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, LambdaCase #-}
 module Main where
 
 import           Control.Concurrent             ( forkIO
@@ -32,6 +32,8 @@ import           Network.SSH.Key
 import qualified Network.SSH.Server            as Server
 import qualified Network.SSH.Server.Config     as Server
 import           Network.SSH.Stream
+import           Network.SSH.Message
+import           Network.SSH.Encoding
 
 main :: IO ()
 main = do
@@ -46,8 +48,12 @@ main = do
             { Server.hostKeys           = pure privateKey
             , Server.onAuthRequest      = \username _ _ -> pure (Just username)
             , Server.onExecRequest      = Just runExec
-            , Server.onSend = \msg -> putStrLn ("sent: " ++ show msg)
-            , Server.onReceive = \msg -> putStrLn ("received: " ++ show msg)
+            , Server.onSend = \raw -> case tryParse raw of
+                Nothing -> putStrLn ("sent: " ++ show raw)
+                Just msg -> putStrLn ("sent: " ++ show (msg :: Message))
+            , Server.onReceive = \raw -> case tryParse raw of
+                Nothing -> putStrLn ("received: " ++ show raw)
+                Just msg -> putStrLn ("received: " ++ show (msg :: Message))
             , Server.onDisconnect       = \dis -> putStrLn
                                               ("disconnect: " ++ show dis)
             , Server.channelMaxQueueSize = 1024

@@ -23,8 +23,8 @@ data Config identity = Config {
     , onAuthRequest                 :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
     , onShellRequest                :: Maybe (Session identity -> IO ExitCode)
     , onExecRequest                 :: Maybe (Session identity -> Command -> IO ExitCode)
-    , onSend                        :: Message -> IO ()
-    , onReceive                     :: Message -> IO ()
+    , onSend                        :: BS.ByteString -> IO ()
+    , onReceive                     :: BS.ByteString -> IO ()
     , onDisconnect                  :: Either SomeException Disconnect -> IO ()
     , channelMaxCount               :: Word16
     , channelMaxQueueSize           :: Word32

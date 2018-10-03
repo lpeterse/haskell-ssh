@@ -11,13 +11,13 @@ import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 
-withUserAuth :: forall identity stream a. (MessageStream stream) => Config identity -> stream -> SessionId -> (identity -> IO a) -> IO a
-withUserAuth config transport session withIdentity = do
+withAuthentication :: forall identity stream a. (MessageStream stream) => Config identity -> stream -> SessionId -> (ServiceName -> Maybe (identity -> IO ())) -> IO ()
+withAuthentication config transport session serviceHandler = do
     ServiceRequest srv <- receiveMessage transport
     case srv of
         ServiceName "ssh-userauth" -> do
             sendMessage transport (ServiceAccept srv)
-            withIdentity =<< authenticate
+            authenticate
         _ -> exceptionServiceNotAvailable
     where
         exception code msg = throwIO $ Disconnect code msg mempty
@@ -37,11 +37,9 @@ withUserAuth config transport session withIdentity = do
                     Just sig
                         | verifyAuthSignature session user service algo pk sig -> do
                             onAuthRequest config user service pk >>= \case
-                                Just idnt -> case service of
-                                    (ServiceName "ssh-connection") -> do
-                                        sendSuccess
-                                        pure idnt
-                                    _ -> exceptionServiceNotAvailable
+                                Just idnt -> case serviceHandler service of
+                                    Just h  -> sendSuccess >> h idnt
+                                    Nothing -> exceptionServiceNotAvailable
                                 Nothing -> do
                                     sendSupportedAuthMethods
                                     authenticate

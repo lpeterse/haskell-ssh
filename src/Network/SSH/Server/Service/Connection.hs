@@ -129,13 +129,13 @@ connectionClose :: Connection identity -> IO ()
 connectionClose = atomically . connClose
 
 connectionChannelOpen :: Connection identity -> ChannelOpen -> IO (Either ChannelOpenFailure ChannelOpenConfirmation)
-connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initialWindowSize maxPacketSize) = atomically $ do
+connectionChannelOpen connection (ChannelOpen remoteChannelId initialWindowSize maxPacketSize channelType) = atomically $ do
     channels <- readTVar (connChannels connection)
     case selectLocalChannelId channels of
         Nothing ->
             pure $ Left $ openFailure ChannelOpenResourceShortage
         Just localChannelId -> case channelType of
-            ChannelType "session" -> do
+            ChannelOpenSession -> do
                 env          <- newTVar mempty
                 pty          <- newTVar Nothing
                 confirmation <- openApplicationChannel localChannelId $
@@ -144,7 +144,13 @@ connectionChannelOpen connection (ChannelOpen channelType remoteChannelId initia
                         , sessPtySettings = pty
                         }
                 pure (Right confirmation)
-            ChannelType {} ->
+            ChannelOpenDirectTcpIp {} -> do
+                pure $ Right $ ChannelOpenConfirmation
+                    remoteChannelId
+                    (ChannelId 47) -- FIXME
+                    1000000
+                    1024
+            ChannelOpenOther {} ->
                 pure $ Left $ openFailure ChannelOpenUnknownChannelType
     where
         selectLocalChannelId :: M.Map ChannelId a -> Maybe ChannelId

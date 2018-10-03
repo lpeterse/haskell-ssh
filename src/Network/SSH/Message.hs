@@ -43,6 +43,7 @@ module Network.SSH.Message
   , UserAuthPublicKeyOk (..)
     -- ** ChannelOpen (90)
   , ChannelOpen (..)
+  , ChannelOpenType (..)
     -- ** ChannelOpenConfirmation (91)
   , ChannelOpenConfirmation (..)
     -- ** ChannelOpenFailure (92)
@@ -334,7 +335,18 @@ data UserAuthPublicKeyOk
     deriving (Eq, Show)
 
 data ChannelOpen
-    = ChannelOpen ChannelType ChannelId ChannelWindowSize ChannelMaxPacketSize
+    = ChannelOpen ChannelId ChannelWindowSize ChannelMaxPacketSize ChannelOpenType
+    deriving (Eq, Show)
+
+data ChannelOpenType
+    = ChannelOpenSession
+    | ChannelOpenDirectTcpIp
+    { coDestinationAddress :: BS.ByteString
+    , coDestinationPort    :: Word32
+    , coSourceAddress      :: BS.ByteString
+    , coSourcePort         :: Word32
+    }
+    | ChannelOpenOther ChannelType
     deriving (Eq, Show)
 
 data ChannelOpenConfirmation
@@ -738,20 +750,40 @@ instance Encoding UserAuthPublicKeyOk where
     get = expectWord8 60 >> UserAuthPublicKeyOk <$> get <*> get
 
 instance Encoding ChannelOpen where
-    len (ChannelOpen ct cid _ _) = lenWord8 + len ct + len cid + lenWord32 + lenWord32
-    put (ChannelOpen ct cid ws ps) = do
+    len (ChannelOpen rc _ _ ct) = lenWord8 + len rc + lenWord32 + lenWord32 + case ct of
+            ChannelOpenSession {} -> len (ChannelType "session")
+            ChannelOpenDirectTcpIp {} -> len (ChannelType "direct-tcpip")
+            ChannelOpenOther t -> len t
+    put (ChannelOpen rc rw rp ct) = do
         putWord8 90
-        put ct
-        put cid
-        putWord32 ws
-        putWord32 ps
+        case ct of
+            ChannelOpenSession {} -> put (ChannelType "session")
+            ChannelOpenDirectTcpIp {} -> put (ChannelType "direct-tcpip")
+            ChannelOpenOther t -> put t
+        put rc
+        putWord32 rw
+        putWord32 rp
+        case ct of
+            ChannelOpenSession {} -> pure ()
+            ChannelOpenDirectTcpIp {} -> pure ()
+            ChannelOpenOther {} -> pure ()
     get = do
         expectWord8 90
-        ChannelOpen
-            <$> get
-            <*> get
-            <*> getWord32
-            <*> getWord32
+        ct <- get
+        rc <- get
+        rw <- getWord32
+        rp <- getWord32
+        ChannelOpen rc rw rp <$> case ct of
+            ChannelType "session" ->
+                pure ChannelOpenSession
+            ChannelType "direct-tcpip" ->
+                ChannelOpenDirectTcpIp
+                    <$> getString
+                    <*> getWord32
+                    <*> getString
+                    <*> getWord32
+            other ->
+                pure $ ChannelOpenOther other
 
 instance Encoding ChannelOpenConfirmation where
     len (ChannelOpenConfirmation a b _ _) = lenWord8 + len a + len b + lenWord32 + lenWord32
