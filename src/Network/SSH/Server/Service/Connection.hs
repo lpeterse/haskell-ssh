@@ -22,7 +22,7 @@ import qualified Control.Concurrent.Async     as Async
 import           Control.Concurrent.STM.TVar
 import           Control.Monad                (join, void, when, forever)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
-import           Control.Exception            (throwIO, bracket)
+import           Control.Exception            (bracket)
 import qualified Data.ByteString              as BS
 import qualified Data.Map.Strict              as M
 import           Data.Word
@@ -31,7 +31,6 @@ import           System.Exit
 import           Network.SSH.Encoding
 import           Network.SSH.Constants
 import           Network.SSH.Message
-import           Network.SSH.Server.Internal
 import           Network.SSH.Server.Config hiding (identity)
 import qualified Network.SSH.TStreamingQueue as Q
 

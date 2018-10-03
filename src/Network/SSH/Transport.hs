@@ -22,6 +22,7 @@ import           Data.List
 import qualified Data.List.NonEmpty            as NEL
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
+import           System.Clock
 
 import           Network.SSH.Encoding
 import           Network.SSH.Stream
@@ -32,20 +33,23 @@ import           Network.SSH.Key
 
 data Transport
     = forall stream. DuplexStream stream => TransportEnv
-    { tStream            :: stream
-    , tConfig            :: TransportConfig
-    , tClientVersion     :: Version
-    , tServerVersion     :: Version
-    , tBytesSent         :: MVar Word64
-    , tPacketsSent       :: MVar Word64
-    , tBytesReceived     :: MVar Word64
-    , tPacketsReceived   :: MVar Word64
-    , tEncryptionCtx     :: MVar EncryptionContext
-    , tEncryptionCtxNext :: MVar EncryptionContext
-    , tDecryptionCtx     :: MVar DecryptionContext
-    , tDecryptionCtxNext :: MVar DecryptionContext
-    , tKexContinuation   :: MVar KexContinuation
-    , tSessionId         :: MVar SessionId
+    { tStream                   :: stream
+    , tConfig                   :: TransportConfig
+    , tClientVersion            :: Version
+    , tServerVersion            :: Version
+    , tBytesSent                :: MVar Word64
+    , tPacketsSent              :: MVar Word64
+    , tBytesReceived            :: MVar Word64
+    , tPacketsReceived          :: MVar Word64
+    , tEncryptionCtx            :: MVar EncryptionContext
+    , tEncryptionCtxNext        :: MVar EncryptionContext
+    , tDecryptionCtx            :: MVar DecryptionContext
+    , tDecryptionCtxNext        :: MVar DecryptionContext
+    , tKexContinuation          :: MVar KexContinuation
+    , tSessionId                :: MVar SessionId
+    , tLastRekeyingTime         :: MVar Word64
+    , tLastRekeyingDataSent     :: MVar Word64
+    , tLastRekeyingDataReceived :: MVar Word64
     }
 
 data TransportConfig
@@ -73,8 +77,12 @@ data KexStep
 newtype KexContinuation = KexContinuation (Maybe KexStep -> IO KexContinuation)
 
 instance MessageStream Transport where
-    sendMessage = transportSendMessage
-    receiveMessage = transportReceiveMessage
+    sendMessage t msg = do
+        kexIfNecessary t
+        transportSendMessage t msg
+    receiveMessage t = do
+        kexIfNecessary t
+        transportReceiveMessage t
 
 withTransport :: (DuplexStream stream) => TransportConfig -> stream -> (Transport -> SessionId -> IO a) -> IO a
 withTransport config stream runWith = do
@@ -101,21 +109,27 @@ withTransport config stream runWith = do
     xDecryptionCtxNext   <- newMVar plainDecryptionContext
     xKexContinuation     <- newEmptyMVar
     xSessionId           <- newEmptyMVar
+    xRekeyTime           <- newMVar =<< fromIntegral . sec <$> getTime Monotonic
+    xRekeySent           <- newMVar 0
+    xRekeyRcvd           <- newMVar 0
     let env = TransportEnv
-            { tStream            = stream
-            , tConfig            = config
-            , tClientVersion     = clientVersion
-            , tServerVersion     = serverVersion
-            , tBytesSent         = xBytesSent
-            , tPacketsSent       = xPacketsSent
-            , tBytesReceived     = xBytesReceived
-            , tPacketsReceived   = xPacketsReceived
-            , tEncryptionCtx     = xEncryptionCtx
-            , tEncryptionCtxNext = xEncryptionCtxNext
-            , tDecryptionCtx     = xDecryptionCtx
-            , tDecryptionCtxNext = xDecryptionCtxNext
-            , tKexContinuation   = xKexContinuation
-            , tSessionId         = xSessionId
+            { tStream                   = stream
+            , tConfig                   = config
+            , tClientVersion            = clientVersion
+            , tServerVersion            = serverVersion
+            , tBytesSent                = xBytesSent
+            , tPacketsSent              = xPacketsSent
+            , tBytesReceived            = xBytesReceived
+            , tPacketsReceived          = xPacketsReceived
+            , tEncryptionCtx            = xEncryptionCtx
+            , tEncryptionCtxNext        = xEncryptionCtxNext
+            , tDecryptionCtx            = xDecryptionCtx
+            , tDecryptionCtxNext        = xDecryptionCtxNext
+            , tKexContinuation          = xKexContinuation
+            , tSessionId                = xSessionId
+            , tLastRekeyingTime         = xRekeyTime
+            , tLastRekeyingDataSent     = xRekeySent
+            , tLastRekeyingDataReceived = xRekeyRcvd
             }
     sessionId <- runInitialKeyExchange env
     runWith env sessionId
@@ -178,9 +192,6 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
                 i4 x@KexInit      {} = kexContinue env (Init x)
                 i5 x@KexEcdhInit  {} = kexContinue env (EcdhInit x)
                 i6 x@KexEcdhReply {} = kexContinue env (EcdhReply x)
-
-getSessionId :: Transport -> IO SessionId
-getSessionId = readMVar . tSessionId
 
 -------------------------------------------------------------------------------
 -- CRYPTO ---------------------------------------------------------------------
@@ -311,23 +322,34 @@ kexTrigger :: Transport -> IO ()
 kexTrigger env = do
     modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f Nothing
 
+kexIfNecessary :: Transport -> IO ()
+kexIfNecessary env = do
+    kexRekeyingRequired env >>= \case
+        False -> pure ()
+        True -> do
+            void $ swapMVar (tLastRekeyingTime         env) =<< fromIntegral . sec <$> getTime Monotonic
+            void $ swapMVar (tLastRekeyingDataSent     env) =<< readMVar (tBytesSent     env)
+            void $ swapMVar (tLastRekeyingDataReceived env) =<< readMVar (tBytesReceived env)
+            kexTrigger env
+
 kexContinue :: Transport -> KexStep -> IO ()
 kexContinue env step = do
     modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f (Just step)
 
+-- NB: Uses transportSendMessage to avoid rekeying-loop
 kexClientContinuation :: Transport -> Cookie -> KexContinuation
 kexClientContinuation env cookie = clientKex0
     where
         clientKex0 :: KexContinuation
         clientKex0 = KexContinuation $ \case
             Nothing -> do
-                sendMessage env cki
+                transportSendMessage env cki
                 pure (clientKex1 cki)
             Just (Init ski) -> do
                 cekSecret <- Curve25519.generateSecretKey
                 let cek = Curve25519.toPublic cekSecret
-                sendMessage env cki
-                sendMessage env (KexEcdhInit cek)
+                transportSendMessage env cki
+                transportSendMessage env (KexEcdhInit cek)
                 pure (clientKex2 cki ski cek cekSecret)
             _ -> errorInvalidTransition
             where
@@ -340,7 +362,7 @@ kexClientContinuation env cookie = clientKex0
             Just (Init ski) -> do
                 cekSecret <- Curve25519.generateSecretKey
                 let cek = Curve25519.toPublic cekSecret
-                sendMessage env (KexEcdhInit cek)
+                transportSendMessage env (KexEcdhInit cek)
                 pure (clientKex2 cki ski cek cekSecret)
             _ -> errorInvalidTransition
 
@@ -363,7 +385,7 @@ kexClientContinuation env cookie = clientKex0
                     withVerifiedSignature shk hash sig $ do
                         sid <- trySetSessionId env (BA.convert hash)
                         setChaCha20Poly1305Context env $ deriveKeys sec hash sid
-                        sendMessage env KexNewKeys
+                        transportSendMessage env KexNewKeys
             where
                 cv   = tClientVersion env
                 sv   = tServerVersion env
@@ -373,16 +395,17 @@ kexClientContinuation env cookie = clientKex0
                 sig  = kexHashSignature ecdhReply
                 hash = exchangeHash cv sv cki ski shk cek sek sec
 
+-- NB: Uses transportSendMessage to avoid rekeying-loop
 kexServerContinuation :: Transport -> Cookie -> KexContinuation
 kexServerContinuation env cookie = serverKex0
     where
         serverKex0 :: KexContinuation
         serverKex0 = KexContinuation $ \case
             Nothing -> do
-                sendMessage env ski
+                transportSendMessage env ski
                 pure (serverKex1 ski)
             Just (Init cki) -> do
-                sendMessage env ski
+                transportSendMessage env ski
                 pure (serverKex2 cki ski)
             _ -> errorInvalidTransition
             where
@@ -423,8 +446,8 @@ kexServerContinuation env cookie = serverKex0
                     withSignature skp hash $ \sig -> do
                         sid <- trySetSessionId env (SessionId $ BA.convert hash)
                         setChaCha20Poly1305Context env $ deriveKeys sec hash sid
-                        sendMessage env (KexEcdhReply shk sek sig)
-                        sendMessage env KexNewKeys
+                        transportSendMessage env (KexEcdhReply shk sek sig)
+                        transportSendMessage env KexNewKeys
 
 commonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
 commonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
@@ -463,6 +486,31 @@ kexInit config cookie = case config of
             ,   kexFirstPacketFollows                  = False
             }
         hostAlgo KeyPairEd25519 {} = SshEd25519
+
+kexRekeyingRequired :: Transport -> IO Bool
+kexRekeyingRequired env = do
+    t <- fromIntegral . sec <$> getTime Monotonic
+    t0 <- readMVar (tLastRekeyingTime env)
+    s  <- readMVar (tBytesSent env)
+    s0 <- readMVar (tLastRekeyingDataSent env)
+    r  <- readMVar (tBytesReceived env)
+    r0 <- readMVar (tLastRekeyingDataReceived env)
+    pure $ if
+        | intervalExceeded t t0  -> True
+        | thresholdExceeded s s0 -> True
+        | thresholdExceeded r r0 -> True
+        | otherwise              -> False
+  where
+    -- For reasons of fool-proofness the rekeying interval/threshold
+    -- shall never be greater than 1 hour or 1GB.
+    -- NB: This is security critical as some algorithms like ChaCha20
+    -- use the packet counter as nonce and an overflow will lead to
+    -- nonce reuse!
+    -- FIXME: honor config option
+    interval  = 6 -- min (maxTimeBeforeRekey config) 3600
+    threshold = 1024 * 1024 * 1024 -- min (maxDataBeforeRekey config) (1024 * 1024 * 1024)
+    intervalExceeded t t0 = t > t0 && t - t0 > interval
+    thresholdExceeded x x0 = x > x0 && x - x0 > threshold
 
 trySetSessionId :: Transport -> SessionId -> IO SessionId
 trySetSessionId env sidDef =

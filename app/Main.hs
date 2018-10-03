@@ -79,7 +79,7 @@ runExec (Server.Session identity pty env stdin stdout stderr) _command = withAsy
     forM_ [1 ..] $ \i -> do
         void $ sendAll stdout
             (BS.pack (map (fromIntegral . fromEnum) (show (i :: Int))) `mappend` "\n" :: BS.ByteString)
-        threadDelay 1000
+        threadDelay 1000000
     pure (ExitFailure 23)
     where
         receiver = forever $ do
