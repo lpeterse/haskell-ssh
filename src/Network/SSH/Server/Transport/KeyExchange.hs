@@ -2,13 +2,9 @@
 {-# LANGUAGE MultiWayIf        #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleInstances #-}
-module Network.SSH.Server.Transport.KeyExchange
-  ( KexStep (..)
-  , performInitialKeyExchange
-  , newKexInit
-  , deriveKeys
-  ) where
+module Network.SSH.Server.Transport.KeyExchange where
 
+{-
 import           Control.Concurrent.MVar
 import           Control.Exception            (throwIO)
 import           Control.Monad                (void)
@@ -230,3 +226,4 @@ deriveKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> (k1 
     st =
         flip Hash.hashUpdate hash $
         Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
+-}

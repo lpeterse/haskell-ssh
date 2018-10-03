@@ -3,9 +3,6 @@ module Network.SSH.Transport
     ( Transport()
     , TransportConfig (..)
     , withTransport
-    , sendMessage
-    , receiveMessage
-    , getSessionId
     )
 where
 
@@ -75,7 +72,11 @@ data KexStep
 
 newtype KexContinuation = KexContinuation (Maybe KexStep -> IO KexContinuation)
 
-withTransport :: (DuplexStream stream) => TransportConfig -> stream -> (Transport -> IO a) -> IO a
+instance MessageStream Transport where
+    sendMessage = transportSendMessage
+    receiveMessage = transportReceiveMessage
+
+withTransport :: (DuplexStream stream) => TransportConfig -> stream -> (Transport -> SessionId -> IO a) -> IO a
 withTransport config stream runWith = do
     (clientVersion, serverVersion) <- case config of
         -- Receive the peer version and reject immediately if this
@@ -116,15 +117,15 @@ withTransport config stream runWith = do
             , tKexContinuation   = xKexContinuation
             , tSessionId         = xSessionId
             }
-    runInitialKeyExchange env
-    runWith env
+    sessionId <- runInitialKeyExchange env
+    runWith env sessionId
 
-sendMessage :: Encoding msg => Transport -> msg -> IO ()
-sendMessage env msg =
+transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
+transportSendMessage env msg =
     transportSendRawMessage env $ runPut (put msg)
 
-receiveMessage :: Encoding msg => Transport -> IO msg
-receiveMessage env = do
+transportReceiveMessage :: Encoding msg => Transport -> IO msg
+transportReceiveMessage env = do
     raw <- transportReceiveRawMessage env
     maybe exception pure (tryParse raw)
     where
@@ -290,7 +291,7 @@ nonce i =
 -- KEY EXCHANGE ---------------------------------------------------------------
 -------------------------------------------------------------------------------
 
-runInitialKeyExchange :: Transport -> IO ()
+runInitialKeyExchange :: Transport -> IO SessionId
 runInitialKeyExchange env = do
     cookie <- newCookie
     putMVar (tKexContinuation env) $ case tConfig env of
@@ -304,7 +305,7 @@ runInitialKeyExchange env = do
                 Just _  -> errorInvalidTransition
                 Nothing -> tryReadMVar (tSessionId env) >>= \case
                     Nothing -> dontAcceptMessageUntilKexComplete
-                    Just _  -> pure ()
+                    Just sid -> pure sid
 
 kexTrigger :: Transport -> IO ()
 kexTrigger env = do

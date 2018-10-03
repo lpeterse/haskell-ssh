@@ -4,6 +4,7 @@ module Spec.Util where
 import qualified Data.ByteString          as BS
 import           Control.Monad.STM
 import           Control.Concurrent.STM.TVar
+import           Control.Concurrent.STM.TChan
 import           Control.Exception
 import           Control.Monad
 
@@ -11,8 +12,8 @@ import           Test.Tasty.HUnit
 
 import           Network.SSH.Encoding
 import           Network.SSH.Stream
+import           Network.SSH.Message
 import qualified Network.SSH.TStreamingQueue as Q
-
 
 assertThrows :: (Eq e, Exception e) => String -> e -> IO a -> Assertion
 assertThrows label e action = (action >> failure0) `catch` \e'-> when (e /= e') (failure1 e')
@@ -54,4 +55,20 @@ receivePlainMessage sock = do
 sendPlainMessage :: Encoding msg => DummySocket -> msg -> IO ()
 sendPlainMessage sock msg = do
     void $ sendAll sock $ runPut (putPacked $ runPut $ put msg)
+
+newtype DummyTransport = DummyTransport (TChan BS.ByteString, TChan BS.ByteString)
+
+newDummyTransportPair :: IO (DummyTransport, DummyTransport)
+newDummyTransportPair = do
+    inbound <- newTChanIO
+    outbound <- newTChanIO
+    pure (DummyTransport (inbound, outbound), DummyTransport (outbound,inbound))
+
+instance MessageStream DummyTransport where
+    sendMessage (DummyTransport (c,_)) msg = atomically $ writeTChan c $ runPut (put msg)
+    receiveMessage (DummyTransport (_,c)) = do
+        bs <- atomically $ readTChan c
+        case tryParse bs of
+            Nothing -> throwIO $ Disconnect DisconnectProtocolError "invalid/unexpected message" mempty
+            Just msg -> pure msg
 

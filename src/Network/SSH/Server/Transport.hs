@@ -1,21 +1,7 @@
 {-# LANGUAGE ExistentialQuantification, OverloadedStrings, MultiWayIf #-}
-module Network.SSH.Server.Transport
-    ( Transport()
-    , Role (..)
-    , KeyStreams (..)
-    , withTransport
-    , sendMessage
-    , receiveMessage
-    , switchEncryptionContext
-    , switchDecryptionContext
-    , sendServerVersion
-    , receiveClientVersion
-    , askRekeyingRequired
-    , updateRekeyTracking
-    , setChaCha20Poly1305Context
-    )
-where
+module Network.SSH.Server.Transport where
 
+{-
 import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TMVar
@@ -336,3 +322,5 @@ nonce i =
         , fromIntegral $ i `shiftR` 8
         , fromIntegral $ i `shiftR` 0
         ] :: BA.Bytes
+
+-}

@@ -4,10 +4,12 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE ExistentialQuantification  #-}
 module Network.SSH.Message
   ( -- * Message
     Message (..)
   , ToMessage (..)
+  , MessageStream (..)
     -- ** Disconnect (1)
   , Disconnect (..)
   , DisconnectReason (..)
@@ -108,6 +110,10 @@ import           System.Exit
 
 import           Network.SSH.Encoding
 import           Network.SSH.Key
+
+class MessageStream a where
+    sendMessage :: forall msg. Encoding msg => a -> msg -> IO ()
+    receiveMessage :: forall msg. Encoding msg => a -> IO msg
 
 class ToMessage a where
     toMessage :: a -> Message
@@ -717,9 +723,9 @@ instance Encoding UserAuthFailure where
         UserAuthFailure <$> (fmap AuthMethodName <$> getNameList) <*> getBool
 
 instance Encoding UserAuthSuccess where
-    len _ = lenWord8
-    put _ = putWord8 52
-    get   = expectWord8 52 >> pure UserAuthSuccess
+    len UserAuthSuccess = lenWord8
+    put UserAuthSuccess = putWord8 52
+    get = expectWord8 52 >> pure UserAuthSuccess
 
 instance Encoding UserAuthBanner where
     len (UserAuthBanner x y) = lenWord8 + lenString x + lenString y
