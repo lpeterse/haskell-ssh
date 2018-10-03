@@ -13,14 +13,14 @@ module Network.SSH.Server.Service.Connection
     , connectionChannelRequest
     , connectionChannelData
     , connectionChannelWindowAdjust
-    , dispatcher
+    , runConnection
     ) where
 
 import           Control.Applicative
 import           Control.Concurrent
 import qualified Control.Concurrent.Async     as Async
 import           Control.Concurrent.STM.TVar
-import           Control.Monad                (join, void, when)
+import           Control.Monad                (join, void, when, forever)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import           Control.Exception            (throwIO, bracket)
 import qualified Data.ByteString              as BS
@@ -68,34 +68,55 @@ data SessionState
     , sessPtySettings :: TVar (Maybe PtySettings)
     }
 
-dispatcher :: Config identity -> Sender -> identity -> MessageDispatcher a
-dispatcher config send idnt msg0 cont0 =
-    bracket (connectionOpen config idnt send) connectionClose (\c-> f c msg0 cont0)
-    where 
-        f connection msg (Continuation continue) = do
-            handle connection msg
-            continue (f connection)
+data ConnectionMsg
+    = ConnectionChannelOpen ChannelOpen
+    | ConnectionChannelClose ChannelClose
+    | ConnectionChannelEof ChannelEof
+    | ConnectionChannelData ChannelData
+    | ConnectionChannelRequest ChannelRequest 
+    | ConnectionChannelWindowAdjust ChannelWindowAdjust
 
-        handle connection = \case
-            MsgChannelOpen req ->
-                connectionChannelOpen connection req >>= \case
-                    Left res  -> send (MsgChannelOpenFailure res)
-                    Right res -> send (MsgChannelOpenConfirmation res)
-            MsgChannelClose req ->
-                connectionChannelClose connection req >>= mapM_ (send . MsgChannelClose)
-            MsgChannelEof req ->
-                connectionChannelEof connection req
-            MsgChannelData req ->
-                connectionChannelData connection req
-            MsgChannelWindowAdjust req ->
-                connectionChannelWindowAdjust connection req
-            MsgChannelRequest req ->
-                connectionChannelRequest connection req >>= mapM_ (\case
-                    Right res -> send (MsgChannelSuccess res)
-                    Left res  -> send (MsgChannelFailure res))
-            _ -> exception "unexpected message type (connection module)"
+instance Encoding ConnectionMsg where
+    len (ConnectionChannelOpen x) = len x
+    len (ConnectionChannelClose x) = len x
+    len (ConnectionChannelEof x) = len x
+    len (ConnectionChannelData x) = len x
+    len (ConnectionChannelRequest x) = len x
+    len (ConnectionChannelWindowAdjust x) = len x
+    put (ConnectionChannelOpen x) = put x
+    put (ConnectionChannelClose x) = put x
+    put (ConnectionChannelEof x) = put x
+    put (ConnectionChannelData x) = put x
+    put (ConnectionChannelRequest x) = put x
+    put (ConnectionChannelWindowAdjust x) = put x
+    get = ConnectionChannelOpen <$> get
+      <|> ConnectionChannelClose <$> get
+      <|> ConnectionChannelEof <$> get
+      <|> ConnectionChannelData <$> get
+      <|> ConnectionChannelRequest <$> get
+      <|> ConnectionChannelWindowAdjust <$> get
 
-        exception msg = throwIO $ Disconnect DisconnectProtocolError msg mempty
+runConnection :: MessageStream stream => Config identity -> stream -> identity -> IO ()
+runConnection config stream identity = bracket
+    (connectionOpen config identity (sendMessage stream)) connectionClose $
+        \connection -> forever $ do
+            receiveMessage stream >>= \case
+                MsgChannelOpen req ->
+                    connectionChannelOpen connection req >>= \case
+                        Left res  -> sendMessage stream res
+                        Right res -> sendMessage stream res
+                MsgChannelClose req ->
+                    connectionChannelClose connection req >>= mapM_ (sendMessage stream)
+                MsgChannelEof req ->
+                    connectionChannelEof connection req
+                MsgChannelData req ->
+                    connectionChannelData connection req
+                MsgChannelWindowAdjust req ->
+                    connectionChannelWindowAdjust connection req
+                MsgChannelRequest req ->
+                    connectionChannelRequest connection req >>= mapM_ (\case
+                        Right res -> sendMessage stream res
+                        Left res  -> sendMessage stream res )
 
 connectionOpen :: Config identity -> identity -> (Message -> IO ()) -> IO (Connection identity)
 connectionOpen config identity send = do
