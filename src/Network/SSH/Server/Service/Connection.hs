@@ -39,7 +39,6 @@ data Connection identity
     { connConfig       :: Config identity
     , connIdentity     :: identity
     , connChannels     :: TVar (M.Map ChannelId Channel)
-    , connSend         :: Message -> IO ()
     , connClose        :: STM ()
     , connClosed       :: STM Bool
     }
@@ -96,35 +95,33 @@ instance Encoding ConnectionMsg where
       <|> ConnectionChannelWindowAdjust <$> get
 
 runConnection :: MessageStream stream => Config identity -> stream -> identity -> IO ()
-runConnection config stream identity = bracket
-    (connectionOpen config identity (sendMessage stream)) connectionClose $
-        \connection -> forever $ do
-            receiveMessage stream >>= \case
-                MsgChannelOpen req ->
-                    connectionChannelOpen connection req >>= \case
-                        Left res  -> sendMessage stream res
-                        Right res -> sendMessage stream res
-                MsgChannelClose req ->
-                    connectionChannelClose connection req >>= mapM_ (sendMessage stream)
-                MsgChannelEof req ->
-                    connectionChannelEof connection req
-                MsgChannelData req ->
-                    connectionChannelData connection req
-                MsgChannelWindowAdjust req ->
-                    connectionChannelWindowAdjust connection req
-                MsgChannelRequest req ->
-                    connectionChannelRequest connection req >>= mapM_ (\case
-                        Right res -> sendMessage stream res
-                        Left res  -> sendMessage stream res )
+runConnection config stream identity = bracket (connectionOpen config identity) connectionClose $
+    \connection -> forever $ do
+        receiveMessage stream >>= \case
+            ConnectionChannelOpen req ->
+                connectionChannelOpen connection req >>= \case
+                    Left res  -> sendMessage stream res
+                    Right res -> sendMessage stream res
+            ConnectionChannelClose req ->
+                connectionChannelClose connection req >>= mapM_ (sendMessage stream)
+            ConnectionChannelEof req ->
+                connectionChannelEof connection req
+            ConnectionChannelData req ->
+                connectionChannelData connection req
+            ConnectionChannelWindowAdjust req ->
+                connectionChannelWindowAdjust connection req
+            ConnectionChannelRequest req ->
+                connectionChannelRequest connection stream req >>= mapM_ (\case
+                    Right res -> sendMessage stream res
+                    Left res  -> sendMessage stream res )
 
-connectionOpen :: Config identity -> identity -> (Message -> IO ()) -> IO (Connection identity)
-connectionOpen config identity send = do
+connectionOpen :: Config identity -> identity -> IO (Connection identity)
+connectionOpen config identity = do
     closed <- newTVarIO False
     Connection
         <$> pure config
         <*> pure identity
         <*> newTVarIO mempty
-        <*> pure send
         <*> pure (writeTVar closed True)
         <*> pure (readTVar closed)
 
@@ -231,8 +228,10 @@ connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId incremen
     where
         exception msg = throwSTM $ Disconnect DisconnectProtocolError msg mempty
 
-connectionChannelRequest :: forall identity. Connection identity -> ChannelRequest -> IO (Maybe (Either ChannelFailure ChannelSuccess))
-connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat) = join $ atomically $ do
+connectionChannelRequest :: forall identity stream. MessageStream stream =>
+    Connection identity -> stream -> ChannelRequest ->
+    IO (Maybe (Either ChannelFailure ChannelSuccess))
+connectionChannelRequest connection stream (ChannelRequest channelId typ wantReply dat) = join $ atomically $ do
     channel <- getChannelSTM connection channelId
     case chanApplication channel of
         ChannelApplicationSession sessionState -> case typ of
@@ -292,8 +291,8 @@ connectionChannelRequest connection (ChannelRequest channelId typ wantReply dat)
                 -- has been signaled or the channel/connection got closed.
                 supervise :: Async.Async ExitCode -> IO ()
                 supervise workerAsync = atomically (w0 <|> w1 <|> w2 <|> w3 <|> w4) >>= \case
-                    Left  msgs -> mapM_ (connSend connection) msgs
-                    Right msgs -> mapM_ (connSend connection) msgs >> supervise workerAsync
+                    Left  msgs -> mapM_ (sendMessage stream) msgs
+                    Right msgs -> mapM_ (sendMessage stream) msgs >> supervise workerAsync
                     where
                         -- NB: The order is critical: Another order would cause a close
                         -- or eof to be sent before all data has been flushed.

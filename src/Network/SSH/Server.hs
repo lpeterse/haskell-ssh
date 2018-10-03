@@ -13,8 +13,8 @@ import qualified Network.SSH.Server.Service.Connection as C
 serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
 serve config stream = withDisconnectHandler config $
     withTransport transportConfig stream $ \transport session ->
-        U.withUserAuth config transport session $ \identity -> do
-            C.runConnection config transport identity
+        U.withUserAuth config transport session $ \idnt -> do
+            C.runConnection config transport idnt
             error "FIXME"
     where
         transportConfig = TransportServerConfig

@@ -28,7 +28,6 @@ dependencies:
 - cryptonite
 - memory
 - stm
-- clock
 
 library:
   source-dirs: src

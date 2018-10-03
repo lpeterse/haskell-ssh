@@ -22,7 +22,7 @@ import           Data.List
 import qualified Data.List.NonEmpty            as NEL
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
-import           System.Clock
+import           GHC.Clock
 
 import           Network.SSH.Encoding
 import           Network.SSH.Stream
@@ -109,7 +109,7 @@ withTransport config stream runWith = do
     xDecryptionCtxNext   <- newMVar plainDecryptionContext
     xKexContinuation     <- newEmptyMVar
     xSessionId           <- newEmptyMVar
-    xRekeyTime           <- newMVar =<< fromIntegral . sec <$> getTime Monotonic
+    xRekeyTime           <- newMVar =<< ((`div` 1000000000) <$> getMonotonicTimeNSec)
     xRekeySent           <- newMVar 0
     xRekeyRcvd           <- newMVar 0
     let env = TransportEnv
@@ -327,7 +327,7 @@ kexIfNecessary env = do
     kexRekeyingRequired env >>= \case
         False -> pure ()
         True -> do
-            void $ swapMVar (tLastRekeyingTime         env) =<< fromIntegral . sec <$> getTime Monotonic
+            void $ swapMVar (tLastRekeyingTime         env) =<< ((`div` 1000000000) <$> getMonotonicTimeNSec)
             void $ swapMVar (tLastRekeyingDataSent     env) =<< readMVar (tBytesSent     env)
             void $ swapMVar (tLastRekeyingDataReceived env) =<< readMVar (tBytesReceived env)
             kexTrigger env
@@ -489,7 +489,7 @@ kexInit config cookie = case config of
 
 kexRekeyingRequired :: Transport -> IO Bool
 kexRekeyingRequired env = do
-    t <- fromIntegral . sec <$> getTime Monotonic
+    t <-  (`div` 1000000000) <$> getMonotonicTimeNSec
     t0 <- readMVar (tLastRekeyingTime env)
     s  <- readMVar (tBytesSent env)
     s0 <- readMVar (tLastRekeyingDataSent env)

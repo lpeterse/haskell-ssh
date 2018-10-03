@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -m
+set -e
 
 trap 'kill $(jobs -p)' 1 2 3 6 9 15
 
@@ -12,7 +13,7 @@ ssh fnord@localhost -vvvv ls &
 ssh fnord@localhost -vvvv ls &
 ssh fnord@localhost -vvvv ls &
 
-sleep 600
+sleep 60
 
 sudo pkill -2 hssh-demo
 sleep 2

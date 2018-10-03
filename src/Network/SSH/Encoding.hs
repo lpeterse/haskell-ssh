@@ -16,14 +16,17 @@ type Get = G.Get
 
 tryParse :: Encoding a => BS.ByteString -> Maybe a
 tryParse = runGet get
+{-# INLINEABLE tryParse #-}
 
 runPut :: Put -> BS.ByteString
 runPut = P.runPut
+{-# INLINEABLE runPut #-}
 
 runGet :: (Fail.MonadFail m) => Get a -> BS.ByteString -> m a
 runGet g bs = case G.runGet g bs of
     Left  e -> Fail.fail e
     Right a -> pure a
+{-# INLINEABLE runGet #-}
 
 class Encoding a where
     len :: a -> Word32

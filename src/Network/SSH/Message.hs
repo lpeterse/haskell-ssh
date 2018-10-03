@@ -863,7 +863,7 @@ instance Encoding ChannelRequestExitStatus where
     get = ChannelRequestExitStatus <$> get
 
 instance Encoding ChannelRequestExitSignal where
-    len (ChannelRequestExitSignal signame core msg lang) = lenString signame + lenBool + lenString msg + lenString lang
+    len (ChannelRequestExitSignal signame _core msg lang) = lenString signame + lenBool + lenString msg + lenString lang
     put (ChannelRequestExitSignal signame core msg lang) = putString signame >> putBool core >> putString msg >> putString lang
     get = ChannelRequestExitSignal <$> getString <*> getBool <*> getString <*> getString
 
