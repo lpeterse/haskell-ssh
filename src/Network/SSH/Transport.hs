@@ -19,12 +19,14 @@ import           Data.Bits
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import           Data.List
+import           Data.Maybe
 import qualified Data.List.NonEmpty            as NEL
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
 import           GHC.Clock
 
 import           Network.SSH.Encoding
+import           Network.SSH.Exception
 import           Network.SSH.Stream
 import           Network.SSH.Message
 import           Network.SSH.Constants
@@ -88,7 +90,7 @@ instance MessageStream Transport where
         kexIfNecessary t
         transportReceiveMessage t
 
-withTransport :: (DuplexStream stream) => TransportConfig -> stream -> (Transport -> SessionId -> IO a) -> IO a
+withTransport :: (DuplexStreamPeekable stream) => TransportConfig -> stream -> (Transport -> SessionId -> IO a) -> IO a
 withTransport config stream runWith = do
     (clientVersion, serverVersion) <- case config of
         -- Receive the peer version and reject immediately if this
@@ -597,20 +599,16 @@ throwProtocolError e = throwIO $ Disconnect DisconnectProtocolError e mempty
 -- after the version string before having received a response from the server;
 -- otherwise parsing will fail. This is done in order to not having to deal with leftovers.
 -- FIXME: use some kind of peek on the stream
-receiveVersion :: (InputStream stream) => stream -> IO Version
-receiveVersion stream = f mempty 0
-  where
-    f acc i
-        | i > 255   = throwException
-        | otherwise = do
-            bs <- receive stream 1
-            if BS.head bs == 10
-                then case runGet get (acc <> bs) of
-                    Nothing -> throwException
-                    Just v  -> pure v
-                else f (acc <> bs) (i + 1)
-    throwException =
-        throwIO $ Disconnect DisconnectProtocolVersionNotSupported "" ""
+receiveVersion :: (InputStreamPeekable stream) => stream -> IO Version
+receiveVersion stream = do
+    bs <- peek stream 255
+    when (BS.null bs) e0
+    case BS.elemIndex 0x0a bs of
+        Nothing -> e1
+        Just i  -> maybe e1 pure . tryParse =<< receive stream (i+1)
+    where
+        e0 = throwIO exceptionConnectionLost
+        e1 = throwIO exceptionProtocolVersionNotSupported
 
 sendVersion :: (OutputStream stream) => stream -> IO Version
 sendVersion stream = do

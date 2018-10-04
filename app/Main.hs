@@ -94,9 +94,13 @@ runExec (Server.Session identity pty env stdin stdout stderr) _command = withAsy
             threadDelay 1000000
 
 instance DuplexStream (S.Socket f S.Stream p) where
+instance DuplexStreamPeekable (S.Socket f S.Stream p) where
 
 instance InputStream  (S.Socket f S.Stream p) where
     receive stream len = S.receive stream len S.msgNoSignal
 
 instance OutputStream  (S.Socket f S.Stream p)  where
     send stream bytes = S.send stream bytes S.msgNoSignal
+
+instance InputStreamPeekable (S.Socket f S.Stream p) where
+    peek stream len = S.receive stream len (S.msgNoSignal <> S.msgPeek)

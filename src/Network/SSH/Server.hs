@@ -7,11 +7,11 @@ import           Control.Exception (throwIO, catch)
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Transport
-import           Network.SSH.Stream (DuplexStream ())
+import           Network.SSH.Stream (DuplexStreamPeekable ())
 import           Network.SSH.Server.Service.UserAuth
 import           Network.SSH.Server.Service.Connection
 
-serve :: (DuplexStream stream) => Config identity -> stream -> IO ()
+serve :: (DuplexStreamPeekable stream) => Config identity -> stream -> IO ()
 serve config stream = withDisconnectHandler config $
     withTransport transportConfig stream $ \transport session -> do
         withAuthentication config transport session $ \case

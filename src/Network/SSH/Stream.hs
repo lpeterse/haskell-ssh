@@ -6,12 +6,16 @@ import qualified Data.ByteString   as BS
 import           Data.Monoid       ((<>))
 
 class (InputStream stream, OutputStream stream) => DuplexStream stream where
+class (InputStreamPeekable stream, DuplexStream stream) => DuplexStreamPeekable stream where
 
 class OutputStream stream where
     send    :: stream -> BS.ByteString -> IO Int
 
 class InputStream stream where
     receive :: stream -> Int -> IO BS.ByteString
+
+class InputStream stream => InputStreamPeekable stream where
+    peek    :: stream -> Int -> IO BS.ByteString
 
 sendAll :: (OutputStream stream) => stream -> BS.ByteString -> IO Int
 sendAll stream bs = sendAll' 0
