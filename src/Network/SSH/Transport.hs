@@ -100,7 +100,8 @@ instance MessageStream Transport where
         kexIfNecessary t
         transportReceiveMessage t
 
-withTransport :: (DuplexStreamPeekable stream) => TransportConfig -> stream -> (Transport -> SessionId -> IO a) -> IO (Either Disconnected a)
+withTransport :: (DuplexStreamPeekable stream) => TransportConfig -> stream
+              -> (Transport -> SessionId -> IO a) -> IO (Either Disconnected a)
 withTransport config stream runWith = withFinalExceptionHandler $ do
     (clientVersion, serverVersion) <- case config of
         -- Receive the peer version and reject immediately if this
@@ -165,9 +166,9 @@ withTransport config stream runWith = withFinalExceptionHandler $ do
                 g = handle $ \e-> do 
                     case e of
                         Disconnect DisconnectConnectionLost _ _ -> pure ()
-                        _ -> withAsync (sendMessage env e) $ \thread -> do
-                                t <- registerDelay 1000000
-                                atomically $ void (waitCatchSTM thread) <|> (readTVar t >>= check)
+                        _ -> withAsync (transportSendMessage env e) $ \thread -> do
+                            t <- registerDelay 1000000
+                            atomically $ void (waitCatchSTM thread) <|> (readTVar t >>= check)
                     pure $ Left $ Disconnected e
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
@@ -191,7 +192,7 @@ transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
         --     to avoid nonce reuse in exceptional cases!
         modifyMVar_ (tPacketsSent env) $ \pacs  -> pure $! pacs + 1
         sent <- sendAll stream cipherText
-        modifyMVar_ (tBytesSent env)   $ \bytes -> pure $! bytes + fromIntegral sent
+        modifyMVar_ (tBytesSent env)   $ \bytes -> pure $! bytes + fromIntegral (BS.length cipherText)
         case tryParse plainText of
             Nothing         -> pure encrypt
             Just KexNewKeys -> readMVar (tEncryptionCtxNext env)
@@ -204,7 +205,7 @@ transportReceiveRawMessageMaybe :: Transport -> IO (Maybe BS.ByteString)
 transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
     modifyMVar (tDecryptionCtx env) $ \decrypt -> do
         packets <- readMVar (tPacketsReceived env)
-        plainText <- decrypt packets receiveAll'
+        plainText <- decrypt packets (receiveAll mempty)
         tOnReceive (tConfig env) plainText
         modifyMVar_ (tPacketsReceived env) $ \pacs  -> pure $! pacs + 1
         case interpreter plainText of
@@ -214,11 +215,15 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
                     (,Nothing) <$> readMVar (tDecryptionCtxNext env)
                 Nothing -> pure (decrypt, Just plainText)
     where
-        receiveAll' i = do
-            bs <- receiveAll stream i
-            modifyMVar_ (tBytesReceived env) $ \bytes ->
-                pure $! bytes + fromIntegral (BS.length bs)
-            pure bs
+        receiveAll :: BS.ByteString -> Int -> IO BS.ByteString
+        receiveAll acc requested
+            | BS.length acc >= requested = pure acc
+            | otherwise = do
+                bs <- receive stream requested
+                when (BS.null bs) (throwIO exceptionConnectionLost)
+                modifyMVar_ (tBytesReceived env) $ \bytes ->
+                    pure $! bytes + fromIntegral (BS.length bs)
+                receiveAll (acc <> bs) (requested - BS.length bs)
 
         interpreter plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5 <|> f i6
             where
@@ -606,29 +611,14 @@ withVerifiedSignature key hash sig action = case (key, sig) of
 -- UTIL -----------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
-errorInvalidTransition :: IO a
-errorInvalidTransition = throwIO $
-    Disconnect DisconnectKeyExchangeFailed "invalid transition" mempty
-
-errorInvalidSignature :: IO a
-errorInvalidSignature = throwIO $
-    Disconnect DisconnectKeyExchangeFailed "invalid signature" mempty
-
-errorNotImplemented :: IO a
-errorNotImplemented = throwIO $
-    Disconnect DisconnectByApplication "not implemented" mempty
-
-throwProtocolError :: BS.ByteString -> IO a
-throwProtocolError e = throwIO $ Disconnect DisconnectProtocolError e mempty
+sendVersion :: (OutputStream stream) => stream -> IO Version
+sendVersion stream = do
+    void $ sendAll stream $ runPut $ put version
+    pure version
 
 -- The maximum length of the version string is 255 chars including CR+LF.
 -- The version string is usually short and transmitted within
--- a single TCP segment. The concatenation is therefore unlikely to happen
--- for regular use cases, but nonetheless required for correctness.
--- It is furthermore assumed that the client does not send any more data
--- after the version string before having received a response from the server;
--- otherwise parsing will fail. This is done in order to not having to deal with leftovers.
--- FIXME: use some kind of peek on the stream
+-- a single TCP segment.
 receiveVersion :: (InputStreamPeekable stream) => stream -> IO Version
 receiveVersion stream = do
     bs <- peek stream 255
@@ -640,7 +630,12 @@ receiveVersion stream = do
         e0 = throwIO exceptionConnectionLost
         e1 = throwIO exceptionProtocolVersionNotSupported
 
-sendVersion :: (OutputStream stream) => stream -> IO Version
-sendVersion stream = do
-    void $ sendAll stream $ runPut $ put version
-    pure version
+sendAll :: (OutputStream stream) => stream -> BS.ByteString -> IO ()
+sendAll stream bs = sendAll' 0
+    where
+        sendAll' offset
+            | offset >= BS.length bs = pure ()
+            | otherwise = do
+                sent <- send stream (BS.drop offset bs)
+                when (sent <= 0) (throwIO exceptionConnectionLost)
+                sendAll' (offset + sent)

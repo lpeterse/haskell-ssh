@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE MultiWayIf, OverloadedStrings        #-}
+{-# LANGUAGE MultiWayIf        #-}
 module Network.SSH.TStreamingQueue where
 
 import           Control.Concurrent.STM.TChan
@@ -15,7 +15,6 @@ import           Prelude                 hiding ( head
 
 import qualified Network.SSH.Stream            as S
 import           Network.SSH.Constants
-import           Network.SSH.Message
 
 data TStreamingQueue
     = TStreamingQueue

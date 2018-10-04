@@ -5,14 +5,15 @@ module Network.SSH.Server ( serve ) where
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Transport
+import           Network.SSH.Message
 import           Network.SSH.Stream (DuplexStreamPeekable ())
 import           Network.SSH.Server.Service.UserAuth
 import           Network.SSH.Server.Service.Connection
 
-serve :: (DuplexStreamPeekable stream) => Config identity -> stream -> IO (Maybe Disconnected)
+serve :: (DuplexStreamPeekable stream) => Config identity -> stream -> IO Disconnected
 serve config stream = run >>= \case
-    Left  d  -> pure (Just d)
-    Right () -> pure Nothing
+    Left  d  -> pure d
+    Right () -> pure $ Disconnected $ Disconnect DisconnectByApplication mempty mempty
     where
         run = withTransport transportConfig stream $ \transport session -> do
                 withAuthentication config transport session $ \case
