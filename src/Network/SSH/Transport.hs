@@ -2,13 +2,17 @@
 module Network.SSH.Transport
     ( Transport()
     , TransportConfig (..)
+    , Disconnected (..)
     , withTransport
     )
 where
 
 import           Control.Applicative
 import           Control.Concurrent.MVar
-import           Control.Exception              ( throwIO )
+import           Control.Concurrent.Async
+import           Control.Monad.STM
+import           Control.Concurrent.STM.TVar
+import           Control.Exception              ( Exception, throwIO, handle, fromException)
 import           Control.Monad                  ( when, void )
 import qualified Crypto.Cipher.ChaCha          as ChaCha
 import qualified Crypto.Hash                   as Hash
@@ -19,7 +23,6 @@ import           Data.Bits
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import           Data.List
-import           Data.Maybe
 import qualified Data.List.NonEmpty            as NEL
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
@@ -82,6 +85,13 @@ data KexStep
 
 newtype KexContinuation = KexContinuation (Maybe KexStep -> IO KexContinuation)
 
+data Disconnected
+    = Disconnected       Disconnect
+    | DisconnectedByPeer Disconnect
+    deriving (Show)
+
+instance Exception Disconnected where
+
 instance MessageStream Transport where
     sendMessage t msg = do
         kexIfNecessary t
@@ -90,8 +100,8 @@ instance MessageStream Transport where
         kexIfNecessary t
         transportReceiveMessage t
 
-withTransport :: (DuplexStreamPeekable stream) => TransportConfig -> stream -> (Transport -> SessionId -> IO a) -> IO a
-withTransport config stream runWith = do
+withTransport :: (DuplexStreamPeekable stream) => TransportConfig -> stream -> (Transport -> SessionId -> IO a) -> IO (Either Disconnected a)
+withTransport config stream runWith = withFinalExceptionHandler $ do
     (clientVersion, serverVersion) <- case config of
         -- Receive the peer version and reject immediately if this
         -- is not an SSH connection attempt (before allocating
@@ -137,8 +147,28 @@ withTransport config stream runWith = do
             , tLastRekeyingDataSent     = xRekeySent
             , tLastRekeyingDataReceived = xRekeyRcvd
             }
-    sessionId <- runInitialKeyExchange env
-    runWith env sessionId
+    withRespondingExceptionHandler env $ do
+        sessionId <- runInitialKeyExchange env
+        a <- runWith env sessionId
+        sendMessage env (Disconnect DisconnectByApplication mempty mempty)
+        pure a
+    where
+        withFinalExceptionHandler :: IO (Either Disconnected a) -> IO (Either Disconnected a)
+        withFinalExceptionHandler = handle $ \e -> case fromException e of
+            Nothing -> throwIO e
+            Just d@Disconnect {} -> pure $ Left $ Disconnected d
+
+        withRespondingExceptionHandler :: Transport -> IO a -> IO (Either Disconnected a)
+        withRespondingExceptionHandler env run = h $ g (Right <$> run)
+            where
+                h = handle $ pure . Left
+                g = handle $ \e-> do 
+                    case e of
+                        Disconnect DisconnectConnectionLost _ _ -> pure ()
+                        _ -> withAsync (sendMessage env e) $ \thread -> do
+                                t <- registerDelay 1000000
+                                atomically $ void (waitCatchSTM thread) <|> (readTVar t >>= check)
+                    pure $ Left $ Disconnected e
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
 transportSendMessage env msg =
@@ -193,7 +223,7 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
         interpreter plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5 <|> f i6
             where
                 f i = i <$> tryParse plainText
-                i0 Disconnect     {} = errorNotImplemented
+                i0 x@Disconnect   {} = throwIO $ DisconnectedByPeer x
                 i1 Debug          {} = pure ()
                 i2 Ignore         {} = pure ()
                 i3 Unimplemented  {} = pure ()

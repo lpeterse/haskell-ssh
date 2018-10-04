@@ -76,8 +76,8 @@ main = do
                 ownershipTransferred <- newTVarIO False
                 let serveStream = do
                         atomically $ writeTVar ownershipTransferred True
-                        Server.serve config stream
-                void $ forkIO $ serveStream `finally` S.close stream
+                        Server.serve config stream >>= print
+                void $ forkIO $ (serveStream `finally` S.close stream)
                 atomically $ check =<< readTVar ownershipTransferred
 
 runExec :: Server.Session identity -> BS.ByteString -> IO ExitCode
