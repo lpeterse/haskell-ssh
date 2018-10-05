@@ -25,6 +25,8 @@ serve config stream = newTransportConfig >>= run >>= \case
             , tHostKeyAlgorithms  = pure SshEd25519
             , tKexAlgorithms      = keyExchangeAlgorithms config
             , tEncAlgorithms      = encryptionAlgorithms config
+            , tMaxTimeBeforeRekey = maxTimeBeforeRekey config
+            , tMaxDataBeforeRekey = maxDataBeforeRekey config
             , tOnSend             = onSend config
             , tOnReceive          = onReceive config
             }

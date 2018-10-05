@@ -14,17 +14,25 @@ exceptionConnectionLost :: Disconnect
 exceptionConnectionLost =
     Disconnect DisconnectConnectionLost mempty mempty
 
-errorInvalidTransition :: IO a
-errorInvalidTransition = throwIO $
+exceptionKexInvalidTransition :: Disconnect
+exceptionKexInvalidTransition =
     Disconnect DisconnectKeyExchangeFailed "invalid transition" mempty
 
-errorInvalidSignature :: IO a
-errorInvalidSignature = throwIO $
+exceptionKexInvalidSignature :: Disconnect
+exceptionKexInvalidSignature =
     Disconnect DisconnectKeyExchangeFailed "invalid signature" mempty
 
 exceptionKexNoSignature :: Disconnect
 exceptionKexNoSignature =
     Disconnect DisconnectKeyExchangeFailed "no signature" mempty
+
+exceptionMacError :: Disconnect
+exceptionMacError =
+    Disconnect DisconnectMacError mempty mempty
+
+exceptionInvalidPacket :: Disconnect
+exceptionInvalidPacket =
+    Disconnect DisconnectProtocolError "invalid packet" mempty
 
 throwProtocolError :: BS.ByteString -> IO a
 throwProtocolError e = throwIO $ Disconnect DisconnectProtocolError e mempty

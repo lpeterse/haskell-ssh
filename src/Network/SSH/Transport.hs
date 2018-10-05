@@ -1,4 +1,8 @@
-{-# LANGUAGE ExistentialQuantification, OverloadedStrings, MultiWayIf, TupleSections, LambdaCase #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE OverloadedStrings         #-}
+{-# LANGUAGE MultiWayIf                #-}
+{-# LANGUAGE TupleSections             #-}
+{-# LANGUAGE LambdaCase                #-}
 module Network.SSH.Transport
     ( Transport()
     , TransportConfig (..)
@@ -8,33 +12,33 @@ module Network.SSH.Transport
 where
 
 import           Control.Applicative
-import           Control.Concurrent.MVar
 import           Control.Concurrent.Async
-import           Control.Monad.STM
+import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TVar
 import           Control.Exception              ( Exception, throwIO, handle, fromException)
 import           Control.Monad                  ( when, void )
+import           Control.Monad.STM
+import           Data.Bits
+import           Data.List
+import           Data.Monoid                    ( (<>) )
+import           Data.Word
+import           GHC.Clock
 import qualified Crypto.Cipher.ChaCha          as ChaCha
 import qualified Crypto.Hash                   as Hash
 import qualified Crypto.MAC.Poly1305           as Poly1305
 import qualified Crypto.PubKey.Curve25519      as Curve25519
 import qualified Crypto.PubKey.Ed25519         as Ed25519
-import           Data.Bits
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
-import           Data.List
 import qualified Data.List.NonEmpty            as NEL
-import           Data.Monoid                    ( (<>) )
-import           Data.Word
-import           GHC.Clock
 
-import           Network.SSH.Encoding
-import           Network.SSH.Exception
-import           Network.SSH.Stream
-import           Network.SSH.Message
-import           Network.SSH.Constants
 import           Network.SSH.Algorithms
 import           Network.SSH.AuthAgent
+import           Network.SSH.Constants
+import           Network.SSH.Encoding
+import           Network.SSH.Exception
+import           Network.SSH.Message
+import           Network.SSH.Stream
 
 data Transport
     = forall stream. DuplexStream stream => TransportEnv
@@ -59,12 +63,14 @@ data Transport
 
 data TransportConfig
     = TransportConfig
-    { tAuthAgent         :: Maybe AuthAgent
-    , tHostKeyAlgorithms :: NEL.NonEmpty HostKeyAlgorithm
-    , tKexAlgorithms     :: NEL.NonEmpty KeyExchangeAlgorithm
-    , tEncAlgorithms     :: NEL.NonEmpty EncryptionAlgorithm
-    , tOnSend            :: BS.ByteString -> IO ()
-    , tOnReceive         :: BS.ByteString -> IO ()
+    { tAuthAgent          :: Maybe AuthAgent
+    , tHostKeyAlgorithms  :: NEL.NonEmpty HostKeyAlgorithm
+    , tKexAlgorithms      :: NEL.NonEmpty KeyExchangeAlgorithm
+    , tEncAlgorithms      :: NEL.NonEmpty EncryptionAlgorithm
+    , tMaxTimeBeforeRekey :: Word64
+    , tMaxDataBeforeRekey :: Word64
+    , tOnSend             :: BS.ByteString -> IO ()
+    , tOnReceive          :: BS.ByteString -> IO ()
     }
 
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.ScrubbedBytes])
@@ -120,7 +126,7 @@ withTransport config stream runWith = withFinalExceptionHandler $ do
     xDecryptionCtxNext   <- newMVar plainDecryptionContext
     xKexContinuation     <- newEmptyMVar
     xSessionId           <- newEmptyMVar
-    xRekeyTime           <- newMVar =<< ((`div` 1000000000) <$> getMonotonicTimeNSec)
+    xRekeyTime           <- newMVar =<< getEpochSeconds
     xRekeySent           <- newMVar 0
     xRekeyRcvd           <- newMVar 0
     let env = TransportEnv
@@ -180,13 +186,12 @@ transportSendRawMessage :: Transport -> BS.ByteString -> IO ()
 transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
     modifyMVar_ (tEncryptionCtx env) $ \encrypt -> do
         tOnSend (tConfig env) plainText
-        packets <- readMVar (tPacketsSent env)
-        cipherText <- encrypt packets plainText
         -- NB: Increase packet counter before sending in order
         --     to avoid nonce reuse in exceptional cases!
-        modifyMVar_ (tPacketsSent env) $ \pacs  -> pure $! pacs + 1
-        sent <- sendAll stream cipherText
-        modifyMVar_ (tBytesSent env)   $ \bytes -> pure $! bytes + fromIntegral (BS.length cipherText)
+        packets <- modifyMVar (tPacketsSent env) $ \p -> pure . (,p) $! p + 1
+        cipherText <- encrypt packets plainText
+        sendAll stream cipherText
+        modifyMVar_ (tBytesSent env) $ \bytes -> pure $! bytes + fromIntegral (BS.length cipherText)
         case tryParse plainText of
             Nothing         -> pure encrypt
             Just KexNewKeys -> readMVar (tEncryptionCtxNext env)
@@ -285,55 +290,46 @@ chaCha20Poly1305EncryptionContext headerKey mainKey packetsSent plain = pure $ c
 
 chaCha20Poly1305DecryptionContext :: BA.ByteArrayAccess key => key -> key -> Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
 chaCha20Poly1305DecryptionContext headerKey mainKey packetsReceived getCipher = do
-    paclenCiph <- getCipher 4
+    cipherLen <- getCipher 4
 
     let nonceBA         = nonce packetsReceived
-    let ccMain = ChaCha.initialize 20 mainKey nonceBA
-    let ccHeader = ChaCha.initialize 20 headerKey nonceBA
-    let (poly, ccMain') = ChaCha.generate ccMain 64
-    let paclenPlain = fst $ ChaCha.combine ccHeader paclenCiph
-    let maclen          = 16
-    let paclen =
-            fromIntegral (BA.index paclenPlain 0)
-                `shiftL` 24
-                .|.      fromIntegral (BA.index paclenPlain 1)
-                `shiftL` 16
-                .|.      fromIntegral (BA.index paclenPlain 2)
-                `shiftL` 8
-                .|.      fromIntegral (BA.index paclenPlain 3)
-                `shiftL` 0
+        ccMain          = ChaCha.initialize 20 mainKey nonceBA
+        ccHeader        = ChaCha.initialize 20 headerKey nonceBA
+        (poly, ccMain') = ChaCha.generate ccMain 64
+        paclen          = fromWord32be $ fst $ ChaCha.combine ccHeader cipherLen
+        maclen          = 16
 
-    pac <- getCipher paclen
-    mac <- getCipher maclen
+    -- Receive both and then split/slice to reduce memory allocation/fragmentation.
+    (cipherPac,mac) <- BS.splitAt paclen <$> getCipher (paclen + maclen)
 
-    let authTagReceived = Poly1305.Auth $ BA.convert mac
-    let authTagExpected =
-            Poly1305.auth (BS.take 32 poly) (paclenCiph <> pac)
+    -- Check message integrity with Poly1305 authentication tag.
+    let authTagReceived = Poly1305.Auth $ BA.convert mac :: Poly1305.Auth
+        authTagExpected = Poly1305.auth (BS.take 32 poly) (cipherLen <> cipherPac)
+    when (authTagReceived /= authTagExpected) (throwIO exceptionMacError)
 
-    if authTagReceived /= authTagExpected
-        then throwIO $ Disconnect DisconnectMacError "" ""
-        else do
-            let plain = fst (ChaCha.combine ccMain' pac)
-            case BS.uncons plain of
-                Nothing     -> throwProtocolError "packet structure"
-                Just (h, t) -> pure $ BS.take (BS.length t - fromIntegral h) t
+    let plainPac = fst (ChaCha.combine ccMain' cipherPac)
+    maybe (throwIO exceptionInvalidPacket)
+        (\(h,t) -> pure  $ BS.take (BS.length t - fromIntegral h) t)
+        (BS.uncons plainPac)
+    where
+        fromWord32be ba =
+                 fromIntegral (BA.index ba 0) `shiftL` 24
+            .|.  fromIntegral (BA.index ba 1) `shiftL` 16
+            .|.  fromIntegral (BA.index ba 2) `shiftL` 8
+            .|.  fromIntegral (BA.index ba 3) `shiftL` 0
 
 -- The sequence number is always the lower 32 bits of the number of
 -- packets received - 1. By specification, it wraps around every 2^32 packets.
 -- Special care must be taken wrt to rekeying as the sequence number
 -- is used as nonce in the ChaCha20Poly1305 encryption mode.
 nonce :: Word64 -> BA.Bytes
-nonce i =
-    BA.pack
-        [ 0
-        , 0
-        , 0
-        , 0
-        , fromIntegral $ i `shiftR` 24
-        , fromIntegral $ i `shiftR` 16
-        , fromIntegral $ i `shiftR` 8
-        , fromIntegral $ i `shiftR` 0
-        ] :: BA.Bytes
+nonce i = BA.pack
+    [ 0, 0, 0, 0
+    , fromIntegral $ i `shiftR` 24
+    , fromIntegral $ i `shiftR` 16
+    , fromIntegral $ i `shiftR` 8
+    , fromIntegral $ i `shiftR` 0
+    ]
 
 -------------------------------------------------------------------------------
 -- KEY EXCHANGE ---------------------------------------------------------------
@@ -350,7 +346,7 @@ runInitialKeyExchange env = do
     where
         dontAcceptMessageUntilKexComplete = do
             transportReceiveRawMessageMaybe env >>= \case
-                Just _  -> errorInvalidTransition
+                Just _  -> throwIO exceptionKexInvalidTransition
                 Nothing -> tryReadMVar (tSessionId env) >>= \case
                     Nothing -> dontAcceptMessageUntilKexComplete
                     Just sid -> pure sid
@@ -364,7 +360,7 @@ kexIfNecessary env = do
     kexRekeyingRequired env >>= \case
         False -> pure ()
         True -> do
-            void $ swapMVar (tLastRekeyingTime         env) =<< ((`div` 1000000000) <$> getMonotonicTimeNSec)
+            void $ swapMVar (tLastRekeyingTime         env) =<< getEpochSeconds
             void $ swapMVar (tLastRekeyingDataSent     env) =<< readMVar (tBytesSent     env)
             void $ swapMVar (tLastRekeyingDataReceived env) =<< readMVar (tBytesReceived env)
             kexTrigger env
@@ -388,7 +384,7 @@ kexClientContinuation env cookie = clientKex0
                 transportSendMessage env cki
                 transportSendMessage env (KexEcdhInit cek)
                 pure (clientKex2 cki ski cek cekSecret)
-            _ -> errorInvalidTransition
+            _ -> throwIO exceptionKexInvalidTransition
             where
                 cki = kexInit (tConfig env) cookie
 
@@ -401,7 +397,7 @@ kexClientContinuation env cookie = clientKex0
                 let cek = Curve25519.toPublic cekSecret
                 transportSendMessage env (KexEcdhInit cek)
                 pure (clientKex2 cki ski cek cekSecret)
-            _ -> errorInvalidTransition
+            _ -> throwIO exceptionKexInvalidTransition
 
         clientKex2 :: KexInit -> KexInit -> Curve25519.PublicKey -> Curve25519.SecretKey -> KexContinuation
         clientKex2 cki ski cek cekSecret = KexContinuation $ \case
@@ -410,7 +406,7 @@ kexClientContinuation env cookie = clientKex0
             Just (EcdhReply ecdhReply) -> do
                 consumeEcdhReply cki ski cek cekSecret ecdhReply
                 pure clientKex0
-            _ -> errorInvalidTransition
+            _ -> throwIO exceptionKexInvalidTransition
 
         consumeEcdhReply :: KexInit -> KexInit -> Curve25519.PublicKey -> Curve25519.SecretKey -> KexEcdhReply -> IO ()
         consumeEcdhReply cki ski cek cekSecret ecdhReply = do
@@ -444,7 +440,7 @@ kexServerContinuation env cookie authAgent = serverKex0
             Just (Init cki) -> do
                 transportSendMessage env ski
                 pure (serverKex2 cki ski)
-            _ -> errorInvalidTransition
+            _ -> throwIO exceptionKexInvalidTransition
             where
                 ski = kexInit (tConfig env) cookie
 
@@ -454,7 +450,7 @@ kexServerContinuation env cookie authAgent = serverKex0
                 pure (serverKex1 ski)
             Just (Init cki) ->
                 pure (serverKex2 cki ski)
-            _ -> errorInvalidTransition
+            _ -> throwIO exceptionKexInvalidTransition
 
         serverKex2 :: KexInit -> KexInit -> KexContinuation
         serverKex2 cki ski = KexContinuation $ \case
@@ -463,7 +459,7 @@ kexServerContinuation env cookie authAgent = serverKex0
             Just (EcdhInit (KexEcdhInit cek)) -> do
                 emitEcdhReply cki ski cek
                 pure serverKex0
-            _ -> errorInvalidTransition
+            _ -> throwIO exceptionKexInvalidTransition
 
         emitEcdhReply :: KexInit -> KexInit -> Curve25519.PublicKey -> IO ()
         emitEcdhReply cki ski cek = do
@@ -485,8 +481,6 @@ kexServerContinuation env cookie authAgent = serverKex0
                         setChaCha20Poly1305Context env $ deriveKeys sec hash sid
                         transportSendMessage env (KexEcdhReply shk sek sig)
                         transportSendMessage env KexNewKeys
-            where
-                
 
 commonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
 commonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
@@ -521,28 +515,23 @@ kexInit config cookie = KexInit
 
 kexRekeyingRequired :: Transport -> IO Bool
 kexRekeyingRequired env = do
-    t <-  (`div` 1000000000) <$> getMonotonicTimeNSec
-    t0 <- readMVar (tLastRekeyingTime env)
-    s  <- readMVar (tBytesSent env)
-    s0 <- readMVar (tLastRekeyingDataSent env)
-    r  <- readMVar (tBytesReceived env)
-    r0 <- readMVar (tLastRekeyingDataReceived env)
-    pure $ if
-        | intervalExceeded t t0  -> True
-        | thresholdExceeded s s0 -> True
-        | thresholdExceeded r r0 -> True
-        | otherwise              -> False
+    tNow <- getEpochSeconds
+    t    <- readMVar (tLastRekeyingTime env)
+    sNow <- readMVar (tBytesSent env)
+    s    <- readMVar (tLastRekeyingDataSent env)
+    rNow <- readMVar (tBytesReceived env)
+    r    <- readMVar (tLastRekeyingDataReceived env)
+    pure $ t + interval  < tNow
+        || s + threshold < sNow
+        || r + threshold < rNow
   where
     -- For reasons of fool-proofness the rekeying interval/threshold
     -- shall never be greater than 1 hour or 1GB.
     -- NB: This is security critical as some algorithms like ChaCha20
     -- use the packet counter as nonce and an overflow will lead to
     -- nonce reuse!
-    -- FIXME: honor config option
-    interval  = 6 -- min (maxTimeBeforeRekey config) 3600
-    threshold = 1024 * 1024 * 1024 -- min (maxDataBeforeRekey config) (1024 * 1024 * 1024)
-    intervalExceeded t t0 = t > t0 && t - t0 > interval
-    thresholdExceeded x x0 = x > x0 && x - x0 > threshold
+    interval  = min (tMaxTimeBeforeRekey $ tConfig env) 3600
+    threshold = min (tMaxDataBeforeRekey $ tConfig env) (1024 * 1024 * 1024)
 
 trySetSessionId :: Transport -> SessionId -> IO SessionId
 trySetSessionId env sidDef =
@@ -574,23 +563,23 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
         putAsMPInt k
 
 deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> SessionId -> KeyStreams
-deriveKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> (k1 i) : f [k1 i]
+deriveKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> k1 i : f [k1 i]
     where
-    k1 i = Hash.hashFinalize $
-        flip Hash.hashUpdate sess $
-        Hash.hashUpdate st i :: Hash.Digest Hash.SHA256
-    f ks = kx : f (ks ++ [kx])
-        where
-        kx = Hash.hashFinalize (foldl Hash.hashUpdate st ks)
-    st =
-        flip Hash.hashUpdate hash $
-        Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
+        k1 i = Hash.hashFinalize $
+            flip Hash.hashUpdate sess $
+            Hash.hashUpdate st i :: Hash.Digest Hash.SHA256
+        f ks = kx : f (ks ++ [kx])
+            where
+            kx = Hash.hashFinalize (foldl Hash.hashUpdate st ks)
+        st =
+            flip Hash.hashUpdate hash $
+            Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
 
 withVerifiedSignature :: BA.ByteArrayAccess hash => PublicKey -> hash -> Signature -> IO a -> IO a
 withVerifiedSignature key hash sig action = case (key, sig) of
     (PublicKeyEd25519 k, SignatureEd25519 s)
         | Ed25519.verify k hash s -> action
-    _ -> errorInvalidSignature
+    _ -> throwIO exceptionKexInvalidSignature
 
 -------------------------------------------------------------------------------
 -- UTIL -----------------------------------------------------------------------
@@ -624,3 +613,6 @@ sendAll stream bs = sendAll' 0
                 sent <- send stream (BS.drop offset bs)
                 when (sent <= 0) (throwIO exceptionConnectionLost)
                 sendAll' (offset + sent)
+
+getEpochSeconds :: IO Word64
+getEpochSeconds = (`div` 1000000000) <$> getMonotonicTimeNSec

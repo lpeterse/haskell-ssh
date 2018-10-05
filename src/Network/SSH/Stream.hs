@@ -1,9 +1,6 @@
 module Network.SSH.Stream where
 
-import           Control.Exception
-import           Control.Monad     (when)
 import qualified Data.ByteString   as BS
-import           Data.Monoid       ((<>))
 
 class (InputStream stream, OutputStream stream) => DuplexStream stream where
 class (InputStreamPeekable stream, DuplexStream stream) => DuplexStreamPeekable stream where

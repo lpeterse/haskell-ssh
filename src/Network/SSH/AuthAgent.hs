@@ -16,7 +16,7 @@ fromKeyPair = AuthAgent
 
 getPublicKeys :: AuthAgent -> IO [PublicKey]
 getPublicKeys agent = case authKeyPair agent of
-    KeyPairEd25519 pk sk -> pure [PublicKeyEd25519 pk]
+    KeyPairEd25519 pk _ -> pure [PublicKeyEd25519 pk]
 
 signHash :: BA.ByteArrayAccess ba => AuthAgent -> PublicKey -> ba -> IO (Maybe Signature)
 signHash agent pk0 hash = case authKeyPair agent of
