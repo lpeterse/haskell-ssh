@@ -13,25 +13,27 @@ import           Network.SSH.Algorithms
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Stream
+import           Network.SSH.AuthAgent
 
 type Command = BS.ByteString
 
-data Config identity = Config {
-      hostKeys                      :: NonEmpty KeyPair
-    , keyExchangeAlgorithms         :: NonEmpty KeyExchangeAlgorithm
-    , encryptionAlgorithms          :: NonEmpty EncryptionAlgorithm
-    , onAuthRequest                 :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
-    , onShellRequest                :: Maybe (Session identity -> IO ExitCode)
-    , onExecRequest                 :: Maybe (Session identity -> Command -> IO ExitCode)
-    , onSend                        :: BS.ByteString -> IO ()
-    , onReceive                     :: BS.ByteString -> IO ()
-    , onDisconnect                  :: Either SomeException Disconnect -> IO ()
-    , channelMaxCount               :: Word16
-    , channelMaxQueueSize           :: Word32
-    , channelMaxPacketSize          :: Word32
-    , maxTimeBeforeRekey            :: Word64
-    , maxDataBeforeRekey            :: Word64
-    }
+data Config identity
+    = Config
+      { authAgent                     :: AuthAgent
+      , keyExchangeAlgorithms         :: NonEmpty KeyExchangeAlgorithm
+      , encryptionAlgorithms          :: NonEmpty EncryptionAlgorithm
+      , onAuthRequest                 :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
+      , onShellRequest                :: Maybe (Session identity -> IO ExitCode)
+      , onExecRequest                 :: Maybe (Session identity -> Command -> IO ExitCode)
+      , onSend                        :: BS.ByteString -> IO ()
+      , onReceive                     :: BS.ByteString -> IO ()
+      , onDisconnect                  :: Either SomeException Disconnect -> IO ()
+      , channelMaxCount               :: Word16
+      , channelMaxQueueSize           :: Word32
+      , channelMaxPacketSize          :: Word32
+      , maxTimeBeforeRekey            :: Word64
+      , maxDataBeforeRekey            :: Word64
+      }
 
 data Session identity
   = forall stdin stdout stderr. (InputStream stdin, OutputStream stdout, OutputStream stderr) => Session
@@ -47,7 +49,7 @@ newDefaultConfig :: IO (Config identity)
 newDefaultConfig = do
     sk <- Ed25519.generateSecretKey
     pure Config {
-          hostKeys                      = pure (KeyPairEd25519 (Ed25519.toPublic sk) sk)
+          authAgent                     = fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk
         , keyExchangeAlgorithms         = pure Curve25519Sha256AtLibsshDotOrg
         , encryptionAlgorithms          = pure Chacha20Poly1305AtOpensshDotCom
         , onAuthRequest                 = \_ _ _ -> pure Nothing

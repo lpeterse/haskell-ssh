@@ -34,7 +34,7 @@ import           Network.SSH.Stream
 import           Network.SSH.Message
 import           Network.SSH.Constants
 import           Network.SSH.Algorithms
-import           Network.SSH.Key
+import           Network.SSH.AuthAgent
 
 data Transport
     = forall stream. DuplexStream stream => TransportEnv
@@ -58,15 +58,9 @@ data Transport
     }
 
 data TransportConfig
-    = TransportServerConfig
-    { tHostKeys          :: NEL.NonEmpty KeyPair
-    , tKexAlgorithms     :: NEL.NonEmpty KeyExchangeAlgorithm
-    , tEncAlgorithms     :: NEL.NonEmpty EncryptionAlgorithm
-    , tOnSend            :: BS.ByteString -> IO ()
-    , tOnReceive         :: BS.ByteString -> IO ()
-    }
-    | TransportClientConfig
-    { tHostKeyAlgorithms :: NEL.NonEmpty HostKeyAlgorithm
+    = TransportConfig
+    { tAuthAgent         :: Maybe AuthAgent
+    , tHostKeyAlgorithms :: NEL.NonEmpty HostKeyAlgorithm
     , tKexAlgorithms     :: NEL.NonEmpty KeyExchangeAlgorithm
     , tEncAlgorithms     :: NEL.NonEmpty EncryptionAlgorithm
     , tOnSend            :: BS.ByteString -> IO ()
@@ -103,16 +97,16 @@ instance MessageStream Transport where
 withTransport :: (DuplexStreamPeekable stream) => TransportConfig -> stream
               -> (Transport -> SessionId -> IO a) -> IO (Either Disconnected a)
 withTransport config stream runWith = withFinalExceptionHandler $ do
-    (clientVersion, serverVersion) <- case config of
+    (clientVersion, serverVersion) <- case tAuthAgent config of
         -- Receive the peer version and reject immediately if this
         -- is not an SSH connection attempt (before allocating
         -- any more resources); respond with the server version string.
-        TransportServerConfig {} -> do
+        Just {} -> do
             cv <- receiveVersion stream
             sv <- sendVersion stream
             pure (cv, sv)
         -- Start with sending local version and then wait for response.
-        TransportClientConfig {} -> do
+        Nothing -> do
             cv <- sendVersion stream
             sv <- receiveVersion stream
             pure (cv, sv)
@@ -242,12 +236,12 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
 
 setChaCha20Poly1305Context :: Transport -> KeyStreams -> IO ()
 setChaCha20Poly1305Context env (KeyStreams keys) = do
-    void $ swapMVar (tEncryptionCtxNext env) $! case tConfig env of
-        TransportServerConfig {} -> chaCha20Poly1305EncryptionContext headerKeySC mainKeySC
-        TransportClientConfig {} -> chaCha20Poly1305EncryptionContext headerKeyCS mainKeyCS
-    void $ swapMVar (tDecryptionCtxNext env) $! case tConfig env of
-        TransportServerConfig {} -> chaCha20Poly1305DecryptionContext headerKeyCS mainKeyCS
-        TransportClientConfig {} -> chaCha20Poly1305DecryptionContext headerKeySC mainKeySC
+    void $ swapMVar (tEncryptionCtxNext env) $! case tAuthAgent (tConfig env) of
+        Just {} -> chaCha20Poly1305EncryptionContext headerKeySC mainKeySC
+        Nothing -> chaCha20Poly1305EncryptionContext headerKeyCS mainKeyCS
+    void $ swapMVar (tDecryptionCtxNext env) $! case tAuthAgent (tConfig env) of
+        Just {} -> chaCha20Poly1305DecryptionContext headerKeyCS mainKeyCS
+        Nothing -> chaCha20Poly1305DecryptionContext headerKeySC mainKeySC
     where
     -- Derive the required encryption/decryption keys.
     -- The integrity keys etc. are not needed with chacha20.
@@ -348,9 +342,9 @@ nonce i =
 runInitialKeyExchange :: Transport -> IO SessionId
 runInitialKeyExchange env = do
     cookie <- newCookie
-    putMVar (tKexContinuation env) $ case tConfig env of
-        TransportClientConfig {} -> kexClientContinuation env cookie
-        TransportServerConfig {} -> kexServerContinuation env cookie
+    putMVar (tKexContinuation env) $ case tAuthAgent (tConfig env) of
+        Just aa -> kexServerContinuation env cookie aa
+        Nothing -> kexClientContinuation env cookie
     kexTrigger env
     dontAcceptMessageUntilKexComplete
     where
@@ -439,8 +433,8 @@ kexClientContinuation env cookie = clientKex0
                 hash = exchangeHash cv sv cki ski shk cek sek sec
 
 -- NB: Uses transportSendMessage to avoid rekeying-loop
-kexServerContinuation :: Transport -> Cookie -> KexContinuation
-kexServerContinuation env cookie = serverKex0
+kexServerContinuation :: Transport -> Cookie -> AuthAgent -> KexContinuation
+kexServerContinuation env cookie authAgent = serverKex0
     where
         serverKex0 :: KexContinuation
         serverKex0 = KexContinuation $ \case
@@ -473,24 +467,26 @@ kexServerContinuation env cookie = serverKex0
 
         emitEcdhReply :: KexInit -> KexInit -> Curve25519.PublicKey -> IO ()
         emitEcdhReply cki ski cek = do
-            kexAlgorithm   <- commonKexAlgorithm   ski cki
-            encAlgorithmCS <- commonEncAlgorithmCS ski cki
-            encAlgorithmSC <- commonEncAlgorithmSC ski cki
-            case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
-                (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) -> do
-                    sekSecret <- Curve25519.generateSecretKey
-                    let cv   = tClientVersion env
-                        sv   = tServerVersion env
-                        skp  = NEL.head (tHostKeys $ tConfig env)
-                        shk  = toPublicKey skp
-                        sek  = Curve25519.toPublic sekSecret
-                        sec  = Curve25519.dh cek sekSecret
-                        hash = exchangeHash cv sv cki ski shk cek sek sec
-                    withSignature skp hash $ \sig -> do
+            kexAlgorithm     <- commonKexAlgorithm    ski cki
+            encAlgorithmCS   <- commonEncAlgorithmCS  ski cki
+            encAlgorithmSC   <- commonEncAlgorithmSC  ski cki
+            getPublicKeys authAgent >>= \case
+                []    -> throwIO exceptionKexNoSignature
+                shk:_ -> case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
+                    (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) -> do
+                        sekSecret <- Curve25519.generateSecretKey
+                        let cv   = tClientVersion env
+                            sv   = tServerVersion env
+                            sek  = Curve25519.toPublic sekSecret
+                            sec  = Curve25519.dh cek sekSecret
+                            hash = exchangeHash cv sv cki ski shk cek sek sec
+                        sig <- maybe (throwIO exceptionKexNoSignature) pure =<< signHash authAgent shk hash
                         sid <- trySetSessionId env (SessionId $ BA.convert hash)
                         setChaCha20Poly1305Context env $ deriveKeys sec hash sid
                         transportSendMessage env (KexEcdhReply shk sek sig)
                         transportSendMessage env KexNewKeys
+            where
+                
 
 commonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
 commonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
@@ -508,27 +504,20 @@ commonEncAlgorithmSC ski cki = case kexEncryptionAlgorithmsServerToClient cki `i
     _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (server to client)" mempty)
 
 kexInit :: TransportConfig -> Cookie -> KexInit
-kexInit config cookie = case config of
-    TransportServerConfig { tKexAlgorithms = kexAlgos, tEncAlgorithms = encAlgos, tHostKeys = hostKeys } ->
-        ki kexAlgos encAlgos (fmap hostAlgo hostKeys)
-    TransportClientConfig { tKexAlgorithms = kexAlgos, tEncAlgorithms = encAlgos, tHostKeyAlgorithms = hostAlgos } ->
-        ki kexAlgos encAlgos hostAlgos
-    where
-        ki kexAlgos encAlgos hostAlgos = KexInit
-            {   kexCookie                              = cookie
-            ,   kexAlgorithms                          = NEL.toList $ fmap algorithmName kexAlgos
-            ,   kexServerHostKeyAlgorithms             = NEL.toList $ fmap algorithmName hostAlgos
-            ,   kexEncryptionAlgorithmsClientToServer  = NEL.toList $ fmap algorithmName encAlgos
-            ,   kexEncryptionAlgorithmsServerToClient  = NEL.toList $ fmap algorithmName encAlgos
-            ,   kexMacAlgorithmsClientToServer         = []
-            ,   kexMacAlgorithmsServerToClient         = []
-            ,   kexCompressionAlgorithmsClientToServer = [algorithmName None]
-            ,   kexCompressionAlgorithmsServerToClient = [algorithmName None]
-            ,   kexLanguagesClientToServer             = []
-            ,   kexLanguagesServerToClient             = []
-            ,   kexFirstPacketFollows                  = False
-            }
-        hostAlgo KeyPairEd25519 {} = SshEd25519
+kexInit config cookie = KexInit
+    {   kexCookie                              = cookie
+    ,   kexServerHostKeyAlgorithms             = NEL.toList $ fmap algorithmName (tHostKeyAlgorithms config)
+    ,   kexAlgorithms                          = NEL.toList $ fmap algorithmName (tKexAlgorithms config)
+    ,   kexEncryptionAlgorithmsClientToServer  = NEL.toList $ fmap algorithmName (tEncAlgorithms config)
+    ,   kexEncryptionAlgorithmsServerToClient  = NEL.toList $ fmap algorithmName (tEncAlgorithms config)
+    ,   kexMacAlgorithmsClientToServer         = []
+    ,   kexMacAlgorithmsServerToClient         = []
+    ,   kexCompressionAlgorithmsClientToServer = [algorithmName None]
+    ,   kexCompressionAlgorithmsServerToClient = [algorithmName None]
+    ,   kexLanguagesClientToServer             = []
+    ,   kexLanguagesServerToClient             = []
+    ,   kexFirstPacketFollows                  = False
+    }
 
 kexRekeyingRequired :: Transport -> IO Bool
 kexRekeyingRequired env = do
@@ -596,10 +585,6 @@ deriveKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> (k1 
     st =
         flip Hash.hashUpdate hash $
         Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
-
-withSignature :: BA.ByteArrayAccess hash => KeyPair -> hash -> (Signature -> IO a) -> IO a
-withSignature key hash handler = case key of
-    KeyPairEd25519 pk sk -> handler $ SignatureEd25519 $ Ed25519.sign sk pk hash
 
 withVerifiedSignature :: BA.ByteArrayAccess hash => PublicKey -> hash -> Signature -> IO a -> IO a
 withVerifiedSignature key hash sig action = case (key, sig) of

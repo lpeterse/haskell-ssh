@@ -34,6 +34,7 @@ import qualified Network.SSH.Server.Config     as Server
 import           Network.SSH.Stream
 import           Network.SSH.Message
 import           Network.SSH.Encoding
+import           Network.SSH.AuthAgent
 
 main :: IO ()
 main = do
@@ -45,7 +46,7 @@ main = do
     c <- Server.newDefaultConfig
     let
         config = c
-            { Server.hostKeys           = pure privateKey
+            { Server.authAgent          = fromKeyPair privateKey
             , Server.onAuthRequest      = \username _ _ -> pure (Just username)
             , Server.onExecRequest      = Just runExec
             , Server.onSend = \raw -> case tryParse raw of

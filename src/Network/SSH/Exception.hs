@@ -22,5 +22,9 @@ errorInvalidSignature :: IO a
 errorInvalidSignature = throwIO $
     Disconnect DisconnectKeyExchangeFailed "invalid signature" mempty
 
+exceptionKexNoSignature :: Disconnect
+exceptionKexNoSignature =
+    Disconnect DisconnectKeyExchangeFailed "no signature" mempty
+
 throwProtocolError :: BS.ByteString -> IO a
 throwProtocolError e = throwIO $ Disconnect DisconnectProtocolError e mempty
