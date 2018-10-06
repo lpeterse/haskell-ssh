@@ -25,7 +25,7 @@ tests = testGroup "Network.SSH.Message"
 
 testParserIdentity :: TestTree
 testParserIdentity = testGroup "put . get == id"
-    [ QC.testProperty ":: Disconnect"                 (parserIdentity :: Disconnect                 -> Property)
+    [ QC.testProperty ":: Disconnected"               (parserIdentity :: Disconnected               -> Property)
     , QC.testProperty ":: DisconnectReason"           (parserIdentity :: DisconnectReason           -> Property)
     , QC.testProperty ":: Ignore"                     (parserIdentity :: Ignore                     -> Property)
     , QC.testProperty ":: Unimplemented"              (parserIdentity :: Unimplemented              -> Property)
@@ -72,7 +72,7 @@ testParserIdentity = testGroup "put . get == id"
 
 testLengthProperty :: TestTree
 testLengthProperty = testGroup "length (put x) == len x"
-    [ QC.testProperty ":: Disconnect"                 (lengthProperty :: Disconnect                 -> Property)
+    [ QC.testProperty ":: Disconnected"               (lengthProperty :: Disconnected               -> Property)
     , QC.testProperty ":: DisconnectReason"           (lengthProperty :: DisconnectReason           -> Property)
     , QC.testProperty ":: Ignore"                     (lengthProperty :: Ignore                     -> Property)
     , QC.testProperty ":: Unimplemented"              (lengthProperty :: Unimplemented              -> Property)
@@ -150,8 +150,8 @@ instance Arbitrary Message where
         , MsgUnknown                 <$> elements [ 128, 255 ]
         ]
 
-instance Arbitrary Disconnect where
-    arbitrary = Disconnect <$> arbitrary <*> arbitrary <*> arbitrary
+instance Arbitrary Disconnected where
+    arbitrary = Disconnected <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary DisconnectReason where
     arbitrary = elements
@@ -223,6 +223,13 @@ instance Arbitrary UserAuthPublicKeyOk where
 
 instance Arbitrary ChannelOpen where
     arbitrary = ChannelOpen <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary ChannelOpenType where
+    arbitrary = elements
+        [ ChannelOpenSession
+        , ChannelOpenDirectTcpIp "localhost" 8080 "10.0.0.1" 73594
+        , ChannelOpenOther (ChannelType "other")
+        ]
 
 instance Arbitrary ChannelOpenConfirmation where
     arbitrary = ChannelOpenConfirmation <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary

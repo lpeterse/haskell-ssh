@@ -6,7 +6,6 @@ import qualified Data.ByteString as BS
 import           Control.Exception
 import           Control.Monad
 
-import           Network.SSH.Server.Transport
 import           Network.SSH.Stream
 import           Network.SSH.Message
 

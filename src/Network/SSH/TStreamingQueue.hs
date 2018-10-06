@@ -117,10 +117,25 @@ dequeue q maxBufSize = do
                     pure [ BS.take (fromIntegral j) bs ]
         requested = min maxBufSize maxBoundIntWord32
 
+lookAhead :: TStreamingQueue -> Word32 -> STM BS.ByteString
+lookAhead q maxBufSize = do
+    size <- getSize q
+    eof <- readTVar (qEof q)
+    check $ size > 0 || eof
+    if size == 0 && eof
+        then pure mempty
+        else do
+            bs <- readTMVar (qHead q) <|> peekTChan (qTail q) <|> pure mempty
+            pure $ BS.take (fromIntegral maxBufSize) bs
+
 instance S.DuplexStream TStreamingQueue
+instance S.DuplexStreamPeekable TStreamingQueue
 
 instance S.OutputStream TStreamingQueue where
     send q bs = fromIntegral <$> atomically (enqueue q bs)
 
 instance S.InputStream TStreamingQueue where
     receive q i = atomically $ dequeue q $ fromIntegral $ min i maxBoundIntWord32
+
+instance S.InputStreamPeekable TStreamingQueue where
+    peek q i = atomically $ lookAhead q $ fromIntegral $ min i maxBoundIntWord32

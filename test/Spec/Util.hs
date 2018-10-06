@@ -11,6 +11,7 @@ import           Control.Monad
 import           Test.Tasty.HUnit
 
 import           Network.SSH.Encoding
+import           Network.SSH.Exception
 import           Network.SSH.Stream
 import           Network.SSH.Message
 import qualified Network.SSH.TStreamingQueue as Q
@@ -31,6 +32,7 @@ newSocketPair = atomically $ do
     pure (DummySocket x y, DummySocket y x)
 
 instance DuplexStream DummySocket
+instance DuplexStreamPeekable DummySocket
 
 instance OutputStream DummySocket where
     send (DummySocket q _) = send q
@@ -38,9 +40,13 @@ instance OutputStream DummySocket where
 instance InputStream DummySocket where
     receive (DummySocket _ q) = receive q
 
+instance InputStreamPeekable DummySocket where
+    peek (DummySocket _ q) = peek q
+
 close :: DummySocket -> IO ()
 close (DummySocket q _) = atomically $ Q.terminate q
 
+{-
 receivePlainMessage :: Encoding msg => DummySocket -> IO msg
 receivePlainMessage sock = do
     bs0 <- receiveAll sock 4
@@ -55,6 +61,7 @@ receivePlainMessage sock = do
 sendPlainMessage :: Encoding msg => DummySocket -> msg -> IO ()
 sendPlainMessage sock msg = do
     void $ sendAll sock $ runPut (putPacked $ runPut $ put msg)
+-}
 
 newtype DummyTransport = DummyTransport (TChan BS.ByteString, TChan BS.ByteString)
 
@@ -69,6 +76,6 @@ instance MessageStream DummyTransport where
     receiveMessage (DummyTransport (_,c)) = do
         bs <- atomically $ readTChan c
         case tryParse bs of
-            Nothing -> throwIO $ Disconnect DisconnectProtocolError "invalid/unexpected message" mempty
+            Nothing  -> throwIO (exceptionUnexpectedMessage bs)
             Just msg -> pure msg
 

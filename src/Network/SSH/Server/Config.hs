@@ -13,7 +13,6 @@ import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Stream
 import           Network.SSH.AuthAgent
-import           Network.SSH.Exception
 
 type Command = BS.ByteString
 

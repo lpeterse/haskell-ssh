@@ -8,7 +8,6 @@
 module Network.SSH.Message
   ( -- * Message
     Message (..)
-  , ToMessage (..)
   , MessageStream (..)
     -- ** Disconnected (1)
   , Disconnected (..)
@@ -115,87 +114,6 @@ import           Network.SSH.Key
 class MessageStream a where
     sendMessage :: forall msg. Encoding msg => a -> msg -> IO ()
     receiveMessage :: forall msg. Encoding msg => a -> IO msg
-
-class ToMessage a where
-    toMessage :: a -> Message
-
-instance ToMessage Message where
-    toMessage = id
-
-instance ToMessage Disconnected where
-    toMessage = MsgDisconnect
-
-instance ToMessage Ignore where
-    toMessage = MsgIgnore
-
-instance ToMessage Debug where
-    toMessage = MsgDebug
-
-instance ToMessage Unimplemented where
-    toMessage = MsgUnimplemented
-
-instance ToMessage ServiceRequest where
-    toMessage = MsgServiceRequest
-
-instance ToMessage ServiceAccept where
-    toMessage = MsgServiceAccept
-
-instance ToMessage KexInit where
-    toMessage = MsgKexInit
-
-instance ToMessage KexNewKeys where
-    toMessage = MsgKexNewKeys
-
-instance ToMessage KexEcdhInit where
-    toMessage = MsgKexEcdhInit
-
-instance ToMessage KexEcdhReply where
-    toMessage = MsgKexEcdhReply
-
-instance ToMessage UserAuthRequest where
-    toMessage = MsgUserAuthRequest
-
-instance ToMessage UserAuthFailure where
-    toMessage = MsgUserAuthFailure
-
-instance ToMessage UserAuthSuccess where
-    toMessage = MsgUserAuthSuccess
-
-instance ToMessage UserAuthBanner where
-    toMessage = MsgUserAuthBanner
-
-instance ToMessage UserAuthPublicKeyOk where
-    toMessage = MsgUserAuthPublicKeyOk
-
-instance ToMessage ChannelOpen where
-    toMessage = MsgChannelOpen
-
-instance ToMessage ChannelOpenConfirmation where
-    toMessage = MsgChannelOpenConfirmation
-
-instance ToMessage ChannelOpenFailure where
-    toMessage = MsgChannelOpenFailure
-
-instance ToMessage ChannelWindowAdjust where
-    toMessage = MsgChannelWindowAdjust
-
-instance ToMessage ChannelData where
-    toMessage = MsgChannelData
-
-instance ToMessage ChannelExtendedData where
-    toMessage = MsgChannelExtendedData
-
-instance ToMessage ChannelEof where
-    toMessage = MsgChannelEof
-
-instance ToMessage ChannelRequest where
-    toMessage = MsgChannelRequest
-
-instance ToMessage ChannelSuccess where
-    toMessage = MsgChannelSuccess
-
-instance ToMessage ChannelFailure where
-    toMessage = MsgChannelFailure
 
 data Message
     = MsgDisconnect              Disconnected
@@ -730,8 +648,10 @@ instance Encoding UserAuthPublicKeyOk where
 
 instance Encoding ChannelOpen where
     len (ChannelOpen rc _ _ ct) = lenWord8 + len rc + lenWord32 + lenWord32 + case ct of
-            ChannelOpenSession {} -> len (ChannelType "session")
-            ChannelOpenDirectTcpIp {} -> len (ChannelType "direct-tcpip")
+            ChannelOpenSession {} ->
+                len (ChannelType "session")
+            ChannelOpenDirectTcpIp da _ sa _ ->
+                len (ChannelType "direct-tcpip") + lenString da + lenString sa + 2 * lenWord32
             ChannelOpenOther t -> len t
     put (ChannelOpen rc rw rp ct) = do
         putWord8 90
@@ -744,7 +664,11 @@ instance Encoding ChannelOpen where
         putWord32 rp
         case ct of
             ChannelOpenSession {} -> pure ()
-            ChannelOpenDirectTcpIp {} -> pure ()
+            ChannelOpenDirectTcpIp da dp sa sp -> do
+                putString da
+                putWord32 dp
+                putString sa
+                putWord32 sp
             ChannelOpenOther {} -> pure ()
     get = do
         expectWord8 90

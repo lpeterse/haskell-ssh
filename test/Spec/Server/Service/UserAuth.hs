@@ -7,6 +7,7 @@ import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
 import qualified Data.ByteString          as BS
 
+import           Network.SSH.Exception
 import           Network.SSH.Server.Service.UserAuth
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
@@ -38,12 +39,12 @@ testInactive01 :: TestTree
 testInactive01 = testCase "request user auth service" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config server sess with) $ \_ -> do
+    withAsync (withAuthentication config server sess with) $ \_ -> do
         sendMessage client req0
         receiveMessage client >>= assertEqual "res0" res0
     where
         sess = SessionId mempty
-        with = const undefined
+        with _ = Just undefined
         req0 = ServiceRequest (ServiceName "ssh-userauth")
         res0 = ServiceAccept (ServiceName "ssh-userauth")
 
@@ -51,39 +52,39 @@ testInactive02 :: TestTree
 testInactive02 = testCase "request other service" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config server sess with) $ \thread -> do
+    withAsync (withAuthentication config server sess with) $ \thread -> do
         sendMessage client req0
         assertThrows "exp0" exp0 (wait thread)
     where
         sess = SessionId mempty
-        with = const undefined
+        with _ = Just undefined
         req0 = ServiceRequest (ServiceName "other-service")
-        exp0 = Disconnect DisconnectServiceNotAvailable mempty mempty
+        exp0 = exceptionServiceNotAvailable
 
 testInactive03 :: TestTree
 testInactive03 = testCase "dispatch other message" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config server sess with) $ \thread -> do
+    withAsync (withAuthentication config server sess with) $ \thread -> do
         sendMessage client req0
         assertThrows "exp0" exp0 (wait thread)
     where
         sess = SessionId mempty
-        with = const undefined
+        with _ = Just undefined
         req0 = MsgUnknown 1
-        exp0 = Disconnect DisconnectProtocolError "invalid/unexpected message" mempty
+        exp0 = exceptionUnexpectedMessage "\x01"
 
 testActive01 :: TestTree
 testActive01 = testCase "authenticate by public key (no signature)" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config server sess with) $ \_ -> do
+    withAsync (withAuthentication config server sess with) $ \_ -> do
         sendMessage client req0
         receiveMessage client >>= assertEqual "res0" res0
         sendMessage client req1
         receiveMessage client >>= assertEqual "res1" res1
     where
-        with = const undefined
+        with _ = Just undefined
         user = UserName "fnord"
         srvc = ServiceName "ssh-connection"
         algo = Algorithm "ssh-ed25519"
@@ -101,13 +102,13 @@ testActive02 :: TestTree
 testActive02 = testCase "authenticate by public key (incorrect signature)" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config server sess with) $ \_ -> do
+    withAsync (withAuthentication config server sess with) $ \_ -> do
         sendMessage client req0
         receiveMessage client >>= assertEqual "res0" res0
         sendMessage client req1
         receiveMessage client >>= assertEqual "res1" res1
     where
-        with = const undefined
+        with _ = Just undefined
         user = UserName "fnord"
         srvc = ServiceName "ssh-connection"
         sess = SessionId "\196\249b\160;FF\DLE\173\&1>\179w=\238\210\140\&8!:\139=QUx\169C\209\165\FS\185I"
@@ -125,7 +126,7 @@ testActive03 :: TestTree
 testActive03 = testCase "authenticate by public key (correct signature, user accepted)" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config { onAuthRequest = onAuth } server sess with) $ \thread -> do
+    withAsync (withAuthentication config { onAuthRequest = onAuth } server sess with) $ \thread -> do
         sendMessage client req0
         receiveMessage client >>= assertEqual "res0" res0
         sendMessage client req1
@@ -146,7 +147,7 @@ testActive03 = testCase "authenticate by public key (correct signature, user acc
         res1 = UserAuthSuccess
         pass (CryptoPassed x) = x
         pass _                = undefined
-        with = pure
+        with _ = Just pure
         onAuth u s p
             | u /= user = pure Nothing
             | s /= srvc = pure Nothing
@@ -157,7 +158,7 @@ testActive04 :: TestTree
 testActive04 = testCase "authenticate by public key (correct signature, user accepted, service not available)" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config { onAuthRequest = \_ _ _ -> pure (Just idnt) } server sess with) $ \thread -> do
+    withAsync (withAuthentication config { onAuthRequest = \_ _ _ -> pure (Just idnt) } server sess with) $ \thread -> do
         sendMessage client req0
         receiveMessage client >>= assertEqual "res0" res0
         sendMessage client req1
@@ -174,16 +175,18 @@ testActive04 = testCase "authenticate by public key (correct signature, user acc
         req0 = ServiceRequest (ServiceName "ssh-userauth")
         res0 = ServiceAccept (ServiceName "ssh-userauth")
         req1 = UserAuthRequest user srvc auth
-        exp1 = Disconnect DisconnectServiceNotAvailable mempty mempty
+        exp1 = Disconnect Local DisconnectServiceNotAvailable mempty
         pass (CryptoPassed x) = x
         pass _                = undefined
-        with = pure
+        with s
+            | s == srvc = Nothing
+            | otherwise = Just pure
 
 testActive05 :: TestTree
 testActive05 = testCase "authenticate by public key (correct signature, user rejected)" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config { onAuthRequest = \_ _ _ -> pure Nothing } server sess with) $ \_ -> do
+    withAsync (withAuthentication config { onAuthRequest = \_ _ _ -> pure Nothing } server sess with) $ \_ -> do
         sendMessage client req0
         receiveMessage client >>= assertEqual "res0" res0
         sendMessage client req1
@@ -202,13 +205,13 @@ testActive05 = testCase "authenticate by public key (correct signature, user rej
         res1 = UserAuthFailure [AuthMethodName "publickey"] False
         pass (CryptoPassed x) = x
         pass _                = undefined
-        with = pure
+        with _ = Just pure
 
 testActive06 :: TestTree
 testActive06 = testCase "authenticate by public key (key/signature type mismatch)" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config { onAuthRequest = \_ _ _ -> pure Nothing } server sess with) $ \_ -> do
+    withAsync (withAuthentication config { onAuthRequest = \_ _ _ -> pure Nothing } server sess with) $ \_ -> do
         sendMessage client req0
         receiveMessage client >>= assertEqual "res0" res0
         sendMessage client req1
@@ -227,13 +230,13 @@ testActive06 = testCase "authenticate by public key (key/signature type mismatch
         res1 = UserAuthFailure [AuthMethodName "publickey"] False
         pass (CryptoPassed x) = x
         pass _                = undefined
-        with = pure
+        with _ = Just pure
 
 testActive07 :: TestTree
 testActive07 = testCase "authenticate by other method (AuthNone)" $ do
     config <- newDefaultConfig
     (client, server) <- newDummyTransportPair
-    withAsync (withUserAuth config { onAuthRequest = \_ _ _ -> pure Nothing } server sess with) $ \_ -> do
+    withAsync (withAuthentication config { onAuthRequest = \_ _ _ -> pure Nothing } server sess with) $ \_ -> do
         sendMessage client req0
         receiveMessage client >>= assertEqual "res0" res0
         sendMessage client req1
@@ -244,4 +247,4 @@ testActive07 = testCase "authenticate by other method (AuthNone)" $ do
         res0 = ServiceAccept (ServiceName "ssh-userauth")
         req1 = UserAuthRequest (UserName "fnord") (ServiceName "ssh-connection") AuthNone
         res1 = UserAuthFailure [AuthMethodName "publickey"] False
-        with = pure
+        with _ = Just pure

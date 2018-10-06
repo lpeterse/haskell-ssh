@@ -22,8 +22,6 @@ import           Network.SSH.Constants
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Encoding
-import           Network.SSH.Server.Transport
-import           Network.SSH.Server.Transport.KeyExchange
 
 import           Spec.Util
 
