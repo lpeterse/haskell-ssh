@@ -11,6 +11,7 @@ import           Control.Monad.STM
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TMVar
+import qualified Data.Map.Strict as M
 
 import           Network.SSH.Server.Service.Connection
 import           Network.SSH.Message
@@ -31,6 +32,15 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
     , test04
     , test05
     , test06
+    , test07
+    , test08
+    , testGroup "channel requests"
+        [ testRequest01
+        , testGroup "session channel requests"
+            [ testRequestSession01
+            , testRequestSession02
+            ]
+        ]
     ]
 
 test01 :: TestTree
@@ -149,235 +159,167 @@ test06  = testCase "close non-existing channel id" $ do
         req0 = ChannelClose lid0
         exp0 = exceptionInvalidChannelId
 
+test07 :: TestTree
+test07  = testCase "close channel (don't reuse unless acknowledged)" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
+    withAsync (runConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res10" res10
+        receiveMessage clientStream >>= assertEqual "res11" res11
+        receiveMessage clientStream >>= assertEqual "res12" res12
+        receiveMessage clientStream >>= assertEqual "res13" res13
+        sendMessage clientStream req2
+        receiveMessage clientStream >>= assertEqual "res2" res2
+    where
+        lid0  = ChannelId 0
+        rid0  = ChannelId 23
+        lid1  = ChannelId 1
+        rid1  = ChannelId 24
+        lws   = 100
+        lps   = 200
+        rws   = 123
+        rps   = 456
+        req0  = ChannelOpen rid0 rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid0 lid0 lws lps
+        req1  = ChannelRequest lid0 "shell" True mempty
+        res10 = ChannelSuccess rid0
+        res11 = ChannelEof rid0
+        res12 = ChannelRequest rid0 "exit-status" False "\NUL\NUL\NUL\NUL"
+        res13 = ChannelClose rid0
+        req2  = ChannelOpen rid1 rws rps ChannelOpenSession
+        res2  = ChannelOpenConfirmation rid1 lid1 lws lps
+        handler = const $ pure ExitSuccess
+
+test08 :: TestTree
+test08  = testCase "close channel (reuse when acknowledged)" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
+    withAsync (runConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res10" res10
+        receiveMessage clientStream >>= assertEqual "res11" res11
+        receiveMessage clientStream >>= assertEqual "res12" res12
+        receiveMessage clientStream >>= assertEqual "res13" res13
+        sendMessage clientStream req2
+        sendMessage clientStream req3
+        receiveMessage clientStream >>= assertEqual "res3" res3
+    where
+        lid0  = ChannelId 0
+        rid0  = ChannelId 23
+        rid1  = ChannelId 24
+        lws   = 100
+        lps   = 200
+        rws   = 123
+        rps   = 456
+        req0  = ChannelOpen rid0 rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid0 lid0 lws lps
+        req1  = ChannelRequest lid0 "shell" True mempty
+        res10 = ChannelSuccess rid0
+        res11 = ChannelEof rid0
+        res12 = ChannelRequest rid0 "exit-status" False "\NUL\NUL\NUL\NUL"
+        res13 = ChannelClose rid0
+        req2  = ChannelClose lid0
+        req3  = ChannelOpen rid1 rws rps ChannelOpenSession
+        res3  = ChannelOpenConfirmation rid1 lid0 lws lps
+        handler = const $ pure ExitSuccess
+
+testRequest01 :: TestTree
+testRequest01 = testCase "reject unknown / unimplemented requests" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (runConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+    where
+        lid  = ChannelId 0
+        rid  = ChannelId 23
+        lws  = 100
+        lps  = 200
+        rws  = 123
+        rps  = 456
+        req0 = ChannelOpen rid rws rps ChannelOpenSession
+        res0 = ChannelOpenConfirmation rid lid lws lps
+        req1 = ChannelRequest lid "unknown" True mempty
+        res1 = ChannelFailure rid
+
+testRequestSession01 :: TestTree
+testRequestSession01 = testCase "env request" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
+    withAsync (runConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        sendMessage clientStream req2
+        receiveMessage clientStream >>= assertEqual "res20" res20
+        receiveMessage clientStream >>= assertEqual "res21" res21
+        receiveMessage clientStream >>= assertEqual "res22" res22
+    where
+        lid   = ChannelId 0
+        rid   = ChannelId 23
+        lws   = 100
+        lps   = 200
+        rws   = 123
+        rps   = 456
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "env" False "\NUL\NUL\NUL\ACKLC_ALL\NUL\NUL\NUL\ven_US.UTF-8"
+        req2  = ChannelRequest lid "shell" True ""
+        res20 = ChannelSuccess rid
+        res21 = ChannelEof rid
+        res22 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
+        h s
+            | environment s == M.singleton "LC_ALL" "en_US.UTF-8" = pure ExitSuccess
+            | otherwise                                           = pure (ExitFailure 1)
+
+testRequestSession02 :: TestTree
+testRequestSession02 = testCase "pty request" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
+    withAsync (runConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        sendMessage clientStream req2
+        receiveMessage clientStream >>= assertEqual "res20" res20
+        receiveMessage clientStream >>= assertEqual "res21" res21
+        receiveMessage clientStream >>= assertEqual "res22" res22
+    where
+        lid   = ChannelId 0
+        rid   = ChannelId 23
+        lws   = 100
+        lps   = 200
+        rws   = 123
+        rps   = 456
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "pty-req" True $ runPut (put pty)
+        res1  = ChannelSuccess rid
+        req2  = ChannelRequest lid "shell" True ""
+        res20 = ChannelSuccess rid
+        res21 = ChannelEof rid
+        res22 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
+        h s
+            | ptySettings s == Just pty = pure ExitSuccess
+            | otherwise                 = pure (ExitFailure 1)
+        pty = PtySettings
+            { ptyEnv          = "xterm"
+            , ptyWidthCols    = 80
+            , ptyHeightRows   = 23
+            , ptyWidthPixels  = 1024
+            , ptyHeightPixels = 768
+            , ptyModes        = "fsldkjfsdjflskjdf"
+            }
+
 {-
-
-connectionChannelClose02 :: TestTree
-connectionChannelClose02 = testCase "reuse local channel id when close acknowledged" $ do
-    msgs <- newTChanIO
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler } () sender
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-    assertEqual "msg2" msg2 =<< receiver
-    assertEqual "msg3" msg3 =<< receiver
-    assertEqual "msg4" msg4 =<< receiver
-    assertEqual "msg5" msg5 =<< connectionChannelClose conn cls
-    assertEqual "msg6" msg6 =<< connectionChannelOpen conn opn
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        cls = ChannelClose lid
-        req = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = MsgChannelEof (ChannelEof rid)
-        msg3 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
-        msg4 = MsgChannelClose (ChannelClose rid)
-        msg5 = Nothing
-        msg6 = msg0
-        handler = const $ pure ExitSuccess
-
-connectionChannelClose03 :: TestTree
-connectionChannelClose03 = testCase "don't reuse local channel id unless close acknowledged" $ do
-    msgs <- newTChanIO
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler } () sender
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-    assertEqual "msg2" msg2 =<< receiver
-    assertEqual "msg3" msg3 =<< receiver
-    assertEqual "msg4" msg4 =<< receiver
-    assertEqual "msg5" msg5 =<< connectionChannelOpen conn opn
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        cls = ChannelClose lid
-        req = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = MsgChannelEof (ChannelEof rid)
-        msg3 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
-        msg4 = MsgChannelClose (ChannelClose rid)
-        msg5 = Right (ChannelOpenConfirmation rid (ChannelId 1) lws lps)
-        handler = const $ pure ExitSuccess
-
-connectionChannelRequest01 :: TestTree
-connectionChannelRequest01 = testCase "fail on invalid channel id" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    assertThrows "exp0" exp0 $ connectionChannelRequest conn req
-    where
-        lid0 = ChannelId 0
-        lid1 = ChannelId 1
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid1 "env" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid0 lws lps)
-        exp0 = Disconnect DisconnectProtocolError "invalid channel id" mempty
-
-connectionChannelRequest02 :: TestTree
-connectionChannelRequest02 = testCase "reject unknown / unimplemented requests" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "unknown" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Left (ChannelFailure rid))
-
-connectionChannelRequest03 :: TestTree
-connectionChannelRequest03 = testCase "accept session environment request" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "env" False "\NUL\NUL\NUL\ACKLC_ALL\NUL\NUL\NUL\ven_US.UTF-8"
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Nothing
-
-connectionChannelRequestEnv01 :: TestTree
-connectionChannelRequestEnv01 = testCase "fail on invalid request" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    assertThrows "exp0" exp0 $ connectionChannelRequest conn req
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "env" True mempty -- mempty is invalid
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        exp0 = Disconnect DisconnectProtocolError "invalid channel request" mempty
-
-connectionChannelRequestPty01 :: TestTree
-connectionChannelRequestPty01 = testCase "accept pty request" $ do
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps} () undefined) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-    where
-        lid =  ChannelId 0
-        rid  = ChannelId 23
-        lws  = 100
-        lps  = 200
-        rws  = 123
-        rps  = 456
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        opn  = ChannelOpen (ChannelType "session") rid rws rps
-        req  = ChannelRequest lid "pty-req" True $ mconcat
-            [ "\NUL\NUL\NUL\ENQxterm\NUL\NUL\SOH\DLE"
-            , "\NUL\NUL\NULI\NUL\NUL\ap\NUL\NUL\ETX\254\NUL\NUL\SOH\ENQ\129\NUL"
-            , "\NUL\150\NUL\128\NUL\NUL\150\NUL\SOH\NUL\NUL\NUL\ETX\STX\NUL\NUL"
-            , "\NUL\FS\ETX\NUL\NUL\NUL\DEL\EOT\NUL\NUL\NUL\NAK\ENQ\NUL\NUL\NUL"
-            , "\EOT\ACK\NUL\NUL\NUL\NUL\a\NUL\NUL\NUL\NUL\b\NUL\NUL\NUL\DC1\t"
-            , "\NUL\NUL\NUL\DC3\n\NUL\NUL\NUL\SUB\f\NUL\NUL\NUL\DC2\r\NUL\NUL"
-            , "\NUL\ETB\SO\NUL\NUL\NUL\SYN\DC2\NUL\NUL\NUL\SI\RS\NUL\NUL\NUL"
-            , "\SOH\US\NUL\NUL\NUL\NUL \NUL\NUL\NUL\NUL!\NUL\NUL\NUL\NUL\"\NUL"
-            , "\NUL\NUL\NUL#\NUL\NUL\NUL\NUL$\NUL\NUL\NUL\SOH%\NUL\NUL\NUL\NUL&"
-            , "\NUL\NUL\NUL\SOH'\NUL\NUL\NUL\NUL(\NUL\NUL\NUL\NUL)\NUL\NUL\NUL"
-            , "\SOH*\NUL\NUL\NUL\SOH2\NUL\NUL\NUL\SOH3\NUL\NUL\NUL\SOH4\NUL\NUL"
-            , "\NUL\NUL5\NUL\NUL\NUL\SOH6\NUL\NUL\NUL\SOH7\NUL\NUL\NUL\SOH8\NUL"
-            , "\NUL\NUL\NUL9\NUL\NUL\NUL\NUL:\NUL\NUL\NUL\NUL;\NUL\NUL\NUL\SOH"
-            , "<\NUL\NUL\NUL\SOH=\NUL\NUL\NUL\SOH>\NUL\NUL\NUL\NULF\NUL\NUL\NUL"
-            , "\SOHG\NUL\NUL\NUL\NULH\NUL\NUL\NUL\SOHI\NUL\NUL\NUL\NULJ\NUL\NUL"
-            , "\NUL\NULK\NUL\NUL\NUL\NULZ\NUL\NUL\NUL\SOH[\NUL\NUL\NUL\SOH\\"
-            , "\NUL\NUL\NUL\NUL]\NUL\NUL\NUL\NUL\NUL" ]
-
-connectionChannelRequestPty02 :: TestTree
-connectionChannelRequestPty02 = testCase "shell handler gets pty settings injected" $ withTimeout $ do
-    tmvar <- newEmptyTMVarIO
-    msgs <- newTChanIO
-    let handler (Session _ _ pty _ _ _) = atomically (putTMVar tmvar pty) >> pure ExitSuccess
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler } () sender) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req0
-        assertEqual "msg2" msg2 =<< connectionChannelRequest conn req1
-        assertEqual "msg3" msg3 =<< receiver
-        assertEqual "msg4" msg4 =<< receiver
-        assertEqual "msg5" msg5 =<< receiver
-        settings <- atomically (takeTMVar tmvar)
-        assertEqual "ptyEnv"          (Just "xterm") (ptyEnv          <$> settings)
-        assertEqual "ptyWidthCols"    (Just     272) (ptyWidthCols    <$> settings)
-        assertEqual "ptyHeightRows"   (Just      73) (ptyHeightRows   <$> settings)
-        assertEqual "ptyWidthPixels"  (Just    1904) (ptyWidthPixels  <$> settings)
-        assertEqual "ptyHeightPixels" (Just    1022) (ptyHeightPixels <$> settings)
-    where
-        lid =  ChannelId 0
-        rid  = ChannelId 23
-        lws  = 100
-        lps  = 200
-        rws  = 123
-        rps  = 456
-        opn  = ChannelOpen (ChannelType "session") rid rws rps
-        req0 = ChannelRequest lid "pty-req" True pty0
-        req1 = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = Just (Right (ChannelSuccess rid))
-        msg3 = MsgChannelEof (ChannelEof rid)
-        msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
-        msg5 = MsgChannelClose (ChannelClose rid)
-        pty0 = mconcat
-            [ "\NUL\NUL\NUL\ENQxterm\NUL\NUL\SOH\DLE"
-            , "\NUL\NUL\NULI\NUL\NUL\ap\NUL\NUL\ETX\254\NUL\NUL\SOH\ENQ\129\NUL"
-            , "\NUL\150\NUL\128\NUL\NUL\150\NUL\SOH\NUL\NUL\NUL\ETX\STX\NUL\NUL"
-            , "\NUL\FS\ETX\NUL\NUL\NUL\DEL\EOT\NUL\NUL\NUL\NAK\ENQ\NUL\NUL\NUL"
-            , "\EOT\ACK\NUL\NUL\NUL\NUL\a\NUL\NUL\NUL\NUL\b\NUL\NUL\NUL\DC1\t"
-            , "\NUL\NUL\NUL\DC3\n\NUL\NUL\NUL\SUB\f\NUL\NUL\NUL\DC2\r\NUL\NUL"
-            , "\NUL\ETB\SO\NUL\NUL\NUL\SYN\DC2\NUL\NUL\NUL\SI\RS\NUL\NUL\NUL"
-            , "\SOH\US\NUL\NUL\NUL\NUL \NUL\NUL\NUL\NUL!\NUL\NUL\NUL\NUL\"\NUL"
-            , "\NUL\NUL\NUL#\NUL\NUL\NUL\NUL$\NUL\NUL\NUL\SOH%\NUL\NUL\NUL\NUL&"
-            , "\NUL\NUL\NUL\SOH'\NUL\NUL\NUL\NUL(\NUL\NUL\NUL\NUL)\NUL\NUL\NUL"
-            , "\SOH*\NUL\NUL\NUL\SOH2\NUL\NUL\NUL\SOH3\NUL\NUL\NUL\SOH4\NUL\NUL"
-            , "\NUL\NUL5\NUL\NUL\NUL\SOH6\NUL\NUL\NUL\SOH7\NUL\NUL\NUL\SOH8\NUL"
-            , "\NUL\NUL\NUL9\NUL\NUL\NUL\NUL:\NUL\NUL\NUL\NUL;\NUL\NUL\NUL\SOH"
-            , "<\NUL\NUL\NUL\SOH=\NUL\NUL\NUL\SOH>\NUL\NUL\NUL\NULF\NUL\NUL\NUL"
-            , "\SOHG\NUL\NUL\NUL\NULH\NUL\NUL\NUL\SOHI\NUL\NUL\NUL\NULJ\NUL\NUL"
-            , "\NUL\NULK\NUL\NUL\NUL\NULZ\NUL\NUL\NUL\SOH[\NUL\NUL\NUL\SOH\\"
-            , "\NUL\NUL\NUL\NUL]\NUL\NUL\NUL\NUL\NUL" ]
 
 connectionChannelRequestShell01 :: TestTree
 connectionChannelRequestShell01 = testCase "without handler" $ withTimeout $ do

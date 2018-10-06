@@ -104,7 +104,7 @@ exceptionDataAfterEof =
 exceptionUnexpectedMessage :: BS.ByteString -> Disconnect
 exceptionUnexpectedMessage raw
     | BS.null raw = Disconnect Local DisconnectProtocolError "empty message"
-    | otherwise   = Disconnect Local DisconnectProtocolError msg
+    | otherwise   = Disconnect Local DisconnectProtocolError (DisconnectMessage raw)-- msg
     where
         x   = BS.head raw
         x0  = (x `div` 100) + 48
