@@ -1,13 +1,11 @@
-{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE ExistentialQuantification, AllowAmbiguousTypes, RankNTypes #-}
 module Network.SSH.Server.Config where
 
 import qualified Data.ByteString        as BS
-import           Data.List.NonEmpty     (NonEmpty)
 import           Data.Word
 import qualified Data.Map.Strict        as M
 import           System.Exit
 
-import           Network.SSH.Algorithms
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Stream
@@ -29,12 +27,25 @@ data UserAuthConfig identity
 
 data ConnectionConfig identity
     = ConnectionConfig
-      { onShellRequest                :: Maybe (Session identity -> IO ExitCode)
-      , onExecRequest                 :: Maybe (Session identity -> Command -> IO ExitCode)
+      { onExecRequest                 :: Maybe (Session identity -> Command -> IO ExitCode)
+      , onShellRequest                :: Maybe (Session identity -> IO ExitCode)
+      , onDirectTcpIpRequest          :: forall stream. DuplexStream stream => identity -> DirectTcpIpRequest -> IO (Maybe (stream -> IO ()))
       , channelMaxCount               :: Word16
       , channelMaxQueueSize           :: Word32
       , channelMaxPacketSize          :: Word32
       }
+
+data DirectTcpIpRequest
+    = DirectTcpIpRequest
+      { destination   :: Address
+      , origin        :: Address
+      } deriving (Eq, Ord, Show)
+
+data Address
+    = Address
+      { address :: BS.ByteString
+      , port    :: Word32
+      } deriving (Eq, Ord, Show)
 
 data Session identity
     = forall stdin stdout stderr. (InputStream stdin, OutputStream stdout, OutputStream stderr) => Session
@@ -60,8 +71,9 @@ defaultUserAuthConfig = UserAuthConfig
 
 defaultConnectionConfig :: ConnectionConfig identity
 defaultConnectionConfig = ConnectionConfig
-    { onShellRequest                = Nothing
-    , onExecRequest                 = Nothing
+    { onExecRequest                 = Nothing
+    , onShellRequest                = Nothing
+    , onDirectTcpIpRequest          = \_ _ -> pure Nothing
     , channelMaxCount               = 256
     , channelMaxQueueSize           = 256 * 1024
     , channelMaxPacketSize          = 32 * 1024

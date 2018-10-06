@@ -9,6 +9,7 @@ import           Control.Monad.STM
 import           Control.Applicative
 import           Data.Word
 import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Short         as SBS
 import           Prelude                 hiding ( head
                                                 , tail
                                                 )
@@ -22,8 +23,8 @@ data TStreamingQueue
     , qWindow    :: TVar Word32
     , qSize      :: TVar Word32
     , qEof       :: TVar Bool
-    , qHead      :: TMVar BS.ByteString
-    , qTail      :: TChan BS.ByteString
+    , qHead      :: TMVar SBS.ShortByteString
+    , qTail      :: TChan SBS.ShortByteString
     }
 
 newTStreamingQueue :: Word32 -> TVar Word32 -> STM TStreamingQueue
@@ -84,12 +85,12 @@ enqueue q bs
             if  | available >= requested -> do
                     writeTVar (qSize q)   $! size + requested
                     writeTVar (qWindow q) $! wndw - requested
-                    writeTChan (qTail q) bs
+                    writeTChan (qTail q)  $! SBS.toShort bs
                     pure requested
                 | otherwise -> do
                     writeTVar (qSize q)   $! size + available
                     writeTVar (qWindow q) $! wndw - available
-                    writeTChan (qTail q)  $! BS.take (fromIntegral available) bs
+                    writeTChan (qTail q)  $! SBS.toShort $ BS.take (fromIntegral available) bs
                     pure available
 
 dequeue :: TStreamingQueue -> Word32 -> STM BS.ByteString
@@ -99,22 +100,22 @@ dequeue q maxBufSize = do
     check $ size > 0 || eof -- Block until there's at least 1 byte available.
     if size == 0 && eof
         then pure mempty
-        else mconcat <$> f size requested
+        else SBS.fromShort . mconcat <$> f size requested
     where
         f s 0 = do
             writeTVar (qSize q) $! s - requested
             pure []
         f s j = do
             bs <- takeTMVar (qHead q) <|> readTChan (qTail q) <|> pure mempty
-            if | BS.null bs -> do
+            if | SBS.null bs -> do
                     writeTVar (qSize q) 0
                     pure []
-               | fromIntegral (BS.length bs) <= j ->
-                    (bs:) <$> f s (j - fromIntegral (BS.length bs))
+               | fromIntegral (SBS.length bs) <= j ->
+                    (bs:) <$> f s (j - fromIntegral (SBS.length bs))
                | otherwise -> do
                     writeTVar (qSize q) $! s - requested
-                    putTMVar  (qHead q) $! BS.drop (fromIntegral j) bs
-                    pure [ BS.take (fromIntegral j) bs ]
+                    putTMVar  (qHead q) $! SBS.toShort $ BS.drop (fromIntegral j) $ SBS.fromShort bs
+                    pure [ SBS.toShort $ BS.take (fromIntegral j) $ SBS.fromShort bs ]
         requested = min maxBufSize maxBoundIntWord32
 
 lookAhead :: TStreamingQueue -> Word32 -> STM BS.ByteString
@@ -126,7 +127,7 @@ lookAhead q maxBufSize = do
         then pure mempty
         else do
             bs <- readTMVar (qHead q) <|> peekTChan (qTail q)
-            pure $ BS.take (fromIntegral maxBufSize) bs
+            pure $ BS.take (fromIntegral maxBufSize) (SBS.fromShort bs)
 
 instance S.DuplexStream TStreamingQueue
 instance S.DuplexStreamPeekable TStreamingQueue

@@ -85,7 +85,7 @@ defaultTransportConfig = TransportConfig
     , tMaxDataBeforeRekey = 1000 * 1000 * 1000
     }
 
-newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.ScrubbedBytes])
+newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.Bytes])
 
 type DecryptionContext = Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
 type EncryptionContext = Word64 -> BS.ByteString -> IO BS.ByteString
@@ -178,12 +178,7 @@ withTransport config magent stream runWith = withFinalExceptionHandler $ do
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
 transportSendMessage env msg =
-    transportSendRawMessage env $ runPut (put msg)
-
-transportReceiveMessage :: Encoding msg => Transport -> IO msg
-transportReceiveMessage env = do
-    raw <- transportReceiveRawMessage env
-    maybe (throwIO $ exceptionUnexpectedMessage raw) pure (tryParse raw)
+    transportSendRawMessage env $ runPut $ put msg
 
 transportSendRawMessage :: Transport -> BS.ByteString -> IO ()
 transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
@@ -198,6 +193,11 @@ transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
         case tryParse plainText of
             Nothing         -> pure encrypt
             Just KexNewKeys -> readMVar (tEncryptionCtxNext env)
+
+transportReceiveMessage :: Encoding msg => Transport -> IO msg
+transportReceiveMessage env = do
+    raw <- transportReceiveRawMessage env
+    maybe (throwIO $ exceptionUnexpectedMessage raw) pure (tryParse raw)
 
 transportReceiveRawMessage :: Transport -> IO BS.ByteString
 transportReceiveRawMessage env =

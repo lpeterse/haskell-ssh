@@ -47,18 +47,19 @@ main = do
   where
     config = Server.defaultConfig
         { Server.transportConfig = defaultTransportConfig
-            { tOnSend = \raw -> case tryParse raw of
+            {- tOnSend = \raw -> case tryParse raw of
                 Nothing -> putStrLn ("sent: " ++ show raw)
                 Just msg -> putStrLn ("sent: " ++ show (msg :: Message))
             , tOnReceive = \raw -> case tryParse raw of
                 Nothing -> putStrLn ("received: " ++ show raw)
                 Just msg -> putStrLn ("received: " ++ show (msg :: Message))
-            }
+            -}
         , Server.userAuthConfig    = Server.defaultUserAuthConfig
             { Server.onAuthRequest = \username _ _ -> pure (Just username)
             }
         , Server.connectionConfig  = Server.defaultConnectionConfig
-            { Server.onExecRequest = Just runExec
+            { Server.onExecRequest        = Just runExec
+            , Server.onDirectTcpIpRequest = serveHttp
             }
         }
     open  = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
@@ -76,6 +77,16 @@ main = do
                         Server.serve config agent stream >>= print
                 void $ forkIO $ (serveStream `finally` S.close stream)
                 atomically $ check =<< readTVar ownershipTransferred
+
+serveHttp :: DuplexStream stream => identity -> Server.DirectTcpIpRequest -> IO (Maybe (stream -> IO ()))
+serveHttp idnt req = pure $ Just $ \stream-> do
+    bs <- receive stream 4096
+    void $ send stream "HTTP/1.1 200 OK\n"
+    void $ send stream "Content-Type: text/plain\n\n"
+    void $ send stream $! BS.pack $ fmap (fromIntegral . fromEnum) $ show req
+    void $ send stream "\n\n"
+    void $ send stream bs
+    print bs
 
 runExec :: Server.Session identity -> BS.ByteString -> IO ExitCode
 runExec (Server.Session identity pty env stdin stdout stderr) _command = withAsync receiver $ const $ do
