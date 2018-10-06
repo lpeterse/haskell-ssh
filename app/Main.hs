@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE OverloadedStrings, LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Main where
 
 import           Control.Concurrent             ( forkIO
@@ -25,7 +25,6 @@ import qualified System.Socket.Family.Inet6    as S
 import qualified System.Socket.Protocol.Default
                                                as S
 import qualified System.Socket.Type.Stream     as S
-import           System.Mem
 
 import           Network.SSH.Constants
 import           Network.SSH.Key
@@ -44,23 +43,23 @@ main = do
     (privateKey, _) : _ <-
         decodePrivateKeyFile BS.empty file :: IO [(KeyPair, BA.Bytes)]
     let agent = fromKeyPair privateKey
-    c <- Server.newDefaultConfig
-    let
-        config = c
-            { Server.onAuthRequest      = \username _ _ -> pure (Just username)
-            , Server.onExecRequest      = Just runExec
-            , Server.transportConfig = tconf
-            }
-
     bracket open close (accept config agent)
   where
-    tconf = defaultTransportConfig
-        { tOnSend = \raw -> case tryParse raw of
-            Nothing -> putStrLn ("sent: " ++ show raw)
-            Just msg -> putStrLn ("sent: " ++ show (msg :: Message))
-        , tOnReceive = \raw -> case tryParse raw of
-            Nothing -> putStrLn ("received: " ++ show raw)
-            Just msg -> putStrLn ("received: " ++ show (msg :: Message))
+    config = Server.defaultConfig
+        { Server.transportConfig = defaultTransportConfig
+            { tOnSend = \raw -> case tryParse raw of
+                Nothing -> putStrLn ("sent: " ++ show raw)
+                Just msg -> putStrLn ("sent: " ++ show (msg :: Message))
+            , tOnReceive = \raw -> case tryParse raw of
+                Nothing -> putStrLn ("received: " ++ show raw)
+                Just msg -> putStrLn ("received: " ++ show (msg :: Message))
+            }
+        , Server.userAuthConfig    = Server.defaultUserAuthConfig
+            { Server.onAuthRequest = \username _ _ -> pure (Just username)
+            }
+        , Server.connectionConfig  = Server.defaultConnectionConfig
+            { Server.onExecRequest = Just runExec
+            }
         }
     open  = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
     close = S.close
@@ -97,7 +96,7 @@ instance DuplexStreamPeekable (S.Socket f S.Stream p) where
 instance InputStream  (S.Socket f S.Stream p) where
     receive stream len = S.receive stream len S.msgNoSignal
 
-instance OutputStream  (S.Socket f S.Stream p)  where
+instance OutputStream  (S.Socket f S.Stream p) where
     send stream bytes = S.send stream bytes S.msgNoSignal
 
 instance InputStreamPeekable (S.Socket f S.Stream p) where

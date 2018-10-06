@@ -15,7 +15,7 @@ import           Network.SSH.Server.Config
 
 withAuthentication ::
     forall identity stream a. (MessageStream stream) =>
-    Config identity -> stream -> SessionId ->
+    UserAuthConfig identity -> stream -> SessionId ->
     (ServiceName -> Maybe (identity -> IO a)) -> IO a
 withAuthentication config transport session serviceHandler = do
     ServiceRequest srv <- receiveMessage transport

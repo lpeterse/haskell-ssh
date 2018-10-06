@@ -37,7 +37,7 @@ import qualified Network.SSH.TStreamingQueue as Q
 
 data Connection identity
     = Connection
-    { connConfig       :: Config identity
+    { connConfig       :: ConnectionConfig identity
     , connIdentity     :: identity
     , connChannels     :: TVar (M.Map ChannelId Channel)
     , connClose        :: STM ()
@@ -95,7 +95,7 @@ instance Encoding ConnectionMsg where
       <|> ConnectionChannelRequest <$> get
       <|> ConnectionChannelWindowAdjust <$> get
 
-runConnection :: MessageStream stream => Config identity -> stream -> identity -> IO ()
+runConnection :: MessageStream stream => ConnectionConfig identity -> stream -> identity -> IO ()
 runConnection config stream identity = bracket (connectionOpen config identity) connectionClose $
     \connection -> forever $ receiveMessage stream >>= \case
         ConnectionChannelOpen req ->
@@ -115,7 +115,7 @@ runConnection config stream identity = bracket (connectionOpen config identity) 
                 Right res -> sendMessage stream res
                 Left res  -> sendMessage stream res )
 
-connectionOpen :: Config identity -> identity -> IO (Connection identity)
+connectionOpen :: ConnectionConfig identity -> identity -> IO (Connection identity)
 connectionOpen config identity = do
     closed <- newTVarIO False
     Connection

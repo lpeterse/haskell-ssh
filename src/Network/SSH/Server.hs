@@ -18,7 +18,7 @@ serve config agent stream = run >>= \case
     where
         run =
             withTransport (transportConfig config) (Just agent) stream $ \transport session ->
-            withAuthentication config transport session $ \case
+            withAuthentication (userAuthConfig config) transport session $ \case
                 ServiceName "ssh-connection" ->
-                    Just $ runConnection config transport
+                    Just $ runConnection (connectionConfig config) transport
                 _ -> Nothing

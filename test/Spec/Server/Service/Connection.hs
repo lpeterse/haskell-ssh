@@ -15,261 +15,36 @@ import           Control.Concurrent.STM.TMVar
 import           Network.SSH.Server.Service.Connection
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
-import           Network.SSH.Stream
 
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
+import           Spec.Util
+
 tests :: TestTree
 tests = testGroup "Network.SSH.Server.Service.Connection"
-    [ ]
-    
-{-   testGroup "dispatcher"
-        [ dispatcher01
-        , dispatcher02
-        , dispatcher03
-        , dispatcher04
-        , dispatcher05
-        , dispatcher06
-        , dispatcher07
-        ]
-    , testGroup "connectionChannelOpen"
-        [ connectionChannelOpen01
-        , connectionChannelOpen02
-        , connectionChannelOpen03
-        , connectionChannelOpen04
-        , connectionChannelOpen05
-        ]
-    , testGroup "connectionChannelClose"
-        [ connectionChannelClose01
-        , connectionChannelClose02
-        , connectionChannelClose03
-        ]
-    , testGroup "connectionChannelRequest"
-        [ connectionChannelRequest01
-        , connectionChannelRequest02
-        , connectionChannelRequest03
-        , testGroup "env requests"
-            [ connectionChannelRequestEnv01
-            ]
-        , testGroup "pty requests"
-            [ connectionChannelRequestPty01
-            , connectionChannelRequestPty02
-            ]
-        , testGroup "shell requests"
-            [ connectionChannelRequestShell01
-            , connectionChannelRequestShell02
-            , connectionChannelRequestShell03
-            , connectionChannelRequestShell04
-            , connectionChannelRequestShell05
-            , connectionChannelRequestShell06
-            , connectionChannelRequestShell07
-            , connectionChannelRequestShell08
-            , connectionChannelRequestShell09
-            ]
-        , testGroup "exec requests"
-            [ connectionChannelRequestExec01
-            , connectionChannelRequestExec02
-            ]
-        ]
-    , testGroup "connectionChannelData"
-        [ connectionChannelData01
-        , connectionChannelData02
-        , connectionChannelData03
-        , connectionChannelData04
-        , connectionChannelData05
-        ]
-
-    , testGroup "connectionChannelWindowAdjust"
-        [ connectionChannelWindowAdjust01
-        , connectionChannelWindowAdjust02
-        ]
+    [ test01
     ]
 
-dispatcher01 :: TestTree
-dispatcher01 = testCase "MsgChannelOpen" $ do
-    chan <- newTChanIO
-    let sender msg = atomically $ writeTChan chan msg
-    let receiver   = atomically $ readTChan chan
-    conf <- newDefaultConfig
-    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () msg0 $
-        Continuation $ \continue-> do
-            assertEqual "msg1" msg1 =<< receiver
-            continue msg2 $ Continuation $ \_ ->
-                assertEqual "msg3" msg3 =<< receiver
+test01 :: TestTree
+test01  = testCase "open one session channel" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (runConnection config serverStream idnt) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
     where
-        lid = ChannelId 0
-        rid = ChannelId 1
-        lws = 1
-        lps = 2
-        rws = 3
-        rps = 4
-        msg0 = MsgChannelOpen (ChannelOpen (ChannelType "foobar") rid rws rps)
-        msg1 = MsgChannelOpenFailure (ChannelOpenFailure rid ChannelOpenUnknownChannelType mempty mempty)
-        msg2 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
-        msg3 = MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
-
-dispatcher02 :: TestTree
-dispatcher02 = testCase "MsgChannelClose" $ do
-    chan <- newTChanIO
-    let sender msg = atomically $ writeTChan chan msg
-    let receiver   = atomically $ readTChan chan
-    conf <- newDefaultConfig
-    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () msg0 $
-        Continuation $ \continue-> do
-            assertEqual "msg1" msg1 =<< receiver
-            continue msg2 $ Continuation $ \_ ->
-                assertEqual "msg3" msg3 =<< receiver
-    where
-        lid = ChannelId 0
-        rid = ChannelId 1
-        lws = 1
-        lps = 2
-        rws = 3
-        rps = 4
-        msg0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
-        msg1 = MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
-        msg2 = MsgChannelClose (ChannelClose lid)
-        msg3 = MsgChannelClose (ChannelClose rid)
-
-dispatcher03 :: TestTree
-dispatcher03 = testCase "MsgChannelEof" $ do
-    chan <- newTChanIO
-    allDone <- newTVarIO False
-    let sender msg = atomically $ writeTChan chan msg
-    let receiver   = atomically $ readTChan chan
-    conf <- newDefaultConfig
-    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () msg0 $
-        Continuation $ \continue-> do
-            assertEqual "msg1" msg1 =<< receiver
-            continue msg2 $ Continuation $ \_ ->
-                atomically $ writeTVar allDone True
-    assertEqual "allDone" True =<< readTVarIO allDone
-    where
-        lid = ChannelId 0
-        rid = ChannelId 1
-        lws = 1
-        lps = 2
-        rws = 3
-        rps = 4
-        msg0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
-        msg1 = MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
-        msg2 = MsgChannelEof (ChannelEof lid)
-
-dispatcher04 :: TestTree
-dispatcher04 = testCase "MsgChannelRequest" $ do
-    chan <- newTChanIO
-    tmvar <- newEmptyTMVarIO
-    allDone <- newTVarIO False
-    let sender msg = atomically $ writeTChan chan msg
-    let receiver   = atomically $ tryReadTChan chan
-    let handler (Session idnt _ _ _ stdout _) = do
-            send stdout "A"
-            atomically (putTMVar tmvar idnt)
-            pure ExitSuccess 
-    conf <- newDefaultConfig
-    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler } sender idnt req0 $
-        Continuation $ \continue0-> do
-            assertEqual "res0" res0 =<< receiver
-            continue0 req1 $ Continuation $ \continue1 -> do
-                assertEqual "res1" res1 =<< receiver
-                continue1 req2 $ Continuation $ \continue2 -> do
-                    assertEqual "res2" res2 =<< receiver
-                    continue1 req3 $ Continuation $ \continue3 -> do
-                        assertEqual "res3" res3 =<< receiver
-                        continue1 req4 $ Continuation $ \continue4 -> do
-                            assertEqual "res4" res4 =<< receiver
-                            assertEqual "idnt" idnt =<< atomically (readTMVar tmvar)
-                            atomically $ writeTVar allDone True
-    assertEqual "allDone" True =<< readTVarIO allDone
-    where
-        lid = ChannelId 0
-        rid = ChannelId 1
-        lws = 1
-        lps = 2
-        rws = 3
-        rps = 4
         idnt = "identity" :: String
-        req0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
-        res0 = Just $ MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
-        req1 = MsgChannelRequest (ChannelRequest lid "env" True "\NUL\NUL\NUL\ACKLC_ALL\NUL\NUL\NUL\ven_US.UTF-8")
-        res1 = Just $ MsgChannelSuccess (ChannelSuccess rid)
-        req2 = MsgChannelRequest (ChannelRequest lid "env" False "\NUL\NUL\NUL\ACKLC_ALL\NUL\NUL\NUL\ven_US.UTF-8")
-        res2 = Nothing
-        req3 = MsgChannelRequest (ChannelRequest lid "---" True mempty)
-        res3 = Just $ MsgChannelFailure (ChannelFailure rid)
-        req4 = MsgChannelRequest (ChannelRequest lid "shell" True mempty)
-        res4 = Just $ MsgChannelSuccess (ChannelSuccess rid)
-
-dispatcher05 :: TestTree
-dispatcher05 = testCase "MsgChannelData" $ do
-    chan <- newTChanIO
-    allDone <- newTVarIO False
-    let sender msg = atomically $ writeTChan chan msg
-    let receiver   = atomically $ tryReadTChan chan
-    conf <- newDefaultConfig
-    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () req0 $
-        Continuation $ \continue0-> do
-            assertEqual "res0" res0 =<< receiver
-            continue0 req1 $ Continuation $ \continue1 -> do
-                assertEqual "res1" res1 =<< receiver
-                atomically $ writeTVar allDone True
-    assertEqual "allDone" True =<< readTVarIO allDone
-    where
         lid = ChannelId 0
         rid = ChannelId 1
-        lws = 1
-        lps = 2
-        rws = 3
-        rps = 4
-        req0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
-        res0 = Just $ MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
-        req1 = MsgChannelData (ChannelData lid "A")
-        res1 = Nothing
+        lws = 256 * 1024
+        lps = 32 * 1024
+        rws = 123
+        rps = 456
+        req0 = ChannelOpen rid rws rps ChannelOpenSession
+        res0 = ChannelOpenConfirmation rid lid lws lps
 
-dispatcher06 :: TestTree
-dispatcher06 = testCase "MsgChannelWindowAdjust" $ do
-    chan <- newTChanIO
-    allDone <- newTVarIO False
-    let sender msg = atomically $ writeTChan chan msg
-    let receiver   = atomically $ tryReadTChan chan
-    conf <- newDefaultConfig
-    dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () req0 $
-        Continuation $ \continue0-> do
-            assertEqual "res0" res0 =<< receiver
-            continue0 req1 $ Continuation $ \continue1 -> do
-                assertEqual "res1" res1 =<< receiver
-                atomically $ writeTVar allDone True
-    assertEqual "allDone" True =<< readTVarIO allDone
-    where
-        lid = ChannelId 0
-        rid = ChannelId 1
-        lws = 1
-        lps = 2
-        rws = 3
-        rps = 4
-        req0 = MsgChannelOpen (ChannelOpen (ChannelType "session") rid rws rps)
-        res0 = Just $ MsgChannelOpenConfirmation (ChannelOpenConfirmation rid lid lws lps)
-        req1 = MsgChannelWindowAdjust (ChannelWindowAdjust lid 123)
-        res1 = Nothing
-
-dispatcher07 :: TestTree
-dispatcher07 = testCase "other messages" $ do
-    chan <- newTChanIO
-    let sender msg = atomically $ writeTChan chan msg
-    let receiver   = atomically $ tryReadTChan chan
-    conf <- newDefaultConfig
-    assertThrows "exp0" exp0 $ dispatcher conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } sender () req0 $
-        Continuation $ const $ pure ()
-    where
-        lid = ChannelId 0
-        rid = ChannelId 1
-        lws = 1
-        lps = 2
-        rws = 3
-        rps = 4
-        req0 = MsgUnknown 0
-        exp0 = Disconnect DisconnectProtocolError "unexpected message type (connection module)" mempty
+{-
 
 connectionChannelOpen01 :: TestTree
 connectionChannelOpen01 = testCase "open one channel" $ do
