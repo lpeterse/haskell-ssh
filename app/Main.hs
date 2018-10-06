@@ -55,8 +55,6 @@ main = do
             , Server.onReceive = \raw -> case tryParse raw of
                 Nothing -> putStrLn ("received: " ++ show raw)
                 Just msg -> putStrLn ("received: " ++ show (msg :: Message))
-            , Server.onDisconnect       = \dis -> putStrLn
-                                              ("disconnect: " ++ show dis)
             , Server.channelMaxQueueSize = 1024
             , Server.maxTimeBeforeRekey = 60
             , Server.maxDataBeforeRekey = 1024 * 1024

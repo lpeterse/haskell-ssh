@@ -3,6 +3,7 @@
 module Network.SSH.Server ( serve ) where
 
 import           Network.SSH.Algorithms
+import           Network.SSH.Exception
 import           Network.SSH.Message
 import           Network.SSH.Server.Config
 import           Network.SSH.Server.Service.Connection
@@ -10,10 +11,10 @@ import           Network.SSH.Server.Service.UserAuth
 import           Network.SSH.Stream (DuplexStreamPeekable ())
 import           Network.SSH.Transport
 
-serve :: (DuplexStreamPeekable stream) => Config identity -> stream -> IO Disconnected
+serve :: (DuplexStreamPeekable stream) => Config identity -> stream -> IO Disconnect
 serve config stream = newTransportConfig >>= run >>= \case
     Left  d  -> pure d
-    Right () -> pure $ Disconnected $ Disconnect DisconnectByApplication mempty mempty
+    Right () -> pure $ Disconnect Local DisconnectByApplication mempty
     where
         run c = withTransport c stream $ \transport session -> do
                 withAuthentication config transport session $ \case

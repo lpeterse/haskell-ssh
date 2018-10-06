@@ -15,7 +15,7 @@ import           Control.Applicative
 import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TVar
-import           Control.Exception              ( Exception, throwIO, handle, fromException)
+import           Control.Exception              ( throwIO, handle, catch, fromException)
 import           Control.Monad                  ( when, void )
 import           Control.Monad.STM
 import           Data.Bits
@@ -85,13 +85,6 @@ data KexStep
 
 newtype KexContinuation = KexContinuation (Maybe KexStep -> IO KexContinuation)
 
-data Disconnected
-    = Disconnected       Disconnect
-    | DisconnectedByPeer Disconnect
-    deriving (Show)
-
-instance Exception Disconnected where
-
 instance MessageStream Transport where
     sendMessage t msg = do
         kexIfNecessary t
@@ -101,7 +94,7 @@ instance MessageStream Transport where
         transportReceiveMessage t
 
 withTransport :: (DuplexStreamPeekable stream) => TransportConfig -> stream
-              -> (Transport -> SessionId -> IO a) -> IO (Either Disconnected a)
+              -> (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
 withTransport config stream runWith = withFinalExceptionHandler $ do
     (clientVersion, serverVersion) <- case tAuthAgent config of
         -- Receive the peer version and reject immediately if this
@@ -149,27 +142,24 @@ withTransport config stream runWith = withFinalExceptionHandler $ do
             , tLastRekeyingDataReceived = xRekeyRcvd
             }
     withRespondingExceptionHandler env $ do
-        sessionId <- runInitialKeyExchange env
+        sessionId <- kexInitialize env
         a <- runWith env sessionId
-        sendMessage env (Disconnect DisconnectByApplication mempty mempty)
+        sendMessage env (Disconnected DisconnectByApplication mempty mempty)
         pure a
     where
-        withFinalExceptionHandler :: IO (Either Disconnected a) -> IO (Either Disconnected a)
-        withFinalExceptionHandler = handle $ \e -> case fromException e of
-            Nothing -> throwIO e
-            Just d@Disconnect {} -> pure $ Left $ Disconnected d
+        withFinalExceptionHandler :: IO (Either Disconnect a) -> IO (Either Disconnect a)
+        withFinalExceptionHandler =
+            handle $ \e -> maybe (throwIO e) (pure . Left) (fromException e)
 
-        withRespondingExceptionHandler :: Transport -> IO a -> IO (Either Disconnected a)
-        withRespondingExceptionHandler env run = h $ g (Right <$> run)
-            where
-                h = handle $ pure . Left
-                g = handle $ \e-> do 
-                    case e of
-                        Disconnect DisconnectConnectionLost _ _ -> pure ()
-                        _ -> withAsync (transportSendMessage env e) $ \thread -> do
-                            t <- registerDelay 1000000
-                            atomically $ void (waitCatchSTM thread) <|> (readTVar t >>= check)
-                    pure $ Left $ Disconnected e
+        withRespondingExceptionHandler :: Transport -> IO a -> IO (Either Disconnect a)
+        withRespondingExceptionHandler env run = (Right <$> run) `catch` \e-> case e of
+            Disconnect _ DisconnectConnectionLost _ -> pure (Left e)
+            Disconnect Local r (DisconnectMessage m) ->
+                withAsync (transportSendMessage env $ Disconnected r m mempty) $ \thread -> do
+                    t <- registerDelay (1000*1000)
+                    atomically $ void (waitCatchSTM thread) <|> (readTVar t >>= check)
+                    pure (Left e)
+            _ -> pure (Left e)
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
 transportSendMessage env msg =
@@ -178,9 +168,7 @@ transportSendMessage env msg =
 transportReceiveMessage :: Encoding msg => Transport -> IO msg
 transportReceiveMessage env = do
     raw <- transportReceiveRawMessage env
-    maybe exception pure (tryParse raw)
-    where
-        exception = throwProtocolError "invalid/unexpected message"
+    maybe (throwIO $ exceptionUnexpectedMessage raw) pure (tryParse raw)
 
 transportSendRawMessage :: Transport -> BS.ByteString -> IO ()
 transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
@@ -227,13 +215,13 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
         interpreter plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5 <|> f i6
             where
                 f i = i <$> tryParse plainText
-                i0 x@Disconnect   {} = throwIO $ DisconnectedByPeer x
-                i1 Debug          {} = pure ()
-                i2 Ignore         {} = pure ()
-                i3 Unimplemented  {} = pure ()
-                i4 x@KexInit      {} = kexContinue env (Init x)
-                i5 x@KexEcdhInit  {} = kexContinue env (EcdhInit x)
-                i6 x@KexEcdhReply {} = kexContinue env (EcdhReply x)
+                i0 (Disconnected r m _) = throwIO $ Disconnect Remote r (DisconnectMessage m)
+                i1 Debug             {} = pure ()
+                i2 Ignore            {} = pure ()
+                i3 Unimplemented     {} = pure ()
+                i4 x@KexInit         {} = kexContinue env (Init x)
+                i5 x@KexEcdhInit     {} = kexContinue env (EcdhInit x)
+                i6 x@KexEcdhReply    {} = kexContinue env (EcdhReply x)
 
 -------------------------------------------------------------------------------
 -- CRYPTO ---------------------------------------------------------------------
@@ -259,8 +247,7 @@ plainEncryptionContext _ plainText = pure $ runPut (putPacked plainText)
 plainDecryptionContext :: DecryptionContext
 plainDecryptionContext _ getCipherText = do
     paclen <- runGet getWord32 =<< getCipherText 4
-    when (paclen > maxPacketLength) $
-        throwProtocolError "max packet length exceeded"
+    when (paclen > maxPacketLength) (throwIO exceptionPacketLengthExceeded)
     BS.drop 1 <$> getCipherText (fromIntegral paclen)
 
 chaCha20Poly1305EncryptionContext :: BA.ByteArrayAccess key => key -> key -> Word64 -> BS.ByteString -> IO BS.ByteString
@@ -335,8 +322,8 @@ nonce i = BA.pack
 -- KEY EXCHANGE ---------------------------------------------------------------
 -------------------------------------------------------------------------------
 
-runInitialKeyExchange :: Transport -> IO SessionId
-runInitialKeyExchange env = do
+kexInitialize :: Transport -> IO SessionId
+kexInitialize env = do
     cookie <- newCookie
     putMVar (tKexContinuation env) $ case tAuthAgent (tConfig env) of
         Just aa -> kexServerContinuation env cookie aa
@@ -410,14 +397,14 @@ kexClientContinuation env cookie = clientKex0
 
         consumeEcdhReply :: KexInit -> KexInit -> Curve25519.PublicKey -> Curve25519.SecretKey -> KexEcdhReply -> IO ()
         consumeEcdhReply cki ski cek cekSecret ecdhReply = do
-            kexAlgorithm   <- commonKexAlgorithm   ski cki
-            encAlgorithmCS <- commonEncAlgorithmCS ski cki
-            encAlgorithmSC <- commonEncAlgorithmSC ski cki
+            kexAlgorithm   <- kexCommonKexAlgorithm ski cki
+            encAlgorithmCS <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsClientToServer
+            encAlgorithmSC <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsServerToClient
             case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
                 (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
-                    withVerifiedSignature shk hash sig $ do
+                    kexWithVerifiedSignature shk hash sig $ do
                         sid <- trySetSessionId env (BA.convert hash)
-                        setChaCha20Poly1305Context env $ deriveKeys sec hash sid
+                        setChaCha20Poly1305Context env $ kexKeys sec hash sid
                         transportSendMessage env KexNewKeys
             where
                 cv   = tClientVersion env
@@ -426,7 +413,7 @@ kexClientContinuation env cookie = clientKex0
                 sek  = kexServerEphemeralKey ecdhReply
                 sec  = Curve25519.dh sek cekSecret
                 sig  = kexHashSignature ecdhReply
-                hash = exchangeHash cv sv cki ski shk cek sek sec
+                hash = kexHash cv sv cki ski shk cek sek sec
 
 -- NB: Uses transportSendMessage to avoid rekeying-loop
 kexServerContinuation :: Transport -> Cookie -> AuthAgent -> KexContinuation
@@ -463,9 +450,9 @@ kexServerContinuation env cookie authAgent = serverKex0
 
         emitEcdhReply :: KexInit -> KexInit -> Curve25519.PublicKey -> IO ()
         emitEcdhReply cki ski cek = do
-            kexAlgorithm     <- commonKexAlgorithm    ski cki
-            encAlgorithmCS   <- commonEncAlgorithmCS  ski cki
-            encAlgorithmSC   <- commonEncAlgorithmSC  ski cki
+            kexAlgorithm     <- kexCommonKexAlgorithm ski cki
+            encAlgorithmCS   <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsClientToServer
+            encAlgorithmSC   <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsServerToClient
             getPublicKeys authAgent >>= \case
                 []    -> throwIO exceptionKexNoSignature
                 shk:_ -> case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
@@ -475,27 +462,24 @@ kexServerContinuation env cookie authAgent = serverKex0
                             sv   = tServerVersion env
                             sek  = Curve25519.toPublic sekSecret
                             sec  = Curve25519.dh cek sekSecret
-                            hash = exchangeHash cv sv cki ski shk cek sek sec
+                            hash = kexHash cv sv cki ski shk cek sek sec
                         sig <- maybe (throwIO exceptionKexNoSignature) pure =<< signHash authAgent shk hash
                         sid <- trySetSessionId env (SessionId $ BA.convert hash)
-                        setChaCha20Poly1305Context env $ deriveKeys sec hash sid
+                        setChaCha20Poly1305Context env $ kexKeys sec hash sid
                         transportSendMessage env (KexEcdhReply shk sek sig)
                         transportSendMessage env KexNewKeys
 
-commonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
-commonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
-    ("curve25519-sha256@libssh.org":_) -> pure Curve25519Sha256AtLibsshDotOrg
-    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common kex algorithm" mempty)
+kexCommonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
+kexCommonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
+    (x:_)
+        | x == algorithmName Curve25519Sha256AtLibsshDotOrg -> pure Curve25519Sha256AtLibsshDotOrg
+    _ -> throwIO exceptionKexNoCommonKexAlgorithm
 
-commonEncAlgorithmCS :: KexInit -> KexInit -> IO EncryptionAlgorithm
-commonEncAlgorithmCS ski cki = case kexEncryptionAlgorithmsClientToServer cki `intersect` kexEncryptionAlgorithmsClientToServer ski of
-    ("chacha20-poly1305@openssh.com":_) -> pure Chacha20Poly1305AtOpensshDotCom
-    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (client to server)" mempty)
-
-commonEncAlgorithmSC :: KexInit -> KexInit -> IO EncryptionAlgorithm
-commonEncAlgorithmSC ski cki = case kexEncryptionAlgorithmsServerToClient cki `intersect` kexEncryptionAlgorithmsServerToClient ski of
-    ("chacha20-poly1305@openssh.com":_) -> pure Chacha20Poly1305AtOpensshDotCom
-    _ -> throwIO (Disconnect DisconnectKeyExchangeFailed "no common encryption algorithm (server to client)" mempty)
+kexCommonEncAlgorithm :: KexInit -> KexInit -> (KexInit -> [BS.ByteString]) -> IO EncryptionAlgorithm
+kexCommonEncAlgorithm ski cki f = case f cki `intersect` f ski of
+    (x:_)
+        | x == algorithmName Chacha20Poly1305AtOpensshDotCom -> pure Chacha20Poly1305AtOpensshDotCom
+    _ -> throwIO exceptionKexNoCommonEncryptionAlgorithm
 
 kexInit :: TransportConfig -> Cookie -> KexInit
 kexInit config cookie = KexInit
@@ -539,7 +523,7 @@ trySetSessionId env sidDef =
         Nothing  -> putMVar (tSessionId env) sidDef >> pure sidDef
         Just sid -> pure sid
 
-exchangeHash ::
+kexHash ::
     Version ->               -- client version string
     Version ->               -- server version string
     KexInit ->               -- client kex init msg
@@ -549,7 +533,7 @@ exchangeHash ::
     Curve25519.PublicKey ->  -- server ephemeral key
     Curve25519.DhSecret ->   -- dh secret
     Hash.Digest Hash.SHA256
-exchangeHash (Version vc) (Version vs) ic is ks qc qs k
+kexHash (Version vc) (Version vs) ic is ks qc qs k
     = Hash.hash $ runPut $ do
         putString vc
         putString vs
@@ -562,8 +546,8 @@ exchangeHash (Version vc) (Version vs) ic is ks qc qs k
         put       qs
         putAsMPInt k
 
-deriveKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> SessionId -> KeyStreams
-deriveKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> k1 i : f [k1 i]
+kexKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> SessionId -> KeyStreams
+kexKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> k1 i : f [k1 i]
     where
         k1 i = Hash.hashFinalize $
             flip Hash.hashUpdate sess $
@@ -575,8 +559,8 @@ deriveKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> k1 i
             flip Hash.hashUpdate hash $
             Hash.hashUpdate Hash.hashInit (runPut $ putAsMPInt secret)
 
-withVerifiedSignature :: BA.ByteArrayAccess hash => PublicKey -> hash -> Signature -> IO a -> IO a
-withVerifiedSignature key hash sig action = case (key, sig) of
+kexWithVerifiedSignature :: BA.ByteArrayAccess hash => PublicKey -> hash -> Signature -> IO a -> IO a
+kexWithVerifiedSignature key hash sig action = case (key, sig) of
     (PublicKeyEd25519 k, SignatureEd25519 s)
         | Ed25519.verify k hash s -> action
     _ -> throwIO exceptionKexInvalidSignature

@@ -29,6 +29,7 @@ import           Data.Word
 import           System.Exit
 
 import           Network.SSH.Encoding
+import           Network.SSH.Exception
 import           Network.SSH.Constants
 import           Network.SSH.Message
 import           Network.SSH.Server.Config hiding (identity)
@@ -96,24 +97,23 @@ instance Encoding ConnectionMsg where
 
 runConnection :: MessageStream stream => Config identity -> stream -> identity -> IO ()
 runConnection config stream identity = bracket (connectionOpen config identity) connectionClose $
-    \connection -> forever $ do
-        receiveMessage stream >>= \case
-            ConnectionChannelOpen req ->
-                connectionChannelOpen connection req >>= \case
-                    Left res  -> sendMessage stream res
-                    Right res -> sendMessage stream res
-            ConnectionChannelClose req ->
-                connectionChannelClose connection req >>= mapM_ (sendMessage stream)
-            ConnectionChannelEof req ->
-                connectionChannelEof connection req
-            ConnectionChannelData req ->
-                connectionChannelData connection req
-            ConnectionChannelWindowAdjust req ->
-                connectionChannelWindowAdjust connection req
-            ConnectionChannelRequest req ->
-                connectionChannelRequest connection stream req >>= mapM_ (\case
-                    Right res -> sendMessage stream res
-                    Left res  -> sendMessage stream res )
+    \connection -> forever $ receiveMessage stream >>= \case
+        ConnectionChannelOpen req ->
+            connectionChannelOpen connection req >>= \case
+                Left res  -> sendMessage stream res
+                Right res -> sendMessage stream res
+        ConnectionChannelClose req ->
+            connectionChannelClose connection req >>= mapM_ (sendMessage stream)
+        ConnectionChannelEof req ->
+            connectionChannelEof connection req
+        ConnectionChannelData req ->
+            connectionChannelData connection req
+        ConnectionChannelWindowAdjust req ->
+            connectionChannelWindowAdjust connection req
+        ConnectionChannelRequest req ->
+            connectionChannelRequest connection stream req >>= mapM_ (\case
+                Right res -> sendMessage stream res
+                Left res  -> sendMessage stream res )
 
 connectionOpen :: Config identity -> identity -> IO (Connection identity)
 connectionOpen config identity = do
@@ -218,21 +218,16 @@ connectionChannelClose connection (ChannelClose localChannelId) = atomically $ d
 connectionChannelData :: Connection identity -> ChannelData -> IO ()
 connectionChannelData connection (ChannelData localChannelId payload) = atomically $ do
     channel <- getChannelSTM connection localChannelId
-    i <- Q.enqueue (chanStdin channel) payload <|> exceptionWindowSize
-    when (i == 0) exceptionDataAfterEof
-    when (i /= payloadLen) exceptionWindowSize
+    i <- Q.enqueue (chanStdin channel) payload <|> throwSTM exceptionWindowSizeUnderrun
+    when (i == 0) (throwSTM exceptionDataAfterEof)
+    when (i /= payloadLen) (throwSTM exceptionWindowSizeUnderrun)
     where
-        payloadLen            = fromIntegral $ BS.length payload
-        exception msg         = throwSTM $ Disconnect DisconnectProtocolError msg mempty
-        exceptionWindowSize   = exception "window size underrun"
-        exceptionDataAfterEof = exception "data after eof"
+        payloadLen = fromIntegral $ BS.length payload
 
 connectionChannelWindowAdjust :: Connection identity -> ChannelWindowAdjust -> IO ()
 connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId increment) = atomically $ do
     channel <- getChannelSTM connection channelId
-    Q.addWindowSpace (chanStdout channel) increment <|> exception "window size overflow"
-    where
-        exception msg = throwSTM $ Disconnect DisconnectProtocolError msg mempty
+    Q.addWindowSpace (chanStdout channel) increment <|> throwSTM exceptionWindowSizeOverflow
 
 connectionChannelRequest :: forall identity stream. MessageStream stream =>
     Connection identity -> stream -> ChannelRequest ->
@@ -267,8 +262,7 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
             -- "auth-agent-req@openssh.com" ->
             _ -> pure $ failure channel
     where
-        exception e     = throwSTM $ Disconnect DisconnectProtocolError e mempty
-        interpret f     = maybe (exception "invalid channel request") f (runGet get dat)
+        interpret f     = maybe (throwSTM exceptionInvalidChannelRequest) f (tryParse dat) 
         success channel
             | wantReply = pure $ Just $ Right $ ChannelSuccess (chanIdRemote channel)
             | otherwise = pure $ channel `seq` Nothing -- 100% test coverage ;-)
@@ -344,4 +338,4 @@ getChannelSTM connection channelId = do
     channels <- readTVar (connChannels connection)
     case M.lookup channelId channels of
         Just channel -> pure channel
-        Nothing      -> throwSTM (Disconnect DisconnectProtocolError "invalid channel id" "")
+        Nothing      -> throwSTM exceptionInvalidChannelId

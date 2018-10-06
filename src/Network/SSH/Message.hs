@@ -10,8 +10,8 @@ module Network.SSH.Message
     Message (..)
   , ToMessage (..)
   , MessageStream (..)
-    -- ** Disconnect (1)
-  , Disconnect (..)
+    -- ** Disconnected (1)
+  , Disconnected (..)
   , DisconnectReason (..)
     -- ** Ignore (2)
   , Ignore (..)
@@ -94,7 +94,6 @@ module Network.SSH.Message
   ) where
 
 import           Control.Applicative
-import           Control.Exception
 import           Control.Monad            (void)
 import           Crypto.Error
 import qualified Crypto.PubKey.Curve25519 as Curve25519
@@ -109,6 +108,7 @@ import           Data.Typeable
 import           Data.Word
 import           System.Exit
 
+import           Network.SSH.Exception
 import           Network.SSH.Encoding
 import           Network.SSH.Key
 
@@ -122,7 +122,7 @@ class ToMessage a where
 instance ToMessage Message where
     toMessage = id
 
-instance ToMessage Disconnect where
+instance ToMessage Disconnected where
     toMessage = MsgDisconnect
 
 instance ToMessage Ignore where
@@ -198,7 +198,7 @@ instance ToMessage ChannelFailure where
     toMessage = MsgChannelFailure
 
 data Message
-    = MsgDisconnect              Disconnect
+    = MsgDisconnect              Disconnected
     | MsgIgnore                  Ignore
     | MsgUnimplemented           Unimplemented
     | MsgDebug                   Debug
@@ -227,34 +227,13 @@ data Message
     | MsgUnknown                 Word8
     deriving (Eq, Show)
 
-data Disconnect
-    = Disconnect
-    { disconnectReason      :: DisconnectReason
-    , disconnectDescription :: BS.ByteString
-    , disconnectLanguageTag :: BS.ByteString
+data Disconnected
+    = Disconnected
+    { disconnectedReason      :: DisconnectReason
+    , disconnectedDescription :: BS.ByteString
+    , disconnectedLanguageTag :: BS.ByteString
     }
     deriving (Eq, Show, Typeable)
-
-data DisconnectReason
-    = DisconnectHostNotAllowedToConnect
-    | DisconnectProtocolError
-    | DisconnectKeyExchangeFailed
-    | DisconnectReserved
-    | DisconnectMacError
-    | DisconnectCompressionError
-    | DisconnectServiceNotAvailable
-    | DisconnectProtocolVersionNotSupported
-    | DisconnectHostKeyNotVerifiable
-    | DisconnectConnectionLost
-    | DisconnectByApplication
-    | DisconnectTooManyConnection
-    | DisconnectAuthCancelledByUser
-    | DisconnectNoMoreAuthMethodsAvailable
-    | DisconnectIllegalUsername
-    | DisconnectOtherReason Word32
-    deriving (Eq, Show, Typeable)
-
-instance Exception Disconnect
 
 data Ignore
     = Ignore
@@ -590,17 +569,17 @@ instance Encoding Message where
         MsgChannelSuccess          <$> get <|>
         MsgChannelFailure          <$> get <|> (MsgUnknown <$> getWord8)
 
-instance Encoding Disconnect where
-    len (Disconnect r d l) =
+instance Encoding Disconnected where
+    len (Disconnected r d l) =
         lenWord8 + len r + lenString d + lenString l
-    put (Disconnect r d l) = do
+    put (Disconnected r d l) = do
         putWord8 1
         put r
         putString d
         putString l
     get = do
         expectWord8 1
-        Disconnect <$> get <*> getString <*> getString
+        Disconnected <$> get <*> getString <*> getString
 
 instance Encoding DisconnectReason where
     len _ = lenWord32

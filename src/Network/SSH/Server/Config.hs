@@ -1,7 +1,6 @@
 {-# LANGUAGE ExistentialQuantification #-}
 module Network.SSH.Server.Config where
 
-import           Control.Exception
 import qualified Crypto.PubKey.Ed25519  as Ed25519
 import qualified Data.ByteString        as BS
 import           Data.List.NonEmpty     (NonEmpty)
@@ -14,6 +13,7 @@ import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Stream
 import           Network.SSH.AuthAgent
+import           Network.SSH.Exception
 
 type Command = BS.ByteString
 
@@ -27,7 +27,6 @@ data Config identity
       , onExecRequest                 :: Maybe (Session identity -> Command -> IO ExitCode)
       , onSend                        :: BS.ByteString -> IO ()
       , onReceive                     :: BS.ByteString -> IO ()
-      , onDisconnect                  :: Either SomeException Disconnect -> IO ()
       , channelMaxCount               :: Word16
       , channelMaxQueueSize           :: Word32
       , channelMaxPacketSize          :: Word32
@@ -57,7 +56,6 @@ newDefaultConfig = do
         , onExecRequest                 = Nothing
         , onSend                        = \_ -> pure ()
         , onReceive                     = \_ -> pure ()
-        , onDisconnect                  = \_ -> pure ()
         , channelMaxCount               = 256
         , channelMaxQueueSize           = 256 * 1024
         , channelMaxPacketSize          = 32 * 1024
