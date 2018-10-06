@@ -14,6 +14,7 @@ import           Control.Concurrent.STM.TMVar
 
 import           Network.SSH.Server.Service.Connection
 import           Network.SSH.Message
+import           Network.SSH.Encoding
 import           Network.SSH.Server.Config
 
 import           Test.Tasty
@@ -25,70 +26,99 @@ tests :: TestTree
 tests = testGroup "Network.SSH.Server.Service.Connection"
     [ test01
     , test02
+    , test03
+    , test04
     ]
 
 test01 :: TestTree
 test01  = testCase "open one session channel" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    withAsync (runConnection config serverStream idnt) $ \_ -> do
+    withAsync (runConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
     where
-        idnt = "identity" :: String
-        lid = ChannelId 0
-        rid = ChannelId 1
-        lws = 256 * 1024
-        lps = 32 * 1024
-        rws = 123
-        rps = 456
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        lws  = 256 * 1024
+        lps  = 32 * 1024
+        rws  = 123
+        rps  = 456
         req0 = ChannelOpen rid rws rps ChannelOpenSession
         res0 = ChannelOpenConfirmation rid lid lws lps
 
 test02 :: TestTree
-test02  = testCase "open one two session channels, exceed limit" $ do
+test02  = testCase "open two session channels" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxCount = 1, channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    withAsync (runConnection config serverStream idnt) $ \_ -> do
+    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (runConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
         receiveMessage clientStream >>= assertEqual "res1" res1
     where
-        idnt = "identity" :: String
-        lid = ChannelId 0
+        lid0 = ChannelId 0
+        rid0 = ChannelId 3
+        lid1 = ChannelId 1
+        rid1 = ChannelId 4
+        lws  = 257 * 1024
+        lps  = 32 * 1024
+        rws  = 123
+        rps  = 456
+        req0 = ChannelOpen rid0 rws rps ChannelOpenSession
+        res0 = ChannelOpenConfirmation rid0 lid0 lws lps
+        req1 = ChannelOpen rid1 rws rps ChannelOpenSession
+        res1 = ChannelOpenConfirmation rid1 lid1 lws lps
+
+test03 :: TestTree
+test03  = testCase "open two session channels (exceed limit)" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxCount = 1, channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (runConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+    where
+        lid  = ChannelId 0
         rid0 = ChannelId 1
         rid1 = ChannelId 2
-        lws = 256 * 1024
-        lps = 32 * 1024
-        rws = 123
-        rps = 456
+        lws  = 258 * 1024
+        lps  = 32 * 1024
+        rws  = 123
+        rps  = 456
         req0 = ChannelOpen rid0 rws rps ChannelOpenSession
         res0 = ChannelOpenConfirmation rid0 lid lws lps
         req1 = ChannelOpen rid1 rws rps ChannelOpenSession
         res1 = ChannelOpenFailure rid1 ChannelOpenResourceShortage mempty mempty
 
-{-
-
-connectionChannelOpen03 :: TestTree
-connectionChannelOpen03 = testCase "open two channels" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxCount = 2, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn0
-    assertEqual "msg1" msg1 =<< connectionChannelOpen conn opn1
+test04 :: TestTree
+test04  = testCase "open two session channels (close first, reuse first)" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (runConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        sendMessage clientStream req2
+        receiveMessage clientStream >>= assertEqual "res2" res2
     where
         lid0 = ChannelId 0
-        lid1 = ChannelId 1
-        rid0 = ChannelId 2
-        rid1 = ChannelId 3
+        rid0 = ChannelId 1
+        rid1 = ChannelId 2
+        lws  = 259 * 1024
+        lps  = 32 * 1024
         rws  = 123
         rps  = 456
-        lws  = 128
-        lps  = 32
-        opn0 = ChannelOpen (ChannelType "session") rid0 rws rps
-        opn1 = ChannelOpen (ChannelType "session") rid1 rws rps
-        msg0 = Right (ChannelOpenConfirmation rid0 lid0 lws lps)
-        msg1 = Right (ChannelOpenConfirmation rid1 lid1 lws lps)
+        req0 = ChannelOpen rid0 rws rps ChannelOpenSession
+        res0 = ChannelOpenConfirmation rid0 lid0 lws lps
+        req1 = ChannelClose lid0
+        res1 = ChannelClose rid0
+        req2 = ChannelOpen rid1 rws rps ChannelOpenSession
+        res2 = ChannelOpenConfirmation rid1 lid0 lws lps
+
+{-
 
 connectionChannelOpen04 :: TestTree
 connectionChannelOpen04 = testCase "open two channels, close first, reuse first" $ do

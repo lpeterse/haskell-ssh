@@ -14,6 +14,7 @@ module Network.SSH.Server.Service.Connection
     , connectionChannelData
     , connectionChannelWindowAdjust
     , runConnection
+    , ConnectionMsg (..)
     ) where
 
 import           Control.Applicative
@@ -68,12 +69,13 @@ data SessionState
     }
 
 data ConnectionMsg
-    = ConnectionChannelOpen ChannelOpen
-    | ConnectionChannelClose ChannelClose
-    | ConnectionChannelEof ChannelEof
-    | ConnectionChannelData ChannelData
-    | ConnectionChannelRequest ChannelRequest 
+    = ConnectionChannelOpen         ChannelOpen
+    | ConnectionChannelClose        ChannelClose
+    | ConnectionChannelEof          ChannelEof
+    | ConnectionChannelData         ChannelData
+    | ConnectionChannelRequest      ChannelRequest
     | ConnectionChannelWindowAdjust ChannelWindowAdjust
+    deriving (Eq, Show)
 
 instance Encoding ConnectionMsg where
     len (ConnectionChannelOpen x) = len x
