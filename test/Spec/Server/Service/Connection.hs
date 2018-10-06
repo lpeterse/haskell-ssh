@@ -24,6 +24,7 @@ import           Spec.Util
 tests :: TestTree
 tests = testGroup "Network.SSH.Server.Service.Connection"
     [ test01
+    , test02
     ]
 
 test01 :: TestTree
@@ -44,41 +45,30 @@ test01  = testCase "open one session channel" $ do
         req0 = ChannelOpen rid rws rps ChannelOpenSession
         res0 = ChannelOpenConfirmation rid lid lws lps
 
-{-
-
-connectionChannelOpen01 :: TestTree
-connectionChannelOpen01 = testCase "open one channel" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
+test02 :: TestTree
+test02  = testCase "open one two session channels, exceed limit" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxCount = 1, channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (runConnection config serverStream idnt) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
     where
+        idnt = "identity" :: String
         lid = ChannelId 0
-        rid = ChannelId 1
+        rid0 = ChannelId 1
+        rid1 = ChannelId 2
         lws = 256 * 1024
         lps = 32 * 1024
         rws = 123
         rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
+        req0 = ChannelOpen rid0 rws rps ChannelOpenSession
+        res0 = ChannelOpenConfirmation rid0 lid lws lps
+        req1 = ChannelOpen rid1 rws rps ChannelOpenSession
+        res1 = ChannelOpenFailure rid1 ChannelOpenResourceShortage mempty mempty
 
-connectionChannelOpen02 :: TestTree
-connectionChannelOpen02 = testCase "exceed channel limit" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxCount = 1, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn0
-    assertEqual "msg1" msg1 =<< connectionChannelOpen conn opn1
-    where
-        rid0 = ChannelId 0
-        lid0 = ChannelId 0
-        rid1 = ChannelId 1
-        rws  = 124
-        rps  = 456
-        lws  = 128
-        lps  = 32
-        opn0 = ChannelOpen (ChannelType "session") rid0 rws rps
-        opn1 = ChannelOpen (ChannelType "session") rid1 rws rps
-        msg0 = Right (ChannelOpenConfirmation rid0 lid0 lws lps)
-        msg1 = Left (ChannelOpenFailure rid1 ChannelOpenResourceShortage "" "")
+{-
 
 connectionChannelOpen03 :: TestTree
 connectionChannelOpen03 = testCase "open two channels" $ do
