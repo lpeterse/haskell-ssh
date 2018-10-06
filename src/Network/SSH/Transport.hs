@@ -8,6 +8,7 @@ module Network.SSH.Transport
     , TransportConfig (..)
     , Disconnected (..)
     , withTransport
+    , defaultTransportConfig
     )
 where
 
@@ -44,6 +45,7 @@ data Transport
     = forall stream. DuplexStream stream => TransportEnv
     { tStream                   :: stream
     , tConfig                   :: TransportConfig
+    , tAuthAgent                :: Maybe AuthAgent
     , tClientVersion            :: Version
     , tServerVersion            :: Version
     , tBytesSent                :: MVar Word64
@@ -63,14 +65,24 @@ data Transport
 
 data TransportConfig
     = TransportConfig
-    { tAuthAgent          :: Maybe AuthAgent
-    , tHostKeyAlgorithms  :: NEL.NonEmpty HostKeyAlgorithm
+    { tHostKeyAlgorithms  :: NEL.NonEmpty HostKeyAlgorithm
     , tKexAlgorithms      :: NEL.NonEmpty KeyExchangeAlgorithm
     , tEncAlgorithms      :: NEL.NonEmpty EncryptionAlgorithm
     , tMaxTimeBeforeRekey :: Word64
     , tMaxDataBeforeRekey :: Word64
     , tOnSend             :: BS.ByteString -> IO ()
     , tOnReceive          :: BS.ByteString -> IO ()
+    }
+
+defaultTransportConfig :: TransportConfig
+defaultTransportConfig = TransportConfig
+    { tHostKeyAlgorithms  = pure SshEd25519
+    , tKexAlgorithms      = pure Curve25519Sha256AtLibsshDotOrg
+    , tEncAlgorithms      = pure Chacha20Poly1305AtOpensshDotCom
+    , tOnSend             = const (pure ())
+    , tOnReceive          = const (pure ())
+    , tMaxTimeBeforeRekey = 3600
+    , tMaxDataBeforeRekey = 1000 * 1000 * 1000
     }
 
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.ScrubbedBytes])
@@ -93,10 +105,12 @@ instance MessageStream Transport where
         kexIfNecessary t
         transportReceiveMessage t
 
-withTransport :: (DuplexStreamPeekable stream) => TransportConfig -> stream
-              -> (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
-withTransport config stream runWith = withFinalExceptionHandler $ do
-    (clientVersion, serverVersion) <- case tAuthAgent config of
+withTransport ::
+    (DuplexStreamPeekable stream) =>
+    TransportConfig -> Maybe AuthAgent -> stream ->
+    (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
+withTransport config magent stream runWith = withFinalExceptionHandler $ do
+    (clientVersion, serverVersion) <- case magent of
         -- Receive the peer version and reject immediately if this
         -- is not an SSH connection attempt (before allocating
         -- any more resources); respond with the server version string.
@@ -125,6 +139,7 @@ withTransport config stream runWith = withFinalExceptionHandler $ do
     let env = TransportEnv
             { tStream                   = stream
             , tConfig                   = config
+            , tAuthAgent                = magent
             , tClientVersion            = clientVersion
             , tServerVersion            = serverVersion
             , tBytesSent                = xBytesSent
@@ -229,10 +244,10 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
 
 setChaCha20Poly1305Context :: Transport -> KeyStreams -> IO ()
 setChaCha20Poly1305Context env (KeyStreams keys) = do
-    void $ swapMVar (tEncryptionCtxNext env) $! case tAuthAgent (tConfig env) of
+    void $ swapMVar (tEncryptionCtxNext env) $! case tAuthAgent env of
         Just {} -> chaCha20Poly1305EncryptionContext headerKeySC mainKeySC
         Nothing -> chaCha20Poly1305EncryptionContext headerKeyCS mainKeyCS
-    void $ swapMVar (tDecryptionCtxNext env) $! case tAuthAgent (tConfig env) of
+    void $ swapMVar (tDecryptionCtxNext env) $! case tAuthAgent env of
         Just {} -> chaCha20Poly1305DecryptionContext headerKeyCS mainKeyCS
         Nothing -> chaCha20Poly1305DecryptionContext headerKeySC mainKeySC
     where
@@ -325,7 +340,7 @@ nonce i = BA.pack
 kexInitialize :: Transport -> IO SessionId
 kexInitialize env = do
     cookie <- newCookie
-    putMVar (tKexContinuation env) $ case tAuthAgent (tConfig env) of
+    putMVar (tKexContinuation env) $ case tAuthAgent env of
         Just aa -> kexServerContinuation env cookie aa
         Nothing -> kexClientContinuation env cookie
     kexTrigger env

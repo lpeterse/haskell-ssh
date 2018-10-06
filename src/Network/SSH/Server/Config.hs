@@ -9,28 +9,25 @@ import qualified Data.Map.Strict        as M
 import           System.Exit
 
 import           Network.SSH.Algorithms
+import           Network.SSH.AuthAgent
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Stream
-import           Network.SSH.AuthAgent
+import           Network.SSH.Transport
 
 type Command = BS.ByteString
 
 data Config identity
     = Config
-      { authAgent                     :: AuthAgent
-      , keyExchangeAlgorithms         :: NonEmpty KeyExchangeAlgorithm
+      { keyExchangeAlgorithms         :: NonEmpty KeyExchangeAlgorithm
       , encryptionAlgorithms          :: NonEmpty EncryptionAlgorithm
       , onAuthRequest                 :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
       , onShellRequest                :: Maybe (Session identity -> IO ExitCode)
       , onExecRequest                 :: Maybe (Session identity -> Command -> IO ExitCode)
-      , onSend                        :: BS.ByteString -> IO ()
-      , onReceive                     :: BS.ByteString -> IO ()
+      , transportConfig               :: TransportConfig
       , channelMaxCount               :: Word16
       , channelMaxQueueSize           :: Word32
       , channelMaxPacketSize          :: Word32
-      , maxTimeBeforeRekey            :: Word64
-      , maxDataBeforeRekey            :: Word64
       }
 
 data Session identity
@@ -47,17 +44,13 @@ newDefaultConfig :: IO (Config identity)
 newDefaultConfig = do
     sk <- Ed25519.generateSecretKey
     pure Config {
-          authAgent                     = fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk
-        , keyExchangeAlgorithms         = pure Curve25519Sha256AtLibsshDotOrg
+          keyExchangeAlgorithms         = pure Curve25519Sha256AtLibsshDotOrg
         , encryptionAlgorithms          = pure Chacha20Poly1305AtOpensshDotCom
         , onAuthRequest                 = \_ _ _ -> pure Nothing
         , onShellRequest                = Nothing
         , onExecRequest                 = Nothing
-        , onSend                        = \_ -> pure ()
-        , onReceive                     = \_ -> pure ()
         , channelMaxCount               = 256
         , channelMaxQueueSize           = 256 * 1024
         , channelMaxPacketSize          = 32 * 1024
-        , maxTimeBeforeRekey            = 3600
-        , maxDataBeforeRekey            = 1024 * 1024 * 1024
+        , transportConfig               = defaultTransportConfig
         }

@@ -35,6 +35,7 @@ import           Network.SSH.Stream
 import           Network.SSH.Message
 import           Network.SSH.Encoding
 import           Network.SSH.AuthAgent
+import           Network.SSH.Transport
 
 main :: IO ()
 main = do
@@ -42,30 +43,28 @@ main = do
     file                <- BS.readFile "./resources/id_ed25519"
     (privateKey, _) : _ <-
         decodePrivateKeyFile BS.empty file :: IO [(KeyPair, BA.Bytes)]
-
+    let agent = fromKeyPair privateKey
     c <- Server.newDefaultConfig
     let
         config = c
-            { Server.authAgent          = fromKeyPair privateKey
-            , Server.onAuthRequest      = \username _ _ -> pure (Just username)
+            { Server.onAuthRequest      = \username _ _ -> pure (Just username)
             , Server.onExecRequest      = Just runExec
-            , Server.onSend = \raw -> case tryParse raw of
-                Nothing -> putStrLn ("sent: " ++ show raw)
-                Just msg -> putStrLn ("sent: " ++ show (msg :: Message))
-            , Server.onReceive = \raw -> case tryParse raw of
-                Nothing -> putStrLn ("received: " ++ show raw)
-                Just msg -> putStrLn ("received: " ++ show (msg :: Message))
-            , Server.channelMaxQueueSize = 1024
-            , Server.maxTimeBeforeRekey = 60
-            , Server.maxDataBeforeRekey = 1024 * 1024
+            , Server.transportConfig = tconf
             }
-    withAsync gc $ \_ ->
-        bracket open close (accept config)
+
+    bracket open close (accept config agent)
   where
-    gc = forever $ threadDelay 60000000 >> performGC
+    tconf = defaultTransportConfig
+        { tOnSend = \raw -> case tryParse raw of
+            Nothing -> putStrLn ("sent: " ++ show raw)
+            Just msg -> putStrLn ("sent: " ++ show (msg :: Message))
+        , tOnReceive = \raw -> case tryParse raw of
+            Nothing -> putStrLn ("received: " ++ show raw)
+            Just msg -> putStrLn ("received: " ++ show (msg :: Message))
+        }
     open  = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
     close = S.close
-    accept config s = do
+    accept config agent s = do
         S.setSocketOption s (S.ReuseAddress True)
         S.setSocketOption s (S.V6Only False)
         S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
@@ -75,7 +74,7 @@ main = do
                 ownershipTransferred <- newTVarIO False
                 let serveStream = do
                         atomically $ writeTVar ownershipTransferred True
-                        Server.serve config stream >>= print
+                        Server.serve config agent stream >>= print
                 void $ forkIO $ (serveStream `finally` S.close stream)
                 atomically $ check =<< readTVar ownershipTransferred
 

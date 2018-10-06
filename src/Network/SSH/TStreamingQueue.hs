@@ -125,7 +125,7 @@ lookAhead q maxBufSize = do
     if size == 0 && eof
         then pure mempty
         else do
-            bs <- readTMVar (qHead q) <|> peekTChan (qTail q) <|> pure mempty
+            bs <- readTMVar (qHead q) <|> peekTChan (qTail q)
             pure $ BS.take (fromIntegral maxBufSize) bs
 
 instance S.DuplexStream TStreamingQueue

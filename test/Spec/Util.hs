@@ -63,6 +63,11 @@ sendPlainMessage sock msg = do
     void $ sendAll sock $ runPut (putPacked $ runPut $ put msg)
 -}
 
+sendAll :: DummySocket -> BS.ByteString -> IO ()
+sendAll (DummySocket q _) bs = do
+    i <- send q bs
+    when (i /= BS.length bs) (error "couldn't send all")
+
 newtype DummyTransport = DummyTransport (TChan BS.ByteString, TChan BS.ByteString)
 
 newDummyTransportPair :: IO (DummyTransport, DummyTransport)
