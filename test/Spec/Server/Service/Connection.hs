@@ -15,6 +15,7 @@ import           Control.Concurrent.STM.TMVar
 import           Network.SSH.Server.Service.Connection
 import           Network.SSH.Message
 import           Network.SSH.Encoding
+import           Network.SSH.Exception
 import           Network.SSH.Server.Config
 
 import           Test.Tasty
@@ -28,6 +29,8 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
     , test02
     , test03
     , test04
+    , test05
+    , test06
     ]
 
 test01 :: TestTree
@@ -118,60 +121,35 @@ test04  = testCase "open two session channels (close first, reuse first)" $ do
         req2 = ChannelOpen rid1 rws rps ChannelOpenSession
         res2 = ChannelOpenConfirmation rid1 lid0 lws lps
 
-{-
-
-connectionChannelOpen04 :: TestTree
-connectionChannelOpen04 = testCase "open two channels, close first, reuse first" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxCount = 2, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn0
-    assertEqual "msg1" msg1 =<< connectionChannelOpen conn opn1
-    assertEqual "msg2" msg2 =<< connectionChannelClose conn cls0
-    assertEqual "msg3" msg3 =<< connectionChannelOpen conn opn2
+test05 :: TestTree
+test05  = testCase "open unknown channel type" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (runConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
     where
-        ctp  = ChannelType "session"
-        lid0 = ChannelId 0
-        lid1 = ChannelId 1
-        lid2 = lid0
-        rid0 = ChannelId 0
-        rid1 = ChannelId 1
-        rid2 = ChannelId 2
+        rid0 = ChannelId 1
+        lws  = 259 * 1024
+        lps  = 32 * 1024
         rws  = 123
         rps  = 456
-        lws  = 243
-        lps  = 545
-        opn0 = ChannelOpen ctp rid0 rws rps
-        opn1 = ChannelOpen ctp rid1 rws rps
-        opn2 = ChannelOpen ctp rid2 rws rps
-        cls0 = ChannelClose lid0
-        msg0 = Right (ChannelOpenConfirmation rid0 lid0 lws lps)
-        msg1 = Right (ChannelOpenConfirmation rid1 lid1 lws lps)
-        msg2 = Just (ChannelClose (ChannelId 0))
-        msg3 = Right (ChannelOpenConfirmation rid2 lid2 lws lps)
+        req0 = ChannelOpen rid0 rws rps (ChannelOpenOther (ChannelType "unknown"))
+        res0 = ChannelOpenFailure rid0 ChannelOpenUnknownChannelType mempty mempty
 
-connectionChannelOpen05 :: TestTree
-connectionChannelOpen05 = testCase "open unknown channel type" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
+test06 :: TestTree
+test06  = testCase "close non-existing channel id" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = defaultConnectionConfig
+    withAsync (runConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        assertThrows "exp0" exp0 $ wait thread
     where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "unknown") rid rws rps
-        msg0 = Left (ChannelOpenFailure rid ChannelOpenUnknownChannelType "" "")
+        lid0 = ChannelId 0
+        req0 = ChannelClose lid0
+        exp0 = exceptionInvalidChannelId
 
-connectionChannelClose01 :: TestTree
-connectionChannelClose01 = testCase "fail on invalid channel id" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf () undefined
-    assertThrows "exp" exp $ connectionChannelClose conn cls
-    where
-        cls = ChannelClose (ChannelId 0)
-        exp = Disconnect DisconnectProtocolError "invalid channel id" mempty
+{-
 
 connectionChannelClose02 :: TestTree
 connectionChannelClose02 = testCase "reuse local channel id when close acknowledged" $ do
@@ -866,18 +844,5 @@ connectionChannelWindowAdjust02 = testCase "window adjustion beyond maximum shou
         opn = ChannelOpen (ChannelType "session") rid rws rps
         msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
         exp0 = Disconnect DisconnectProtocolError "window size overflow" mempty
-
-assertThrows :: (Eq e, Exception e) => String -> e -> IO a -> Assertion
-assertThrows label e action = (action >> failure0) `catch` \e'-> when (e /= e') (failure1 e')
-    where
-        failure0 = assertFailure (label ++ ": should have thrown " ++ show e)
-        failure1 e' = assertFailure (label ++ ": should have thrown " ++ show e ++ " (saw " ++ show e' ++ " instead)")
-
-withTimeout :: IO a -> IO a
-withTimeout action = withAsync action $ \thread -> do
-    t <- registerDelay 1000000
-    let timeout = readTVar t >>= check >> pure (assertFailure "timeout")
-    let result  = waitSTM thread >>= pure . pure
-    join $ atomically $ result <|> timeout
 
 -}
