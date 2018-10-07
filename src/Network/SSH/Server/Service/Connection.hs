@@ -1,19 +1,19 @@
-{-# LANGUAGE FlexibleInstances   #-}
-{-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE MultiWayIf          #-}
-{-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections       #-}
+{-# LANGUAGE FlexibleInstances         #-}
+{-# LANGUAGE LambdaCase                #-}
+{-# LANGUAGE MultiWayIf                #-}
+{-# LANGUAGE OverloadedStrings         #-}
+{-# LANGUAGE ScopedTypeVariables       #-}
+{-# LANGUAGE TupleSections             #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE RankNTypes                #-}
 module Network.SSH.Server.Service.Connection
     ( Connection ()
-    , connectionChannelOpen
-    , connectionChannelEof
-    , connectionChannelClose
-    , connectionChannelRequest
-    , connectionChannelData
-    , connectionChannelWindowAdjust
-    , serveConnection
+    , ConnectionConfig (..)
+    , Address (..)
+    , Session (..)
+    , DirectTcpIpRequest (..)
     , ConnectionMsg (..)
+    , serveConnection
     ) where
 
 import           Control.Applicative
@@ -24,6 +24,7 @@ import           Control.Monad                (join, when, forever, unless)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import           Control.Exception            (bracket, bracketOnError)
 import qualified Data.ByteString              as BS
+import           Data.Default
 import qualified Data.Map.Strict              as M
 import           Data.Word
 import           System.Exit
@@ -32,7 +33,6 @@ import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Constants
 import           Network.SSH.Message
-import           Network.SSH.Server.Config hiding (identity)
 import qualified Network.SSH.Stream as S
 import qualified Network.SSH.TStreamingQueue as Q
 
@@ -41,6 +41,16 @@ data Connection identity
     { connConfig       :: ConnectionConfig identity
     , connIdentity     :: identity
     , connChannels     :: TVar (M.Map ChannelId Channel)
+    }
+
+data ConnectionConfig identity
+    = ConnectionConfig
+    { onExecRequest         :: Maybe (Session identity -> BS.ByteString -> IO ExitCode)
+    , onShellRequest        :: Maybe (Session identity -> IO ExitCode)
+    , onDirectTcpIpRequest  :: forall stream. S.DuplexStream stream => identity -> DirectTcpIpRequest -> IO (Maybe (stream -> IO ()))
+    , channelMaxCount       :: Word16
+    , channelMaxQueueSize   :: Word32
+    , channelMaxPacketSize  :: Word32
     }
 
 data Channel
@@ -66,11 +76,33 @@ data SessionState
     , sessStderr      :: Q.TStreamingQueue
     }
 
+data Session identity
+    = forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr) => Session
+    { identity    :: identity
+    , environment :: M.Map BS.ByteString BS.ByteString
+    , ptySettings :: Maybe PtySettings
+    , stdin       :: stdin
+    , stdout      :: stdout
+    , stderr      :: stderr
+    }
+
 data DirectTcpIpState
     = DirectTcpIpState
     { dtiStreamIn     :: Q.TStreamingQueue
     , dtiStreamOut    :: Q.TStreamingQueue
     }
+
+data DirectTcpIpRequest
+    = DirectTcpIpRequest
+    { destination   :: Address
+    , origin        :: Address
+      } deriving (Eq, Ord, Show)
+
+data Address
+    = Address
+    { address :: BS.ByteString
+    , port    :: Word32
+    } deriving (Eq, Ord, Show)
 
 instance S.InputStream DirectTcpIpState where
     receive x = S.receive (dtiStreamIn x)
@@ -108,6 +140,16 @@ instance Encoding ConnectionMsg where
       <|> ConnectionChannelData <$> get
       <|> ConnectionChannelRequest <$> get
       <|> ConnectionChannelWindowAdjust <$> get
+
+instance Default (ConnectionConfig identity) where
+    def = ConnectionConfig
+        { onExecRequest                 = Nothing
+        , onShellRequest                = Nothing
+        , onDirectTcpIpRequest          = \_ _ -> pure Nothing
+        , channelMaxCount               = 256
+        , channelMaxQueueSize           = 256 * 1024
+        , channelMaxPacketSize          = 32 * 1024
+        }
 
 serveConnection :: forall stream identity. MessageStream stream =>
     ConnectionConfig identity -> stream -> identity -> IO ()

@@ -6,12 +6,22 @@ module Network.SSH.Server.Service.UserAuth where
 import           Control.Exception (throwIO)
 import qualified Crypto.PubKey.Ed25519        as Ed25519
 import qualified Data.ByteString              as BS
+import           Data.Default
 
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Key
 import           Network.SSH.Message
-import           Network.SSH.Server.Config
+
+data UserAuthConfig identity
+    = UserAuthConfig
+    { onAuthRequest :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
+    }
+
+instance Default (UserAuthConfig identity) where
+    def = UserAuthConfig
+        { onAuthRequest = \_ _ _ -> pure Nothing
+        }
 
 withAuthentication ::
     forall identity stream a. (MessageStream stream) =>

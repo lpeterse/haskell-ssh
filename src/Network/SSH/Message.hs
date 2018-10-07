@@ -180,7 +180,7 @@ data ServiceAccept
 data KexInit
     = KexInit
     { kexCookie                              :: Cookie
-    , kexAlgorithms                          :: [BS.ByteString]
+    , kexKexAlgorithms                       :: [BS.ByteString]
     , kexServerHostKeyAlgorithms             :: [BS.ByteString]
     , kexEncryptionAlgorithmsClientToServer  :: [BS.ByteString]
     , kexEncryptionAlgorithmsServerToClient  :: [BS.ByteString]
@@ -564,7 +564,7 @@ instance Encoding ServiceAccept where
 instance Encoding KexInit where
     len kex = lenWord8
         + len         (kexCookie                              kex)
-        + lenNameList (kexAlgorithms                          kex)
+        + lenNameList (kexKexAlgorithms                       kex)
         + lenNameList (kexServerHostKeyAlgorithms             kex)
         + lenNameList (kexEncryptionAlgorithmsClientToServer  kex)
         + lenNameList (kexEncryptionAlgorithmsServerToClient  kex)
@@ -579,7 +579,7 @@ instance Encoding KexInit where
     put kex = do
         putWord8     20
         put         (kexCookie                              kex)
-        putNameList (kexAlgorithms                          kex)
+        putNameList (kexKexAlgorithms                       kex)
         putNameList (kexServerHostKeyAlgorithms             kex)
         putNameList (kexEncryptionAlgorithmsClientToServer  kex)
         putNameList (kexEncryptionAlgorithmsServerToClient  kex)

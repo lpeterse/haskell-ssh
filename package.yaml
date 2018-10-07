@@ -28,6 +28,7 @@ dependencies:
 - cryptonite
 - memory
 - stm
+- data-default
 
 library:
   source-dirs: src

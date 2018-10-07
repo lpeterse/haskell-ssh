@@ -25,14 +25,12 @@ import qualified System.Socket.Family.Inet6    as S
 import qualified System.Socket.Protocol.Default
                                                as S
 import qualified System.Socket.Type.Stream     as S
+import           Data.Default
 
 import           Network.SSH.Constants
 import           Network.SSH.Key
 import qualified Network.SSH.Server            as Server
-import qualified Network.SSH.Server.Config     as Server
 import           Network.SSH.Stream
-import           Network.SSH.Message
-import           Network.SSH.Encoding
 import           Network.SSH.AuthAgent
 import           Network.SSH.Transport
 
@@ -45,8 +43,8 @@ main = do
     let agent = fromKeyPair privateKey
     bracket open close (accept config agent)
   where
-    config = Server.defaultConfig
-        { Server.transportConfig = defaultTransportConfig
+    config = def
+        { Server.transportConfig = def
             {- tOnSend = \raw -> case tryParse raw of
                 Nothing -> putStrLn ("sent: " ++ show raw)
                 Just msg -> putStrLn ("sent: " ++ show (msg :: Message))
@@ -54,10 +52,10 @@ main = do
                 Nothing -> putStrLn ("received: " ++ show raw)
                 Just msg -> putStrLn ("received: " ++ show (msg :: Message))
             -}
-        , Server.userAuthConfig    = Server.defaultUserAuthConfig
+        , Server.userAuthConfig    = def
             { Server.onAuthRequest = \username _ _ -> pure (Just username)
             }
-        , Server.connectionConfig  = Server.defaultConnectionConfig
+        , Server.connectionConfig  = def
             { Server.onExecRequest        = Just runExec
             , Server.onDirectTcpIpRequest = serveHttp
             }
@@ -102,13 +100,10 @@ runExec (Server.Session identity pty env stdin stdout stderr) _command = withAsy
             threadDelay 1000000
 
 instance DuplexStream (S.Socket f S.Stream p) where
-instance DuplexStreamPeekable (S.Socket f S.Stream p) where
-
-instance InputStream  (S.Socket f S.Stream p) where
-    receive stream len = S.receive stream len S.msgNoSignal
 
 instance OutputStream  (S.Socket f S.Stream p) where
     send stream bytes = S.send stream bytes S.msgNoSignal
 
-instance InputStreamPeekable (S.Socket f S.Stream p) where
+instance InputStream  (S.Socket f S.Stream p) where
     peek stream len = S.receive stream len (S.msgNoSignal <> S.msgPeek)
+    receive stream len = S.receive stream len S.msgNoSignal

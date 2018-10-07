@@ -130,13 +130,10 @@ lookAhead q maxBufSize = do
             pure $ BS.take (fromIntegral maxBufSize) (SBS.fromShort bs)
 
 instance S.DuplexStream TStreamingQueue
-instance S.DuplexStreamPeekable TStreamingQueue
 
 instance S.OutputStream TStreamingQueue where
     send q bs = fromIntegral <$> atomically (enqueue q bs)
 
 instance S.InputStream TStreamingQueue where
-    receive q i = atomically $ dequeue q $ fromIntegral $ min i maxBoundIntWord32
-
-instance S.InputStreamPeekable TStreamingQueue where
     peek q i = atomically $ lookAhead q $ fromIntegral $ min i maxBoundIntWord32
+    receive q i = atomically $ dequeue q $ fromIntegral $ min i maxBoundIntWord32

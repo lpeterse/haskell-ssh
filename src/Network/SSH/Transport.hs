@@ -8,7 +8,6 @@ module Network.SSH.Transport
     , TransportConfig (..)
     , Disconnected (..)
     , withTransport
-    , defaultTransportConfig
     )
 where
 
@@ -20,6 +19,7 @@ import           Control.Exception              ( throwIO, handle, catch, fromEx
 import           Control.Monad                  ( when, void )
 import           Control.Monad.STM
 import           Data.Bits
+import           Data.Default
 import           Data.List
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
@@ -65,25 +65,25 @@ data Transport
 
 data TransportConfig
     = TransportConfig
-    { tHostKeyAlgorithms  :: NEL.NonEmpty HostKeyAlgorithm
-    , tKexAlgorithms      :: NEL.NonEmpty KeyExchangeAlgorithm
-    , tEncAlgorithms      :: NEL.NonEmpty EncryptionAlgorithm
-    , tMaxTimeBeforeRekey :: Word64
-    , tMaxDataBeforeRekey :: Word64
-    , tOnSend             :: BS.ByteString -> IO ()
-    , tOnReceive          :: BS.ByteString -> IO ()
+    { serverHostKeyAlgorithms :: NEL.NonEmpty HostKeyAlgorithm
+    , kexAlgorithms           :: NEL.NonEmpty KeyExchangeAlgorithm
+    , encryptionAlgorithms    :: NEL.NonEmpty EncryptionAlgorithm
+    , maxTimeBeforeRekey      :: Word64
+    , maxDataBeforeRekey      :: Word64
+    , onSend                  :: BS.ByteString -> IO ()
+    , onReceive               :: BS.ByteString -> IO ()
     }
 
-defaultTransportConfig :: TransportConfig
-defaultTransportConfig = TransportConfig
-    { tHostKeyAlgorithms  = pure SshEd25519
-    , tKexAlgorithms      = pure Curve25519Sha256AtLibsshDotOrg
-    , tEncAlgorithms      = pure Chacha20Poly1305AtOpensshDotCom
-    , tOnSend             = const (pure ())
-    , tOnReceive          = const (pure ())
-    , tMaxTimeBeforeRekey = 3600
-    , tMaxDataBeforeRekey = 1000 * 1000 * 1000
-    }
+instance Default TransportConfig where
+    def = TransportConfig
+        { serverHostKeyAlgorithms  = pure SshEd25519
+        , kexAlgorithms            = pure Curve25519Sha256AtLibsshDotOrg
+        , encryptionAlgorithms     = pure Chacha20Poly1305AtOpensshDotCom
+        , maxTimeBeforeRekey       = 3600
+        , maxDataBeforeRekey       = 1000 * 1000 * 1000
+        , onSend                   = const (pure ())
+        , onReceive                = const (pure ())
+        }
 
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.Bytes])
 
@@ -106,7 +106,7 @@ instance MessageStream Transport where
         transportReceiveMessage t
 
 withTransport ::
-    (DuplexStreamPeekable stream) =>
+    (DuplexStream stream) =>
     TransportConfig -> Maybe AuthAgent -> stream ->
     (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
 withTransport config magent stream runWith = withFinalExceptionHandler $ do
@@ -183,7 +183,7 @@ transportSendMessage env msg =
 transportSendRawMessage :: Transport -> BS.ByteString -> IO ()
 transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
     modifyMVar_ (tEncryptionCtx env) $ \encrypt -> do
-        tOnSend (tConfig env) plainText
+        onSend (tConfig env) plainText
         -- NB: Increase packet counter before sending in order
         --     to avoid nonce reuse in exceptional cases!
         packets <- modifyMVar (tPacketsSent env) $ \p -> pure . (,p) $! p + 1
@@ -208,7 +208,7 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
     modifyMVar (tDecryptionCtx env) $ \decrypt -> do
         packets <- readMVar (tPacketsReceived env)
         plainText <- decrypt packets (receiveAll mempty)
-        tOnReceive (tConfig env) plainText
+        onReceive (tConfig env) plainText
         modifyMVar_ (tPacketsReceived env) $ \pacs  -> pure $! pacs + 1
         case interpreter plainText of
             Just i  -> i >> pure (decrypt, Nothing)
@@ -485,7 +485,7 @@ kexServerContinuation env cookie authAgent = serverKex0
                         transportSendMessage env KexNewKeys
 
 kexCommonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
-kexCommonKexAlgorithm ski cki = case kexAlgorithms cki `intersect` kexAlgorithms ski of
+kexCommonKexAlgorithm ski cki = case kexKexAlgorithms cki `intersect` kexKexAlgorithms ski of
     (x:_)
         | x == algorithmName Curve25519Sha256AtLibsshDotOrg -> pure Curve25519Sha256AtLibsshDotOrg
     _ -> throwIO exceptionKexNoCommonKexAlgorithm
@@ -499,10 +499,10 @@ kexCommonEncAlgorithm ski cki f = case f cki `intersect` f ski of
 kexInit :: TransportConfig -> Cookie -> KexInit
 kexInit config cookie = KexInit
     {   kexCookie                              = cookie
-    ,   kexServerHostKeyAlgorithms             = NEL.toList $ fmap algorithmName (tHostKeyAlgorithms config)
-    ,   kexAlgorithms                          = NEL.toList $ fmap algorithmName (tKexAlgorithms config)
-    ,   kexEncryptionAlgorithmsClientToServer  = NEL.toList $ fmap algorithmName (tEncAlgorithms config)
-    ,   kexEncryptionAlgorithmsServerToClient  = NEL.toList $ fmap algorithmName (tEncAlgorithms config)
+    ,   kexServerHostKeyAlgorithms             = NEL.toList $ fmap algorithmName (serverHostKeyAlgorithms config)
+    ,   kexKexAlgorithms                       = NEL.toList $ fmap algorithmName (kexAlgorithms config)
+    ,   kexEncryptionAlgorithmsClientToServer  = NEL.toList $ fmap algorithmName (encryptionAlgorithms config)
+    ,   kexEncryptionAlgorithmsServerToClient  = NEL.toList $ fmap algorithmName (encryptionAlgorithms config)
     ,   kexMacAlgorithmsClientToServer         = []
     ,   kexMacAlgorithmsServerToClient         = []
     ,   kexCompressionAlgorithmsClientToServer = [algorithmName None]
@@ -529,8 +529,8 @@ kexRekeyingRequired env = do
     -- NB: This is security critical as some algorithms like ChaCha20
     -- use the packet counter as nonce and an overflow will lead to
     -- nonce reuse!
-    interval  = min (tMaxTimeBeforeRekey $ tConfig env) 3600
-    threshold = min (tMaxDataBeforeRekey $ tConfig env) (1024 * 1024 * 1024)
+    interval  = min (maxTimeBeforeRekey $ tConfig env) 3600
+    threshold = min (maxDataBeforeRekey $ tConfig env) (1024 * 1024 * 1024)
 
 trySetSessionId :: Transport -> SessionId -> IO SessionId
 trySetSessionId env sidDef =
@@ -592,7 +592,7 @@ sendVersion stream = do
 -- The maximum length of the version string is 255 chars including CR+LF.
 -- The version string is usually short and transmitted within
 -- a single TCP segment.
-receiveVersion :: (InputStreamPeekable stream) => stream -> IO Version
+receiveVersion :: (InputStream stream) => stream -> IO Version
 receiveVersion stream = do
     bs <- peek stream 255
     when (BS.null bs) e0
