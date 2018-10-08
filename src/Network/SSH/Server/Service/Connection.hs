@@ -122,12 +122,6 @@ data ConnectionMsg
     deriving (Eq, Show)
 
 instance Encoding ConnectionMsg where
-    len (ConnectionChannelOpen x) = len x
-    len (ConnectionChannelClose x) = len x
-    len (ConnectionChannelEof x) = len x
-    len (ConnectionChannelData x) = len x
-    len (ConnectionChannelRequest x) = len x
-    len (ConnectionChannelWindowAdjust x) = len x
     put (ConnectionChannelOpen x) = put x
     put (ConnectionChannelClose x) = put x
     put (ConnectionChannelEof x) = put x

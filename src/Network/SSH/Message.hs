@@ -107,6 +107,7 @@ import           Data.Typeable
 import           Data.Word
 import           System.Exit
 
+import qualified Network.SSH.Builder as B
 import           Network.SSH.Exception
 import           Network.SSH.Encoding
 import           Network.SSH.Key
@@ -403,34 +404,6 @@ newtype ChannelId         = ChannelId         Word32
 -------------------------------------------------------------------------------
 
 instance Encoding Message where
-    len = \case
-        MsgDisconnect               x -> len x
-        MsgIgnore                   x -> len x
-        MsgUnimplemented            x -> len x
-        MsgDebug                    x -> len x
-        MsgServiceRequest           x -> len x
-        MsgServiceAccept            x -> len x
-        MsgKexInit                  x -> len x
-        MsgKexNewKeys               x -> len x
-        MsgKexEcdhInit              x -> len x
-        MsgKexEcdhReply             x -> len x
-        MsgUserAuthRequest          x -> len x
-        MsgUserAuthFailure          x -> len x
-        MsgUserAuthSuccess          x -> len x
-        MsgUserAuthBanner           x -> len x
-        MsgUserAuthPublicKeyOk      x -> len x
-        MsgChannelOpen              x -> len x
-        MsgChannelOpenConfirmation  x -> len x
-        MsgChannelOpenFailure       x -> len x
-        MsgChannelWindowAdjust      x -> len x
-        MsgChannelData              x -> len x
-        MsgChannelExtendedData      x -> len x
-        MsgChannelEof               x -> len x
-        MsgChannelClose             x -> len x
-        MsgChannelRequest           x -> len x
-        MsgChannelSuccess           x -> len x
-        MsgChannelFailure           x -> len x
-        MsgUnknown                  _ -> lenWord8
     put = \case
         MsgDisconnect               x -> put x
         MsgIgnore                   x -> put x
@@ -488,19 +461,16 @@ instance Encoding Message where
         MsgChannelFailure          <$> get <|> (MsgUnknown <$> getWord8)
 
 instance Encoding Disconnected where
-    len (Disconnected r d l) =
-        lenWord8 + len r + lenString d + lenString l
-    put (Disconnected r d l) = do
-        putWord8 1
-        put r
-        putString d
+    put (Disconnected r d l) =
+        putWord8 1 <>
+        put r <>
+        putString d <>
         putString l
     get = do
         expectWord8 1
         Disconnected <$> get <*> getString <*> getString
 
 instance Encoding DisconnectReason where
-    len _ = lenWord32
     put r = putWord32 $ case r of
         DisconnectHostNotAllowedToConnect     -> 1
         DisconnectProtocolError               -> 2
@@ -537,59 +507,40 @@ instance Encoding DisconnectReason where
         r  -> DisconnectOtherReason r
 
 instance Encoding Ignore where
-    len _ = 1
     put _ = putWord8 2
     get   = expectWord8 2 >> pure Ignore
 
 instance Encoding Unimplemented where
-    len _ = lenWord8 + lenWord32
-    put (Unimplemented w) = putWord8 3 >> putWord32 w
+    put (Unimplemented w) = putWord8 3 <> putWord32 w
     get = expectWord8 3 >> Unimplemented <$> getWord32
 
 instance Encoding Debug where
-    len (Debug _ msg lang) = lenWord8 + lenBool + lenString msg + lenString lang
-    put (Debug ad msg lang) = putWord8 4 >> putBool ad >> putString msg >> putString lang
+    put (Debug ad msg lang) = putWord8 4 <> putBool ad <> putString msg <> putString lang
     get = expectWord8 4 >> Debug <$> getBool <*> getString <*> getString
 
 instance Encoding ServiceRequest where
-    len (ServiceRequest name) = lenWord8 + len name
-    put (ServiceRequest name) = putWord8 5 >> put name
+    put (ServiceRequest name) = putWord8 5 <> put name
     get = expectWord8 5 >> ServiceRequest <$> get
 
 instance Encoding ServiceAccept where
-    len (ServiceAccept name) = lenWord8 + len name
-    put (ServiceAccept name) = putWord8 6 >> put name
+    put (ServiceAccept name) = putWord8 6 <> put name
     get = expectWord8 6 >> ServiceAccept <$> get
 
 instance Encoding KexInit where
-    len kex = lenWord8
-        + len         (kexCookie                              kex)
-        + lenNameList (kexKexAlgorithms                       kex)
-        + lenNameList (kexServerHostKeyAlgorithms             kex)
-        + lenNameList (kexEncryptionAlgorithmsClientToServer  kex)
-        + lenNameList (kexEncryptionAlgorithmsServerToClient  kex)
-        + lenNameList (kexMacAlgorithmsClientToServer         kex)
-        + lenNameList (kexMacAlgorithmsServerToClient         kex)
-        + lenNameList (kexCompressionAlgorithmsClientToServer kex)
-        + lenNameList (kexCompressionAlgorithmsServerToClient kex)
-        + lenNameList (kexLanguagesClientToServer             kex)
-        + lenNameList (kexLanguagesServerToClient             kex)
-        + lenBool
-        + lenWord32
-    put kex = do
-        putWord8     20
-        put         (kexCookie                              kex)
-        putNameList (kexKexAlgorithms                       kex)
-        putNameList (kexServerHostKeyAlgorithms             kex)
-        putNameList (kexEncryptionAlgorithmsClientToServer  kex)
-        putNameList (kexEncryptionAlgorithmsServerToClient  kex)
-        putNameList (kexMacAlgorithmsClientToServer         kex)
-        putNameList (kexMacAlgorithmsServerToClient         kex)
-        putNameList (kexCompressionAlgorithmsClientToServer kex)
-        putNameList (kexCompressionAlgorithmsServerToClient kex)
-        putNameList (kexLanguagesClientToServer             kex)
-        putNameList (kexLanguagesServerToClient             kex)
-        putBool     (kexFirstPacketFollows                  kex)
+    put kex =
+        putWord8     20 <>
+        put         (kexCookie                              kex) <>
+        putNameList (kexKexAlgorithms                       kex) <>
+        putNameList (kexServerHostKeyAlgorithms             kex) <>
+        putNameList (kexEncryptionAlgorithmsClientToServer  kex) <>
+        putNameList (kexEncryptionAlgorithmsServerToClient  kex) <>
+        putNameList (kexMacAlgorithmsClientToServer         kex) <>
+        putNameList (kexMacAlgorithmsServerToClient         kex) <>
+        putNameList (kexCompressionAlgorithmsClientToServer kex) <>
+        putNameList (kexCompressionAlgorithmsServerToClient kex) <>
+        putNameList (kexLanguagesClientToServer             kex) <>
+        putNameList (kexLanguagesServerToClient             kex) <>
+        putBool     (kexFirstPacketFollows                  kex) <>
         putWord32 0 -- reserved for future extensions
     get = do
         expectWord8 20
@@ -601,75 +552,60 @@ instance Encoding KexInit where
         pure kex
 
 instance Encoding KexNewKeys where
-    len _ = lenWord8
     put _ = putWord8 21
     get   = expectWord8 21 >> pure KexNewKeys
 
 instance Encoding KexEcdhInit where
-    len (KexEcdhInit key) = lenWord8 + len key
-    put (KexEcdhInit key) = putWord8 30 >> put key
+    put (KexEcdhInit key) = putWord8 30 <> put key
     get = expectWord8 30 >> KexEcdhInit <$> get
 
 instance Encoding KexEcdhReply where
-    len (KexEcdhReply hkey ekey sig) =
-        lenWord8 + len hkey + len ekey + len sig
-    put (KexEcdhReply hkey ekey sig) = putWord8 31 >> put hkey >> put ekey >> put sig
+    put (KexEcdhReply hkey ekey sig) = putWord8 31 <> put hkey <> put ekey <> put sig
     get = expectWord8 31 >> KexEcdhReply <$> get <*> get <*> get
 
 instance Encoding UserAuthRequest where
-    len (UserAuthRequest un sn am) = lenWord8 + len un + len sn + len am
-    put (UserAuthRequest un sn am) = putWord8 50 >> put un >> put sn >> put am
+    put (UserAuthRequest un sn am) = putWord8 50 <> put un <> put sn <> put am
     get = expectWord8 50 >> UserAuthRequest <$> get <*> get <*> get
 
 instance Encoding UserAuthFailure where
-    len (UserAuthFailure ms _) = lenWord8 + lenNameList ms + lenBool
-    put (UserAuthFailure ms ps) = do
-        putWord8 51
-        putNameList ((\(AuthMethodName x)->x) <$> ms)
+    put (UserAuthFailure ms ps) =
+        putWord8 51 <>
+        putNameList ((\(AuthMethodName x)->x) <$> ms) <>
         putBool ps
     get =  do
         expectWord8 51
         UserAuthFailure <$> (fmap AuthMethodName <$> getNameList) <*> getBool
 
 instance Encoding UserAuthSuccess where
-    len UserAuthSuccess = lenWord8
     put UserAuthSuccess = putWord8 52
     get = expectWord8 52 >> pure UserAuthSuccess
 
 instance Encoding UserAuthBanner where
-    len (UserAuthBanner x y) = lenWord8 + lenString x + lenString y
-    put (UserAuthBanner x y) = putWord8 53 >> putString x >> putString y
+    put (UserAuthBanner x y) = putWord8 53 <> putString x <> putString y
     get = expectWord8 53 >> UserAuthBanner <$> getString <*> getString
 
 instance Encoding UserAuthPublicKeyOk where
-    len (UserAuthPublicKeyOk alg pk) = lenWord8 + len alg + len pk
-    put (UserAuthPublicKeyOk alg pk) = putWord8 60 >> put alg >> put pk
+    put (UserAuthPublicKeyOk alg pk) = putWord8 60 <> put alg <> put pk
     get = expectWord8 60 >> UserAuthPublicKeyOk <$> get <*> get
 
 instance Encoding ChannelOpen where
-    len (ChannelOpen rc _ _ ct) = lenWord8 + len rc + lenWord32 + lenWord32 + case ct of
-            ChannelOpenSession {} ->
-                len (ChannelType "session")
-            ChannelOpenDirectTcpIp da _ sa _ ->
-                len (ChannelType "direct-tcpip") + lenString da + lenString sa + 2 * lenWord32
-            ChannelOpenOther t -> len t
-    put (ChannelOpen rc rw rp ct) = do
-        putWord8 90
-        case ct of
+    put (ChannelOpen rc rw rp ct) =
+        putWord8 90 <>
+        (case ct of
             ChannelOpenSession {} -> put (ChannelType "session")
             ChannelOpenDirectTcpIp {} -> put (ChannelType "direct-tcpip")
-            ChannelOpenOther t -> put t
-        put rc
-        putWord32 rw
-        putWord32 rp
+            ChannelOpenOther t -> put t ) <>
+        put rc <>
+        putWord32 rw <>
+        putWord32 rp <>
         case ct of
-            ChannelOpenSession {} -> pure ()
-            ChannelOpenDirectTcpIp da dp sa sp -> do
-                putString da
-                putWord32 dp
-                putString sa
+            ChannelOpenSession {} -> mempty
+            ChannelOpenDirectTcpIp da dp sa sp ->
+                putString da <>
+                putWord32 dp <>
+                putString sa <>
                 putWord32 sp
-            ChannelOpenOther {} -> pure ()
+            ChannelOpenOther {} -> mempty
     get = do
         expectWord8 90
         ct <- get
@@ -689,12 +625,11 @@ instance Encoding ChannelOpen where
                 pure $ ChannelOpenOther other
 
 instance Encoding ChannelOpenConfirmation where
-    len (ChannelOpenConfirmation a b _ _) = lenWord8 + len a + len b + lenWord32 + lenWord32
-    put (ChannelOpenConfirmation a b ws ps) = do
-        putWord8 91
-        put a
-        put b
-        putWord32 ws
+    put (ChannelOpenConfirmation a b ws ps) =
+        putWord8 91 <>
+        put a <>
+        put b <>
+        putWord32 ws <>
         putWord32 ps
     get = do
         expectWord8 91
@@ -705,20 +640,17 @@ instance Encoding ChannelOpenConfirmation where
             <*> getWord32
 
 instance Encoding ChannelOpenFailure where
-    len (ChannelOpenFailure cid reason descr lang) =
-        lenWord8 + len cid + len reason + lenString descr + lenString lang
-    put (ChannelOpenFailure cid reason descr lang) = do
-        putWord8 92
-        put cid
-        put reason
-        putString descr
+    put (ChannelOpenFailure cid reason descr lang) =
+        putWord8 92 <>
+        put cid <>
+        put reason <>
+        putString descr <>
         putString lang
     get = do
         expectWord8 92
         ChannelOpenFailure <$> get <*> get <*> getString <*> getString
 
 instance Encoding ChannelOpenFailureReason where
-    len _ = lenWord32
     put r = putWord32 $ case r of
         ChannelOpenAdministrativelyProhibited -> 1
         ChannelOpenConnectFailed              -> 2
@@ -733,126 +665,101 @@ instance Encoding ChannelOpenFailureReason where
         w32 -> ChannelOpenOtherFailure w32
 
 instance Encoding ChannelWindowAdjust where
-    len (ChannelWindowAdjust cid _) = lenWord8 + len cid + lenWord32
-    put (ChannelWindowAdjust cid ws) = putWord8 93 >> put cid >> putWord32 ws
+    put (ChannelWindowAdjust cid ws) = putWord8 93 <> put cid <> putWord32 ws
     get = expectWord8 93 >> ChannelWindowAdjust <$> get <*> getWord32
 
 instance Encoding ChannelData where
-    len (ChannelData cid ba) = lenWord8 + len cid + lenString ba
-    put (ChannelData cid ba) = putWord8 94 >> put cid >> putString ba
+    put (ChannelData cid ba) = putWord8 94 <> put cid <> putString ba
     get = expectWord8 94 >> ChannelData <$> get <*> getString
 
 instance Encoding ChannelExtendedData where
-    len (ChannelExtendedData cid _ ba) = lenWord8 + len cid + lenWord32 + lenString ba
-    put (ChannelExtendedData cid x ba) = putWord8 95 >> put cid >> putWord32 x >> putString ba
+    put (ChannelExtendedData cid x ba) = putWord8 95 <> put cid <> putWord32 x <> putString ba
     get = expectWord8 95 >> ChannelExtendedData <$> get <*> getWord32 <*> getString
 
 instance Encoding ChannelEof where
-    len (ChannelEof cid) = lenWord8 + len cid
-    put (ChannelEof cid) = putWord8 96 >> put cid
+    put (ChannelEof cid) = putWord8 96 <> put cid
     get = expectWord8 96 >> ChannelEof <$> get
 
 instance Encoding ChannelClose where
-    len (ChannelClose cid) = lenWord8 + len cid
-    put (ChannelClose cid) = putWord8 97 >> put cid
+    put (ChannelClose cid) = putWord8 97 <> put cid
     get = expectWord8 97 >> ChannelClose <$> get
 
 instance Encoding ChannelRequest where
-    len (ChannelRequest cid typ _     dat) = lenWord8 + len cid + lenString typ + lenBool + lenByteString dat
-    put (ChannelRequest cid typ reply dat) = putWord8 98 >> put cid >> putString typ >> putBool reply >> putByteString dat
+    put (ChannelRequest cid typ reply dat) = putWord8 98 <> put cid <> putString typ <> putBool reply <> putByteString dat
     get = expectWord8 98 >> ChannelRequest <$> get <*> getString <*> getBool <*> getRemainingByteString
 
 instance Encoding ChannelRequestEnv where
-    len (ChannelRequestEnv name value) = lenString name + lenString value
-    put (ChannelRequestEnv name value) = putString name >> putString value
+    put (ChannelRequestEnv name value) = putString name <> putString value
     get = ChannelRequestEnv <$> getString <*> getString
 
 instance Encoding ChannelRequestPty where
-    len (ChannelRequestPty settings) = len settings
     put (ChannelRequestPty settings) = put settings
     get = ChannelRequestPty <$> get
 
 instance Encoding ChannelRequestWindowChange where
-    len _ = 4 * lenWord32
-    put (ChannelRequestWindowChange x0 x1 x2 x3) = putWord32 x0 >> putWord32 x1 >> putWord32 x2 >> putWord32 x3
+    put (ChannelRequestWindowChange x0 x1 x2 x3) = putWord32 x0 <> putWord32 x1 <> putWord32 x2 <> putWord32 x3
     get = ChannelRequestWindowChange <$> getWord32 <*> getWord32 <*> getWord32 <*> getWord32
 
 instance Encoding ChannelRequestShell where
-    len _ = 0
-    put _ = pure ()
+    put _ = mempty
     get   = pure ChannelRequestShell
 
 instance Encoding ChannelRequestExec where
-    len (ChannelRequestExec command) = lenString command
     put (ChannelRequestExec command) = putString command
     get = ChannelRequestExec <$> getString
 
 instance Encoding ChannelRequestSignal where
-    len (ChannelRequestSignal signame) = lenString signame
     put (ChannelRequestSignal signame) = putString signame
     get = ChannelRequestSignal <$> getString
 
 instance Encoding ChannelRequestExitStatus where
-    len (ChannelRequestExitStatus code) = len code
     put (ChannelRequestExitStatus code) = put code
     get = ChannelRequestExitStatus <$> get
 
 instance Encoding ChannelRequestExitSignal where
-    len (ChannelRequestExitSignal signame _core msg lang) = lenString signame + lenBool + lenString msg + lenString lang
-    put (ChannelRequestExitSignal signame core msg lang) = putString signame >> putBool core >> putString msg >> putString lang
+    put (ChannelRequestExitSignal signame core msg lang) = putString signame <> putBool core <> putString msg <> putString lang
     get = ChannelRequestExitSignal <$> getString <*> getBool <*> getString <*> getString
 
 instance Encoding ChannelSuccess where
-    len (ChannelSuccess cid) = lenWord8 + len cid
-    put (ChannelSuccess cid) = putWord8 99 >> put cid
+    put (ChannelSuccess cid) = putWord8 99 <> put cid
     get = expectWord8 99 >> (ChannelSuccess <$> get)
 
 instance Encoding ChannelFailure where
-    len (ChannelFailure cid) = lenWord8 + len cid
-    put (ChannelFailure cid) = putWord8 100 >> put cid
+    put (ChannelFailure cid) = putWord8 100 <> put cid
     get = expectWord8 100 >> (ChannelFailure <$> get)
 
 instance Encoding Cookie where
-    len _ = 16
     put (Cookie s) = putBytes s
     get = Cookie <$> getBytes 16
 
 instance Encoding Algorithm where
-    len (Algorithm s) = lenString s
     put (Algorithm s) = putString s
     get = Algorithm <$> getString
 
 instance Encoding ChannelId where
-    len (ChannelId _) = lenWord32
     put (ChannelId x) = putWord32 x
     get = ChannelId <$> getWord32
 
 instance Encoding ChannelType where
-    len (ChannelType x) = lenString x
     put (ChannelType x) = putString x
     get = ChannelType <$> getString
 
 instance Encoding SessionId where
-    len (SessionId x) = lenString x
     put (SessionId x) = putString x
     get = SessionId <$> getString
 
 instance Encoding ServiceName where
-    len (ServiceName x) = lenString x
     put (ServiceName x) = putString x
     get = ServiceName <$> getString
 
 instance Encoding UserName where
-    len (UserName x) = lenString x
     put (UserName x) = putString x
     get = UserName <$> getString
 
 instance Encoding Version where
-    len (Version x) =
-        lenBytes x + 2
-    put (Version x) = do
-        putBytes x
-        putWord8 0x0d
+    put (Version x) =
+        putBytes x <>
+        putWord8 0x0d <>
         putWord8 0x0a
     get = do
       mapM_ expectWord8 magic
@@ -869,28 +776,17 @@ instance Encoding Version where
                 x -> untilCRLF (i+1) (x:xs)
 
 instance Encoding AuthMethod where
-    len = \case
-        AuthNone ->
-            lenString ("none" :: BS.ByteString)
-        AuthHostBased ->
-            lenString ("hostbased" :: BS.ByteString)
-        AuthPassword (Password pw) ->
-            lenString ("password" :: BS.ByteString) + lenBool + lenString pw
-        AuthPublicKey (Algorithm algo) pk msig ->
-            lenString ("publickey" :: BS.ByteString) + lenBool + lenString algo + len pk + maybe 0 len msig
-        AuthOther other ->
-            lenString other
     put = \case
         AuthNone ->
             putString ("none" :: BS.ByteString)
         AuthHostBased ->
             putString ("hostbased" :: BS.ByteString)
         AuthPassword (Password pw) ->
-            putString ("password" :: BS.ByteString) >> putBool False >> putString pw
+            putString ("password" :: BS.ByteString) <> putBool False <> putString pw
         AuthPublicKey (Algorithm algo) pk msig ->
-            putString ("publickey" :: BS.ByteString) >> case msig of
-                Nothing -> putBool False >> putString algo >> put pk
-                Just sig -> putBool True >> putString algo >> put pk >> put sig
+            putString ("publickey" :: BS.ByteString) <> case msig of
+                Nothing -> putBool False <> putString algo <> put pk
+                Just sig -> putBool True <> putString algo <> put pk <> put sig
         AuthOther other ->
             putString other
     get = getString >>= \case
@@ -909,18 +805,11 @@ instance Encoding AuthMethod where
         other -> pure (AuthOther other)
 
 instance Encoding PublicKey where
-    len = \case
+    put k = putWord32 (len k - lenWord32) <> case k of
         PublicKeyEd25519 key ->
-            lenWord32 + lenString ("ssh-ed25519" :: BS.ByteString) + len key
+            putString ("ssh-ed25519" :: BS.ByteString) <> put key
         PublicKeyRSA key ->
-            lenWord32 + lenString ("ssh-rsa" :: BS.ByteString) + len key
-        PublicKeyOther other ->
-            lenWord32 + lenString other
-    put k = putWord32 (len k - lenWord32) >> case k of
-        PublicKeyEd25519 key ->
-            putString ("ssh-ed25519" :: BS.ByteString) >> put key
-        PublicKeyRSA key ->
-            putString ("ssh-rsa" :: BS.ByteString) >> put key
+            putString ("ssh-rsa" :: BS.ByteString) <> put key
         PublicKeyOther other ->
             putString other
     get = getFramed $ getString >>= \case
@@ -929,24 +818,18 @@ instance Encoding PublicKey where
         other         -> PublicKeyOther <$> pure other
 
 instance Encoding Signature where
-    len = \case
-        SignatureEd25519    sig -> lenWord32 + lenString ("ssh-ed25519" :: BS.ByteString) + len       sig
-        SignatureRSA        sig -> lenWord32 + lenString ("ssh-rsa"     :: BS.ByteString) + lenString sig -- FIXME
-        SignatureOther algo sig -> lenWord32 + lenString algo          + lenString sig -- FIXME
-    put s = putWord32 (len s - lenWord32) >> case s of
-        SignatureEd25519    sig -> putString ("ssh-ed25519" :: BS.ByteString) >> put       sig
-        SignatureRSA        sig -> putString ("ssh-rsa"     :: BS.ByteString) >> putString sig -- FIXME
-        SignatureOther algo sig -> putString algo                             >> putString sig -- FIXME
+    put s = putWord32 (len s - lenWord32) <> case s of
+        SignatureEd25519    sig -> putString ("ssh-ed25519" :: BS.ByteString) <> put       sig
+        SignatureRSA        sig -> putString ("ssh-rsa"     :: BS.ByteString) <> putString sig -- FIXME
+        SignatureOther algo sig -> putString algo                             <> putString sig -- FIXME
     get = getFramed $ getString >>= \case
         "ssh-ed25519" -> SignatureEd25519 <$> get
         "ssh-rsa"     -> SignatureRSA <$> getString --FIXME
         other         -> SignatureOther other <$> getString
 
 instance Encoding PtySettings where
-    len (PtySettings env _ _ _ _ modes) =
-        lenString env + lenWord32 + lenWord32 + lenWord32 + lenWord32 + lenString modes
     put (PtySettings env wc hc wp hp modes) =
-        putString env >> putWord32 wc >> putWord32 hc >> putWord32 wp >> putWord32 hp >> putString modes
+        putString env <> putWord32 wc <> putWord32 hc <> putWord32 wp <> putWord32 hp <> putString modes
     get =
         PtySettings <$> getString <*> getWord32 <*> getWord32 <*> getWord32 <*> getWord32 <*> getString
 
@@ -960,10 +843,10 @@ lenNameList xs = lenWord32 + fromIntegral (g xs)
         g [] = 0
         g ys = sum (BA.length <$> ys) + length ys - 1
 
-putNameList :: (BA.ByteArray name) => [name] -> Put
-putNameList xs = do
-    putWord32 $ fromIntegral $ g xs
-    mapM_ putBytes $ L.intersperse (BA.singleton 0x2c) xs
+putNameList :: (B.Builder b, BA.ByteArray name) => [name] -> b
+putNameList xs =
+    putWord32 (fromIntegral $ g xs) <>
+    mconcat (fmap putBytes (L.intersperse (BA.singleton 0x2c) xs))
     where
         g [] = 0
         g ys = sum (BA.length <$> ys) + length ys - 1
@@ -974,33 +857,28 @@ getNameList = do
     pure $ BA.convert <$> BS.split 0x2c s
 
 instance Encoding Curve25519.PublicKey where
-    len = lenString
     put = putString
     get = getString >>= \s-> case Curve25519.publicKey (s :: BA.Bytes) of
         CryptoPassed k -> pure k
         CryptoFailed _ -> fail ""
 
 instance Encoding Ed25519.PublicKey where
-    len = lenString
     put = putString
     get = getString >>= \s-> case Ed25519.publicKey (s :: BA.Bytes) of
         CryptoPassed k -> pure k
         CryptoFailed _ -> fail ""
 
 instance Encoding Ed25519.Signature where
-    len = lenString
     put = putString
     get = getString >>= \s-> case Ed25519.signature (s :: BA.Bytes) of
         CryptoPassed k -> pure k
         CryptoFailed _ -> fail ""
 
 instance Encoding RSA.PublicKey where
-    len x = lenBytes (runPut $ put x :: BS.ByteString)
-    put (RSA.PublicKey _ n e) = do
-        putInteger n
+    put (RSA.PublicKey _ n e) =
+        putInteger n <>
         putInteger e
         where
-          putInteger :: Integer -> Put
           putInteger x = putString bs
               where
                   bs      = BA.pack $ g $ f x [] :: BS.ByteString

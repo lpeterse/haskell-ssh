@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, RankNTypes #-}
 module Network.SSH.Encoding where
 
 import           Control.Applicative
@@ -7,19 +7,19 @@ import qualified Control.Monad.Fail            as Fail
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import qualified Data.Serialize.Get            as G
-import qualified Data.Serialize.Put            as P
 import           Data.Word
 import           System.Exit
 
-type Put = P.Put
+import qualified Network.SSH.Builder           as B 
+
 type Get = G.Get
 
 tryParse :: Encoding a => BS.ByteString -> Maybe a
 tryParse = runGet get
 {-# INLINEABLE tryParse #-}
 
-runPut :: Put -> BS.ByteString
-runPut = P.runPut
+runPut :: B.ByteArrayWriter -> BS.ByteString
+runPut = B.toByteArray
 {-# INLINEABLE runPut #-}
 
 runGet :: (Fail.MonadFail m) => Get a -> BS.ByteString -> m a
@@ -29,12 +29,13 @@ runGet g bs = case G.runGet g bs of
 {-# INLINEABLE runGet #-}
 
 class Encoding a where
-    len :: a -> Word32
-    put :: a -> Put
+    put :: forall b. B.Builder b => a -> b
     get :: Get a
 
+len :: Encoding a => a -> Word32
+len = fromIntegral . B.length . put
+
 instance Encoding ExitCode where
-    len = const 4
     put = \case
         ExitSuccess -> putWord32 0
         ExitFailure x -> putWord32 (fromIntegral x)
@@ -43,13 +44,10 @@ instance Encoding ExitCode where
         c -> pure (ExitFailure $ fromIntegral c)
 
 instance Encoding BS.ByteString where
-    len = lenByteString
     put = putByteString
     get = G.getBytes =<< G.remaining
 
-instance (Encoding a, Encoding b) => Encoding (Either a b) where
-    len (Left x)  = len x
-    len (Right x) = len x
+instance (Encoding a, Encoding b) => Encoding (Either a b) where -- FIXME: WHY?
     put (Left x)  = put x
     put (Right x) = put x
     get           = (Right <$> get) <|> (Left <$> get)
@@ -59,11 +57,8 @@ getFramed g = do
     w <- getWord32
     G.isolate (fromIntegral w) g
 
-lenWord8 :: Word32
-lenWord8 = 1
-
-putWord8 :: Word8 -> Put
-putWord8 = P.putWord8
+putWord8 :: B.Builder b => Word8 -> b
+putWord8 = B.word8
 
 getWord8 :: Get Word8
 getWord8 = G.getWord8
@@ -76,8 +71,8 @@ expectWord8 i = do
 lenWord32 :: Word32
 lenWord32 = 4
 
-putWord32 :: Word32 -> Put
-putWord32 = P.putWord32be
+putWord32 :: B.Builder b => Word32 -> b
+putWord32 = B.word32BE
 
 getWord32 :: Get Word32
 getWord32 = G.getWord32be
@@ -85,8 +80,8 @@ getWord32 = G.getWord32be
 lenBytes :: BA.ByteArrayAccess ba => ba -> Word32
 lenBytes = fromIntegral . BA.length
 
-putBytes :: BA.ByteArrayAccess ba => ba -> Put
-putBytes = P.putByteString . BA.convert
+putBytes :: B.Builder b => BA.ByteArrayAccess ba => ba -> b
+putBytes = B.byteArray
 
 getBytes :: BA.ByteArray ba => Word32 -> Get ba
 getBytes i = BA.convert <$> G.getByteString (fromIntegral i)
@@ -94,8 +89,8 @@ getBytes i = BA.convert <$> G.getByteString (fromIntegral i)
 lenByteString :: BS.ByteString -> Word32
 lenByteString = fromIntegral . BA.length
 
-putByteString :: BS.ByteString -> Put
-putByteString = P.putByteString
+putByteString :: B.Builder b => BS.ByteString -> b
+putByteString = B.byteString
 
 getByteString :: Word32 -> Get BS.ByteString
 getByteString = G.getByteString . fromIntegral
@@ -106,10 +101,8 @@ getRemainingByteString = G.remaining >>= G.getBytes
 lenString :: BA.ByteArrayAccess ba => ba -> Word32
 lenString ba = lenWord32 + lenBytes ba
 
-putString :: BA.ByteArrayAccess ba => ba -> Put
-putString ba = do
-    putWord32 (lenBytes ba)
-    putBytes ba
+putString :: (B.Builder b, BA.ByteArrayAccess ba) => ba -> b
+putString ba = putWord32 (lenBytes ba) <> putBytes ba
 
 getString :: BA.ByteArray ba => Get ba
 getString = do
@@ -118,7 +111,7 @@ getString = do
 lenBool :: Word32
 lenBool = 1
 
-putBool :: Bool -> Put
+putBool :: B.Builder b => Bool -> b
 putBool False = putWord8 0
 putBool True  = putWord8 1
 
@@ -140,14 +133,14 @@ isolate = G.isolate
 skip :: Int -> Get ()
 skip = G.skip
 
-putPacked :: Encoding a => a -> Put
-putPacked payload = do
-    putWord32 packetLen
-    putWord8 (fromIntegral paddingLen)
-    put payload
+putPacked :: (B.Builder b, Encoding a) => a -> b
+putPacked payload =
+    putWord32 packetLen <>
+    putWord8 (fromIntegral paddingLen) <>
+    put payload <>
     putByteString padding
   where
-    payloadLen = len payload :: Word32
+    payloadLen = let l = B.length (put payload) in fromIntegral l :: Word32
     paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8 :: Word32
     packetLen  = 1 + payloadLen + paddingLen :: Word32
     padding    = BS.replicate (fromIntegral paddingLen) 0 :: BS.ByteString
@@ -161,25 +154,25 @@ getUnpacked = do
         skip paddingLen
         pure x
 
-putAsMPInt :: (BA.ByteArrayAccess ba) => ba -> Put
+putAsMPInt :: (B.Builder b, BA.ByteArrayAccess ba) => ba -> b
 putAsMPInt ba = f 0
   where
     baLen = BA.length ba
     f i | i >= baLen =
-            pure ()
+            mempty
         | BA.index ba i == 0 =
             f (i + 1)
-        | BA.index ba i >= 128 = do
-            putWord32 $ fromIntegral (baLen - i + 1)
-            putWord8 0
-            putWord8 (BA.index ba i)
+        | BA.index ba i >= 128 =
+            putWord32 (fromIntegral $ baLen - i + 1) <>
+            putWord8 0 <>
+            putWord8 (BA.index ba i) <>
             g (i + 1)
-        | otherwise = do
-            putWord32 $ fromIntegral (baLen - i)
-            putWord8 (BA.index ba i)
+        | otherwise =
+            putWord32 (fromIntegral $ baLen - i) <>
+            putWord8 (BA.index ba i) <>
             g (i + 1)
     g i | i >= baLen =
-            pure ()
-        | otherwise = do
-            putWord8 (BA.index ba i)
+            mempty
+        | otherwise =
+            putWord8 (BA.index ba i) <>
             g (i + 1)

@@ -74,12 +74,12 @@ verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey s
         _                                        -> False
     where
         signedData :: BS.ByteString
-        signedData = runPut $ do
-            put           sessionIdentifier
-            putWord8      50
-            put           userName
-            put           serviceName
-            putString     ("publickey" :: BS.ByteString)
-            putWord8      1
-            put           algorithm
+        signedData = runPut $
+            put           sessionIdentifier <>
+            putWord8      50 <>
+            put           userName <>
+            put           serviceName <>
+            putString     ("publickey" :: BS.ByteString) <>
+            putWord8      1 <>
+            put           algorithm <>
             put           publicKey

@@ -178,7 +178,7 @@ withTransport config magent stream runWith = withFinalExceptionHandler $ do
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
 transportSendMessage env msg =
-    transportSendRawMessage env $ runPut $ put msg
+    transportSendRawMessage env $! runPut $ put msg
 
 transportSendRawMessage :: Transport -> BS.ByteString -> IO ()
 transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
@@ -549,16 +549,16 @@ kexHash ::
     Curve25519.DhSecret ->   -- dh secret
     Hash.Digest Hash.SHA256
 kexHash (Version vc) (Version vs) ic is ks qc qs k
-    = Hash.hash $ runPut $ do
-        putString vc
-        putString vs
-        putWord32 (len ic)
-        put       ic
-        putWord32 (len is)
-        put       is
-        put       ks
-        put       qc
-        put       qs
+    = Hash.hash $ runPut $
+        putString vc <>
+        putString vs <>
+        putWord32 (len ic) <>
+        put       ic <>
+        putWord32 (len is) <>
+        put       is <>
+        put       ks <>
+        put       qc <>
+        put       qs <>
         putAsMPInt k
 
 kexKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> SessionId -> KeyStreams
