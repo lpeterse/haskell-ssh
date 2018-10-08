@@ -101,6 +101,7 @@ import qualified Crypto.PubKey.RSA        as RSA
 import           Crypto.Random
 import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
+import qualified Data.ByteString.Short    as SBS
 import           Data.Foldable
 import qualified Data.List                as L
 import           Data.Typeable
@@ -268,7 +269,7 @@ data ChannelWindowAdjust
     deriving (Eq, Show)
 
 data ChannelData
-    = ChannelData ChannelId BS.ByteString
+    = ChannelData ChannelId SBS.ShortByteString
     deriving (Eq, Show)
 
 data ChannelExtendedData
@@ -669,8 +670,8 @@ instance Encoding ChannelWindowAdjust where
     get = expectWord8 93 >> ChannelWindowAdjust <$> get <*> getWord32
 
 instance Encoding ChannelData where
-    put (ChannelData cid ba) = putWord8 94 <> put cid <> putString ba
-    get = expectWord8 94 >> ChannelData <$> get <*> getString
+    put (ChannelData cid ba) = putWord8 94 <> put cid <> putShortString ba
+    get = expectWord8 94 >> ChannelData <$> get <*> (SBS.toShort <$> getString)
 
 instance Encoding ChannelExtendedData where
     put (ChannelExtendedData cid x ba) = putWord8 95 <> put cid <> putWord32 x <> putString ba

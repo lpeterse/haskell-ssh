@@ -24,6 +24,7 @@ import           Control.Monad                (join, when, forever, unless)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import           Control.Exception            (bracket, bracketOnError)
 import qualified Data.ByteString              as BS
+import qualified Data.ByteString.Short        as SBS
 import           Data.Default
 import qualified Data.Map.Strict              as M
 import           Data.Word
@@ -296,11 +297,11 @@ connectionChannelData connection (ChannelData localChannelId payload) = atomical
     let queue = case chanApplication channel of
             ChannelApplicationSession     st -> sessStdin   st
             ChannelApplicationDirectTcpIp st -> dtiStreamIn st
-    i <- Q.enqueue queue payload <|> throwSTM exceptionWindowSizeUnderrun
+    i <- Q.enqueue queue (SBS.fromShort payload) <|> throwSTM exceptionWindowSizeUnderrun
     when (i == 0) (throwSTM exceptionDataAfterEof)
     when (i /= payloadLen) (throwSTM exceptionWindowSizeUnderrun)
     where
-        payloadLen = fromIntegral $ BS.length payload
+        payloadLen = fromIntegral $ SBS.length payload
 
 connectionChannelWindowAdjust ::
     Connection identity -> ChannelWindowAdjust -> IO ()
@@ -391,7 +392,7 @@ forkDirectTcpIpHandler stream channel st handle = do
 
         waitOutput :: STM (IO Bool)
         waitOutput = do
-            bs <- Q.dequeue (dtiStreamOut st) (chanMaxPacketSizeRemote channel)
+            bs <- Q.dequeueShort (dtiStreamOut st) (chanMaxPacketSizeRemote channel)
             pure $ do
                 sendMessage stream $ ChannelData (chanIdRemote channel) bs
                 pure True
@@ -438,7 +439,7 @@ forkSessionExecHandler stream channel sessState handle = do
 
         waitStdout :: STM [Message]
         waitStdout = do
-            bs <- Q.dequeue (sessStdout sessState) (chanMaxPacketSizeRemote channel)
+            bs <- Q.dequeueShort (sessStdout sessState) (chanMaxPacketSizeRemote channel)
             pure [MsgChannelData $ ChannelData (chanIdRemote channel) bs]
 
         waitStderr :: STM [Message]

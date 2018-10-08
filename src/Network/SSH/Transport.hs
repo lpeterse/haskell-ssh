@@ -24,6 +24,7 @@ import           Data.List
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
 import           GHC.Clock
+import           Foreign.Ptr
 import qualified Crypto.Cipher.ChaCha          as ChaCha
 import qualified Crypto.Hash                   as Hash
 import qualified Crypto.MAC.Poly1305           as Poly1305
@@ -32,8 +33,10 @@ import qualified Crypto.PubKey.Ed25519         as Ed25519
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import qualified Data.List.NonEmpty            as NEL
+import           Data.Memory.PtrMethods
 
 import           Network.SSH.Algorithms
+import qualified Network.SSH.Builder           as B
 import           Network.SSH.AuthAgent
 import           Network.SSH.Constants
 import           Network.SSH.Encoding
@@ -88,7 +91,7 @@ instance Default TransportConfig where
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.Bytes])
 
 type DecryptionContext = Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
-type EncryptionContext = Word64 -> BS.ByteString -> IO BS.ByteString
+type EncryptionContext = Word64 -> B.ByteArrayBuilder -> IO BS.ByteString
 
 data KexStep
     = Init       KexInit
@@ -178,19 +181,19 @@ withTransport config magent stream runWith = withFinalExceptionHandler $ do
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
 transportSendMessage env msg =
-    transportSendRawMessage env $! runPut $ put msg
+    transportSendRawMessage env (put msg)
 
-transportSendRawMessage :: Transport -> BS.ByteString -> IO ()
+transportSendRawMessage :: Transport -> B.ByteArrayBuilder -> IO ()
 transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
     modifyMVar_ (tEncryptionCtx env) $ \encrypt -> do
-        onSend (tConfig env) plainText
+        onSend (tConfig env) (runPut plainText)
         -- NB: Increase packet counter before sending in order
         --     to avoid nonce reuse in exceptional cases!
         packets <- modifyMVar (tPacketsSent env) $ \p -> pure . (,p) $! p + 1
         cipherText <- encrypt packets plainText
         sendAll stream cipherText
         modifyMVar_ (tBytesSent env) $ \bytes -> pure $! bytes + fromIntegral (BS.length cipherText)
-        case tryParse plainText of
+        case tryParse (runPut plainText) of
             Nothing         -> pure encrypt
             Just KexNewKeys -> readMVar (tEncryptionCtxNext env)
 
@@ -265,30 +268,35 @@ plainDecryptionContext _ getCipherText = do
     when (paclen > maxPacketLength) (throwIO exceptionPacketLengthExceeded)
     BS.drop 1 <$> getCipherText (fromIntegral paclen)
 
-chaCha20Poly1305EncryptionContext :: BA.ByteArrayAccess key => key -> key -> Word64 -> BS.ByteString -> IO BS.ByteString
-chaCha20Poly1305EncryptionContext headerKey mainKey packetsSent plain = pure $ ciph3 <> mac
+chaCha20Poly1305EncryptionContext :: BA.ByteArrayAccess key => key -> key -> Word64 -> B.ByteArrayBuilder -> IO BS.ByteString
+chaCha20Poly1305EncryptionContext headerKey mainKey packetsSent plainBuilder = do
+    let headSt   = ChaCha.initialize 20 headerKey nonceBA
+    let headCiph = fst $ ChaCha.generate headSt 4 :: BA.Bytes
+    let mainSt   = ChaCha.initialize 20 mainKey nonceBA
+    let mainCiph = fst $ ChaCha.generate mainSt (64 + packetLen) :: BA.Bytes
+    BA.alloc (headerLen + packetLen + macLen) $ \ptr ->
+        BA.withByteArray headCiph $ \headCiphPtr ->
+        BA.withByteArray mainCiph $ \mainCiphPtr -> do
+            -- Header
+            B.copyToPtr (B.word32BE $ fromIntegral packetLen) ptr
+            memXor ptr ptr headCiphPtr headerLen
+            -- Payload
+            B.copyToPtr (B.word8 $ fromIntegral paddingLen) (plusPtr ptr headerLen)
+            B.copyToPtr plainBuilder (plusPtr ptr $ headerLen + 1)
+            memSet (plusPtr ptr $ headerLen + 1 + plainLen) 0 paddingLen
+            memXor (plusPtr ptr headerLen) (plusPtr ptr headerLen) (plusPtr mainCiphPtr 64) packetLen
+            let auth = Poly1305.auth (BA.MemView mainCiphPtr 32) (BA.MemView ptr $ headerLen + packetLen)
+            BA.copyByteArrayToPtr auth (plusPtr ptr $ headerLen + packetLen)
+            pure ()
     where
-    plainlen = BA.length plain :: Int
-    padlen =
-        let p = 8 - ((1 + plainlen) `mod` 8)
-        in  if p < 4 then p + 8 else p :: Int
-    paclen   = 1 + plainlen + padlen :: Int
-    padding  = BA.replicate padlen 0
-    padlenBA = BA.singleton (fromIntegral padlen)
-    paclenBA = BA.pack
-        [ fromIntegral $ paclen `shiftR` 24
-        , fromIntegral $ paclen `shiftR` 16
-        , fromIntegral $ paclen `shiftR` 8
-        , fromIntegral $ paclen `shiftR` 0
-        ]
+    headerLen  = 4
+    macLen     = 16
+    plainLen   = B.babLength plainBuilder :: Int
+    packetLen  = 1 + plainLen + paddingLen
+    paddingLen = if p < 4 then p + 8 else p
+        where
+            p = 8 - ((1 + plainLen) `mod` 8)
     nonceBA     = nonce packetsSent
-    st1         = ChaCha.initialize 20 mainKey nonceBA
-    st2         = ChaCha.initialize 20 headerKey nonceBA
-    (poly, st3) = ChaCha.generate st1 64
-    ciph1       = fst $ ChaCha.combine st2 paclenBA
-    ciph2       = fst $ ChaCha.combine st3 $ padlenBA <> plain <> padding
-    ciph3       = ciph1 <> ciph2
-    mac         = BA.convert (Poly1305.auth (BS.take 32 poly) ciph3)
 
 chaCha20Poly1305DecryptionContext :: BA.ByteArrayAccess key => key -> key -> Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
 chaCha20Poly1305DecryptionContext headerKey mainKey packetsReceived getCipher = do

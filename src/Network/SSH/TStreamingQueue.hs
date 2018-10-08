@@ -118,6 +118,31 @@ dequeue q maxBufSize = do
                     pure [ SBS.toShort $ BS.take (fromIntegral j) $ SBS.fromShort bs ]
         requested = min maxBufSize maxBoundIntWord32
 
+dequeueShort :: TStreamingQueue -> Word32 -> STM SBS.ShortByteString
+dequeueShort q maxBufSize = do
+    size <- getSize q
+    eof  <- readTVar (qEof q)
+    check $ size > 0 || eof -- Block until there's at least 1 byte available.
+    if size == 0 && eof
+        then pure mempty
+        else mconcat <$> f size requested
+    where
+        f s 0 = do
+            writeTVar (qSize q) $! s - requested
+            pure []
+        f s j = do
+            bs <- takeTMVar (qHead q) <|> readTChan (qTail q) <|> pure mempty
+            if | SBS.null bs -> do
+                    writeTVar (qSize q) 0
+                    pure []
+               | fromIntegral (SBS.length bs) <= j ->
+                    (bs:) <$> f s (j - fromIntegral (SBS.length bs))
+               | otherwise -> do
+                    writeTVar (qSize q) $! s - requested
+                    putTMVar  (qHead q) $! SBS.toShort $ BS.drop (fromIntegral j) $ SBS.fromShort bs
+                    pure [ SBS.toShort $ BS.take (fromIntegral j) $ SBS.fromShort bs ]
+        requested = min maxBufSize maxBoundIntWord32
+
 lookAhead :: TStreamingQueue -> Word32 -> STM BS.ByteString
 lookAhead q maxBufSize = do
     size <- getSize q

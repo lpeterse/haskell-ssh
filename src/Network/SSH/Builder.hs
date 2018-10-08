@@ -39,9 +39,9 @@ class Monoid a => Builder a where
     byteArray x =
         foldl (\acc i-> acc <> word8 (BA.index x i)) mempty [0.. BA.length x - 1]
     byteString :: BS.ByteString -> a
-    byteString = byteArray 
+    byteString = byteArray
     shortByteString :: SBS.ShortByteString -> a
-    shortByteString x = 
+    shortByteString x =
         foldl (\acc i-> acc <> word8 (SBS.index x i)) mempty [0.. SBS.length x - 1]
     {-# MINIMAL word8 #-}
 
@@ -99,7 +99,7 @@ instance Builder PtrWriter where
     shortByteString x = PtrWriter $ \ptr -> do
         let l = SBS.length x
         SBS.copyToPtr x 0 ptr l
-        pure (plusPtr ptr l) 
+        pure (plusPtr ptr l)
 {-# SPECIALIZE word8           :: Word8           -> PtrWriter #-}
 {-# SPECIALIZE word16BE        :: Word16          -> PtrWriter #-}
 {-# SPECIALIZE word32BE        :: Word32          -> PtrWriter #-}
@@ -108,23 +108,29 @@ instance Builder PtrWriter where
 {-# SPECIALIZE byteString      :: byteString      -> PtrWriter #-}
 {-# SPECIALIZE shortByteString :: shortByteString -> PtrWriter #-}
 
-data ByteArrayWriter = ByteArrayWriter Length PtrWriter
+data ByteArrayBuilder = ByteArrayBuilder Length PtrWriter
 
-instance Semigroup ByteArrayWriter where
-    ByteArrayWriter c0 w0 <> ByteArrayWriter c1 w1 =
-        ByteArrayWriter (c0 <> c1) (w0 <> w1)
+instance Semigroup ByteArrayBuilder where
+    ByteArrayBuilder c0 w0 <> ByteArrayBuilder c1 w1 =
+        ByteArrayBuilder (c0 <> c1) (w0 <> w1)
 
-instance Monoid ByteArrayWriter where
-    mempty = ByteArrayWriter mempty mempty
+instance Monoid ByteArrayBuilder where
+    mempty = ByteArrayBuilder mempty mempty
 
-instance Builder ByteArrayWriter where
-    word8           x = ByteArrayWriter (word8           x) (word8           x)
-    word16BE        x = ByteArrayWriter (word16BE        x) (word16BE        x)
-    word32BE        x = ByteArrayWriter (word32BE        x) (word32BE        x)
-    word64BE        x = ByteArrayWriter (word64BE        x) (word64BE        x)
-    byteArray       x = ByteArrayWriter (byteArray       x) (byteArray       x)
-    byteString      x = ByteArrayWriter (byteString      x) (byteString      x)
-    shortByteString x = ByteArrayWriter (shortByteString x) (shortByteString x)
+instance Builder ByteArrayBuilder where
+    word8           x = ByteArrayBuilder (word8           x) (word8           x)
+    word16BE        x = ByteArrayBuilder (word16BE        x) (word16BE        x)
+    word32BE        x = ByteArrayBuilder (word32BE        x) (word32BE        x)
+    word64BE        x = ByteArrayBuilder (word64BE        x) (word64BE        x)
+    byteArray       x = ByteArrayBuilder (byteArray       x) (byteArray       x)
+    byteString      x = ByteArrayBuilder (byteString      x) (byteString      x)
+    shortByteString x = ByteArrayBuilder (shortByteString x) (shortByteString x)
 
-toByteArray :: BA.ByteArray ba => ByteArrayWriter -> ba
-toByteArray (ByteArrayWriter c w) = BA.allocAndFreeze (length c) $ void . runPtrWriter w
+toByteArray :: BA.ByteArray ba => ByteArrayBuilder -> ba
+toByteArray (ByteArrayBuilder c w) = BA.allocAndFreeze (length c) $ void . runPtrWriter w
+
+copyToPtr :: ByteArrayBuilder -> Ptr Word8 -> IO ()
+copyToPtr (ByteArrayBuilder _ b) = void . runPtrWriter b
+
+babLength :: ByteArrayBuilder -> Int
+babLength (ByteArrayBuilder c _) = length c

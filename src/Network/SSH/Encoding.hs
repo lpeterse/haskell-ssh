@@ -6,6 +6,7 @@ import           Control.Monad                  ( when )
 import qualified Control.Monad.Fail            as Fail
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Short         as SBS
 import qualified Data.Serialize.Get            as G
 import           Data.Word
 import           System.Exit
@@ -18,7 +19,7 @@ tryParse :: Encoding a => BS.ByteString -> Maybe a
 tryParse = runGet get
 {-# INLINEABLE tryParse #-}
 
-runPut :: B.ByteArrayWriter -> BS.ByteString
+runPut :: B.ByteArrayBuilder -> BS.ByteString
 runPut = B.toByteArray
 {-# INLINEABLE runPut #-}
 
@@ -104,6 +105,9 @@ lenString ba = lenWord32 + lenBytes ba
 putString :: (B.Builder b, BA.ByteArrayAccess ba) => ba -> b
 putString ba = putWord32 (lenBytes ba) <> putBytes ba
 
+putShortString :: B.Builder b => SBS.ShortByteString -> b
+putShortString bs = putWord32 (fromIntegral $ SBS.length bs) <> B.shortByteString bs
+
 getString :: BA.ByteArray ba => Get ba
 getString = do
     getBytes =<< getWord32
@@ -133,14 +137,14 @@ isolate = G.isolate
 skip :: Int -> Get ()
 skip = G.skip
 
-putPacked :: (B.Builder b, Encoding a) => a -> b
+putPacked :: B.ByteArrayBuilder -> B.ByteArrayBuilder
 putPacked payload =
     putWord32 packetLen <>
     putWord8 (fromIntegral paddingLen) <>
-    put payload <>
+    payload <>
     putByteString padding
   where
-    payloadLen = let l = B.length (put payload) in fromIntegral l :: Word32
+    payloadLen = let l = B.babLength payload in fromIntegral l :: Word32
     paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8 :: Word32
     packetLen  = 1 + payloadLen + paddingLen :: Word32
     padding    = BS.replicate (fromIntegral paddingLen) 0 :: BS.ByteString

@@ -22,8 +22,7 @@ import qualified Data.ByteString               as BS
 import           System.Exit
 import qualified System.Socket                 as S
 import qualified System.Socket.Family.Inet6    as S
-import qualified System.Socket.Protocol.Default
-                                               as S
+import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream     as S
 import           Data.Default
 
@@ -89,8 +88,7 @@ serveHttp idnt req = pure $ Just $ \stream-> do
 runExec :: Server.Session identity -> BS.ByteString -> IO ExitCode
 runExec (Server.Session identity pty env stdin stdout stderr) _command = withAsync receiver $ const $ do
     forM_ [1 ..] $ \i -> do
-        void $ send stdout $!
-            (BS.pack (map (fromIntegral . fromEnum) (show (i :: Int))) `mappend` "\n" :: BS.ByteString)
+        void $ send stdout abc
         threadDelay 1000
     pure (ExitFailure 23)
     where
@@ -98,6 +96,9 @@ runExec (Server.Session identity pty env stdin stdout stderr) _command = withAsy
             bs <- receive stdin 200
             print (BS.length bs)
             threadDelay 1000000
+
+abc :: BS.ByteString
+abc = "ABC"
 
 instance DuplexStream (S.Socket f S.Stream p) where
 
