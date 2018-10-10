@@ -111,21 +111,7 @@ instance Builder PtrWriter where
         SBS.copyToPtr x 0 ptr l
         pure (plusPtr ptr l)
     zeroes n = PtrWriter $ \ptr -> do
-        case n of
-            0  -> pure ()
-            1  -> poke (castPtr ptr) (0 :: Word8)
-            2  -> poke (castPtr ptr) (0 :: Word16)
-            3  -> poke (castPtr ptr) (0 :: Word16) >> pokeByteOff (castPtr ptr) 2 (0 :: Word8)
-            4  -> poke (castPtr ptr) (0 :: Word32)
-            5  -> poke (castPtr ptr) (0 :: Word32) >> pokeByteOff (castPtr ptr) 4 (0 :: Word8)
-            6  -> poke (castPtr ptr) (0 :: Word32) >> pokeByteOff (castPtr ptr) 4 (0 :: Word16)
-            7  -> poke (castPtr ptr) (0 :: Word32) >> pokeByteOff (castPtr ptr) 4 (0 :: Word16) >> pokeByteOff (castPtr ptr) 6 (0 :: Word8)
-            8  -> poke (castPtr ptr) (0 :: Word64) 
-            9  -> poke (castPtr ptr) (0 :: Word64) >> pokeByteOff (castPtr ptr) 8 (0 :: Word8)
-            10 -> poke (castPtr ptr) (0 :: Word64) >> pokeByteOff (castPtr ptr) 8 (0 :: Word16)
-            11 -> poke (castPtr ptr) (0 :: Word64) >> pokeByteOff (castPtr ptr) 8 (0 :: Word16) >> pokeByteOff (castPtr ptr) 10 (0 :: Word8)
-            12 -> poke (castPtr ptr) (0 :: Word64) >> pokeByteOff (castPtr ptr) 8 (0 :: Word32)
-            _ -> memSet ptr 0 n
+        memSet ptr 0 n
         pure (plusPtr ptr n)
 {-# SPECIALIZE word8           :: Word8                 -> PtrWriter #-}
 {-# SPECIALIZE word16BE        :: Word16                -> PtrWriter #-}
@@ -136,30 +122,30 @@ instance Builder PtrWriter where
 {-# SPECIALIZE shortByteString :: SBS.ShortByteString   -> PtrWriter #-}
 {-# SPECIALIZE zeroes          :: Int                   -> PtrWriter #-}
 
-data ByteArrayBuilder = ByteArrayBuilder !Length !PtrWriter
+data ByteArrayBuilder = ByteArrayBuilder !Int !PtrWriter
 
 instance Semigroup ByteArrayBuilder where
     ByteArrayBuilder c0 w0 <> ByteArrayBuilder c1 w1 =
-        ByteArrayBuilder (c0 <> c1) (w0 <> w1)
+        ByteArrayBuilder (c0 + c1) (w0 <> w1)
 
 instance Monoid ByteArrayBuilder where
-    mempty = ByteArrayBuilder mempty mempty
+    mempty = ByteArrayBuilder 0 mempty
 
 instance Builder ByteArrayBuilder where
-    word8           x = ByteArrayBuilder (word8           x) (word8           x)
-    word16BE        x = ByteArrayBuilder (word16BE        x) (word16BE        x)
-    word32BE        x = ByteArrayBuilder (word32BE        x) (word32BE        x)
-    word64BE        x = ByteArrayBuilder (word64BE        x) (word64BE        x)
-    byteArray       x = ByteArrayBuilder (byteArray       x) (byteArray       x)
-    byteString      x = ByteArrayBuilder (byteString      x) (byteString      x)
-    shortByteString x = ByteArrayBuilder (shortByteString x) (shortByteString x)
-    zeroes          x = ByteArrayBuilder (zeroes          x) (zeroes          x)
+    word8           x = ByteArrayBuilder                  1  (word8           x)
+    word16BE        x = ByteArrayBuilder                  2  (word16BE        x)
+    word32BE        x = ByteArrayBuilder                  4  (word32BE        x)
+    word64BE        x = ByteArrayBuilder                  8  (word64BE        x)
+    byteArray       x = ByteArrayBuilder (BA.length       x) (byteArray       x)
+    byteString      x = ByteArrayBuilder (BS.length       x) (byteString      x)
+    shortByteString x = ByteArrayBuilder (SBS.length      x) (shortByteString x)
+    zeroes          n = ByteArrayBuilder                  n  (zeroes          n)
 
 toByteArray :: BA.ByteArray ba => ByteArrayBuilder -> ba
-toByteArray (ByteArrayBuilder c w) = BA.allocAndFreeze (length c) $ void . runPtrWriter w
+toByteArray (ByteArrayBuilder n w) = BA.allocAndFreeze n $ void . runPtrWriter w
 
 copyToPtr :: ByteArrayBuilder -> Ptr Word8 -> IO ()
 copyToPtr (ByteArrayBuilder _ b) = void . runPtrWriter b
 
 babLength :: ByteArrayBuilder -> Int
-babLength (ByteArrayBuilder c _) = length c
+babLength (ByteArrayBuilder n _) = n

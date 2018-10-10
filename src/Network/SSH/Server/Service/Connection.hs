@@ -142,7 +142,7 @@ instance Default (ConnectionConfig identity) where
         , onShellRequest                = Nothing
         , onDirectTcpIpRequest          = \_ _ -> pure Nothing
         , channelMaxCount               = 256
-        , channelMaxQueueSize           = 256 * 1024
+        , channelMaxQueueSize           = 32 * 1024
         , channelMaxPacketSize          = 32 * 1024
         }
 
@@ -414,44 +414,53 @@ forkSessionExecHandler stream channel sessState handle = do
         -- handles them and loops until the session thread has terminated and exit
         -- has been signaled or the channel/connection got closed.
         supervise :: Async.Async ExitCode -> IO ()
-        supervise workerAsync = atomically (w0 <|> w1 <|> w2 <|> w3) >>= \case
-            Left  msgs -> mapM_ (sendMessage stream) msgs
-            Right msgs -> mapM_ (sendMessage stream) msgs >> supervise workerAsync
-            where
+        supervise thread = do
+            continue <- join $ atomically $
                 -- NB: The order is critical: Another order would cause a close
                 -- or eof to be sent before all data has been flushed.
-                w0 = Right <$> waitStdout
-                w1 = Right <$> waitStderr
-                w2 = Left  <$> waitExit workerAsync
-                w3 = Right <$> waitLocalWindowAdjust
+                    waitStdout
+                <|> waitStderr
+                <|> waitExit thread
+                <|> waitLocalWindowAdjust
+            when continue $ supervise thread
 
-        waitExit :: Async.Async ExitCode -> STM [Message]
+        waitExit :: Async.Async ExitCode -> STM (IO Bool)
         waitExit thread = do
             exitMessage <- Async.waitCatchSTM thread >>= \case
                 Right c -> pure $ req "exit-status" $ runPut $ put $ ChannelRequestExitStatus c
                 Left  _ -> pure $ req "exit-signal" $ runPut $ put $ ChannelRequestExitSignal "ILL" False "" ""
             writeTVar (chanClosed channel) True
-            pure [eofMessage, exitMessage, closeMessage]
+            pure $ do
+                sendMessage stream eofMessage
+                sendMessage stream exitMessage
+                sendMessage stream closeMessage
+                pure False
             where
-                req t        = MsgChannelRequest . ChannelRequest (chanIdRemote channel) t False
-                eofMessage   = MsgChannelEof $ ChannelEof (chanIdRemote channel)
-                closeMessage = MsgChannelClose $ ChannelClose (chanIdRemote channel)
+                req t        = ChannelRequest (chanIdRemote channel) t False
+                eofMessage   = ChannelEof (chanIdRemote channel)
+                closeMessage = ChannelClose (chanIdRemote channel)
 
-        waitStdout :: STM [Message]
+        waitStdout :: STM (IO Bool)
         waitStdout = do
             bs <- Q.dequeueShort (sessStdout sessState) (chanMaxPacketSizeRemote channel)
-            pure [MsgChannelData $ ChannelData (chanIdRemote channel) bs]
+            pure $ do 
+                sendMessage stream $ ChannelData (chanIdRemote channel) bs
+                pure True
 
-        waitStderr :: STM [Message]
+        waitStderr :: STM (IO Bool)
         waitStderr = do
             bs <- Q.dequeue (sessStderr sessState) (chanMaxPacketSizeRemote channel)
-            pure [MsgChannelExtendedData $ ChannelExtendedData (chanIdRemote channel) 1 bs]
+            pure $ do 
+                sendMessage stream $ ChannelExtendedData (chanIdRemote channel) 1 bs
+                pure True
 
-        waitLocalWindowAdjust :: STM [Message]
+        waitLocalWindowAdjust :: STM (IO Bool)
         waitLocalWindowAdjust = do
             check =<< Q.askWindowSpaceAdjustRecommended (sessStdin sessState)
             increaseBy <- Q.fillWindowSpace (sessStdin sessState)
-            pure [MsgChannelWindowAdjust $ ChannelWindowAdjust (chanIdRemote channel) increaseBy]
+            pure $ do 
+                sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increaseBy
+                pure True
 
 getChannelSTM :: Connection identity -> ChannelId -> STM Channel
 getChannelSTM connection channelId = do

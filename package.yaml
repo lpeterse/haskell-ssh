@@ -54,9 +54,8 @@ executables:
     source-dirs:         app
     ghc-options:
     - -O2
-    - -threaded
+#    - -threaded
     - -rtsopts
-    - -with-rtsopts=-N
     dependencies:
     - hssh
     - socket
