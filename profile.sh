@@ -3,18 +3,12 @@
 set -m
 set -e
 
-trap 'kill $(jobs -p)' 1 2 3 6 9 15
+trap 'kill $(jobs -p)' 0 1 2 3 6 9 15
 
 stack install --executable-profiling
 
-sudo ~/.local/bin/hssh-demo +RTS -s -p -hc &
-sleep 1
-ssh fnord@localhost -vvvv ls &
-ssh fnord@localhost -vvvv ls &
-ssh fnord@localhost -vvvv ls &
+sh -c "sleep 3 && ssh fnord@localhost -vvvv ls > /dev/null"  &
+sh -c "sleep 3 && ssh fnord@localhost -vvvv ls > /dev/null"  &
+sh -c "sleep 3 && ssh fnord@localhost -vvvv ls > /dev/null"  &
 
-sleep 60
-
-sudo pkill -2 hssh-demo
-sleep 2
-kill -2 $(jobs -p) || true
+sudo timeout -s2 60 ~/.local/bin/hssh-demo +RTS -s -p -h  || true

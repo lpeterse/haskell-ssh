@@ -10,4 +10,5 @@ hp:
 	./profile.sh
 	sleep 3
 	hp2pretty hssh-demo.hp
-	chromium-browser hssh-demo.svg
+	chromium-browser hssh-demo.svg || true
+	chromium hssh-demo.svg || true

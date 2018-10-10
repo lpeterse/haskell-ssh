@@ -247,9 +247,11 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
 
 setChaCha20Poly1305Context :: Transport -> KeyStreams -> IO ()
 setChaCha20Poly1305Context env (KeyStreams keys) = do
+    polySt <- Poly1305.mutNew
+    chaSt <- ChaCha.mutNew
     void $ swapMVar (tEncryptionCtxNext env) $! case tAuthAgent env of
-        Just {} -> chaCha20Poly1305EncryptionContext headerKeySC mainKeySC
-        Nothing -> chaCha20Poly1305EncryptionContext headerKeyCS mainKeyCS
+        Just {} -> chaCha20Poly1305EncryptionContext polySt chaSt headerKeySC mainKeySC
+        Nothing -> chaCha20Poly1305EncryptionContext polySt chaSt headerKeyCS mainKeyCS
     void $ swapMVar (tDecryptionCtxNext env) $! case tAuthAgent env of
         Just {} -> chaCha20Poly1305DecryptionContext headerKeyCS mainKeyCS
         Nothing -> chaCha20Poly1305DecryptionContext headerKeySC mainKeySC
@@ -268,26 +270,43 @@ plainDecryptionContext _ getCipherText = do
     when (paclen > maxPacketLength) (throwIO exceptionPacketLengthExceeded)
     BS.drop 1 <$> getCipherText (fromIntegral paclen)
 
-chaCha20Poly1305EncryptionContext :: BA.ByteArrayAccess key => key -> key -> Word64 -> B.ByteArrayBuilder -> IO BS.ByteString
-chaCha20Poly1305EncryptionContext headerKey mainKey packetsSent plainBuilder = do
-    let headSt   = ChaCha.initialize 20 headerKey nonceBA
-    let headCiph = fst $ ChaCha.generate headSt 4 :: BA.Bytes
-    let mainSt   = ChaCha.initialize 20 mainKey nonceBA
-    let mainCiph = fst $ ChaCha.generate mainSt (64 + packetLen) :: BA.Bytes
-    BA.alloc (headerLen + packetLen + macLen) $ \ptr ->
-        BA.withByteArray headCiph $ \headCiphPtr ->
-        BA.withByteArray mainCiph $ \mainCiphPtr -> do
-            -- Header
-            B.copyToPtr (B.word32BE $ fromIntegral packetLen) ptr
-            memXor ptr ptr headCiphPtr headerLen
-            -- Payload
-            B.copyToPtr (B.word8 $ fromIntegral paddingLen) (plusPtr ptr headerLen)
-            B.copyToPtr plainBuilder (plusPtr ptr $ headerLen + 1)
-            memSet (plusPtr ptr $ headerLen + 1 + plainLen) 0 paddingLen
-            memXor (plusPtr ptr headerLen) (plusPtr ptr headerLen) (plusPtr mainCiphPtr 64) packetLen
-            let auth = Poly1305.auth (BA.MemView mainCiphPtr 32) (BA.MemView ptr $ headerLen + packetLen)
-            BA.copyByteArrayToPtr auth (plusPtr ptr $ headerLen + packetLen)
-            pure ()
+chaCha20Poly1305EncryptionContext :: BA.ByteArrayAccess key => Poly1305.MutableState -> ChaCha.MutableState -> key -> key -> Word64 -> B.ByteArrayBuilder -> IO BS.ByteString
+chaCha20Poly1305EncryptionContext polySt chaSt headerKey mainKey packetsSent plainBuilder =
+    BA.alloc (headerLen + packetLen + macLen) $ \headerPtr -> do
+        -- Header
+        ChaCha.mutInitialize chaSt 20 headerKey nonceBA
+        B.copyToPtr (B.word32BE $ fromIntegral packetLen) headerPtr
+        ChaCha.mutCombineUnsafe chaSt headerPtr headerPtr headerLen
+        -- Packet
+        let packetPtr = plusPtr headerPtr headerLen
+        let macPtr    = plusPtr packetPtr packetLen
+        ChaCha.mutInitialize chaSt 20 mainKey nonceBA
+        poly64 <- BA.alloc 64 $ (\polyPtr -> ChaCha.mutGenerateUnsafe chaSt polyPtr 64)
+        let packetBuilder = B.word8 (fromIntegral paddingLen) <> plainBuilder <> B.zeroes paddingLen
+        B.copyToPtr packetBuilder packetPtr
+        ChaCha.mutCombineUnsafe chaSt packetPtr packetPtr packetLen
+        -- Mac
+        Poly1305.mutAuthUnsafe polySt (BA.takeView (poly64 :: BA.Bytes) 32) (BA.MemView headerPtr $ headerLen + packetLen) macPtr
+
+{-  BA.alloc (headerLen + packetLen + macLen) $ \ptr -> do
+        let headSt   = ChaCha.initialize 20 headerKey nonceBA
+        let headCiph = fst $ ChaCha.generate headSt 4 :: BA.Bytes
+        let mainSt   = ChaCha.initialize 20 mainKey nonceBA
+        let mainCiph = fst $ ChaCha.generate mainSt (64 + packetLen) :: BA.Bytes
+            BA.withByteArray headCiph $ \headCiphPtr ->
+            BA.withByteArray mainCiph $ \mainCiphPtr -> do
+                -- Header
+                B.copyToPtr (B.word32BE $ fromIntegral packetLen) ptr
+                memXor ptr ptr headCiphPtr headerLen
+                -- Payload
+                B.copyToPtr (B.word8 $ fromIntegral paddingLen) (plusPtr ptr headerLen)
+                B.copyToPtr plainBuilder (plusPtr ptr $ headerLen + 1)
+                memSet (plusPtr ptr $ headerLen + 1 + plainLen) 0 paddingLen
+                memXor (plusPtr ptr headerLen) (plusPtr ptr headerLen) (plusPtr mainCiphPtr 64) packetLen
+                let auth = Poly1305.auth (BA.MemView mainCiphPtr 32) (BA.MemView ptr $ headerLen + packetLen)
+                BA.copyByteArrayToPtr auth (plusPtr ptr $ headerLen + packetLen)
+                pure ()
+-}
     where
     headerLen  = 4
     macLen     = 16
