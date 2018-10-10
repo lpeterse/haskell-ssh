@@ -3,19 +3,20 @@
 {-# LANGUAGE RankNTypes                 #-}
 module Network.SSH.Builder where
 
-import           Control.Monad (void)
+import           Control.Monad                  ( void )
 import           Data.Bits
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Short as SBS
-import qualified Data.ByteString.Short.Internal as SBS
-import qualified Data.ByteArray  as BA
+import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Short         as SBS
+import qualified Data.ByteString.Short.Internal
+                                               as SBS
+import qualified Data.ByteArray                as BA
 import           Foreign.Ptr
 import           Foreign.Storable
 import           Data.Memory.PtrMethods
 import           Data.Word
 import           Data.Semigroup
-import           Data.List.NonEmpty ( NonEmpty ((:|)) )
-import           Prelude hiding (length)
+import           Data.List.NonEmpty             ( NonEmpty((:|)) )
+import           Prelude                 hiding ( length )
 
 class Monoid a => Builder a where
     word8      :: Word8 -> a
@@ -100,6 +101,16 @@ instance Builder PtrWriter where
         pokeByteOff ptr 2 (fromIntegral $ x `unsafeShiftR`  8 :: Word8)
         pokeByteOff ptr 3 (fromIntegral   x                   :: Word8)
         pure (plusPtr ptr 4)
+    word64BE x = PtrWriter $ \ptr -> do
+        pokeByteOff ptr 0 (fromIntegral $ x `unsafeShiftR` 56 :: Word8)
+        pokeByteOff ptr 1 (fromIntegral $ x `unsafeShiftR` 48 :: Word8)
+        pokeByteOff ptr 2 (fromIntegral $ x `unsafeShiftR` 40 :: Word8)
+        pokeByteOff ptr 3 (fromIntegral $ x `unsafeShiftR` 32 :: Word8)
+        pokeByteOff ptr 4 (fromIntegral $ x `unsafeShiftR` 24 :: Word8)
+        pokeByteOff ptr 5 (fromIntegral $ x `unsafeShiftR` 16 :: Word8)
+        pokeByteOff ptr 6 (fromIntegral $ x `unsafeShiftR`  8 :: Word8)
+        pokeByteOff ptr 7 (fromIntegral   x                   :: Word8)
+        pure (plusPtr ptr 8)
     byteArray x = PtrWriter $ \ptr -> do
         BA.copyByteArrayToPtr x ptr
         pure (plusPtr ptr $ BA.length x)
@@ -122,11 +133,14 @@ instance Builder PtrWriter where
 {-# SPECIALIZE shortByteString :: SBS.ShortByteString   -> PtrWriter #-}
 {-# SPECIALIZE zeroes          :: Int                   -> PtrWriter #-}
 
-data ByteArrayBuilder = ByteArrayBuilder !Int !PtrWriter
+data ByteArrayBuilder = ByteArrayBuilder Int PtrWriter
 
 instance Semigroup ByteArrayBuilder where
     ByteArrayBuilder c0 w0 <> ByteArrayBuilder c1 w1 =
-        ByteArrayBuilder (c0 + c1) (w0 <> w1)
+        c `seq` w `seq` ByteArrayBuilder c w
+        where
+            c = c0 + c1
+            w = w0 <> w1
 
 instance Monoid ByteArrayBuilder where
     mempty = ByteArrayBuilder 0 mempty
@@ -142,7 +156,8 @@ instance Builder ByteArrayBuilder where
     zeroes          n = ByteArrayBuilder                  n  (zeroes          n)
 
 toByteArray :: BA.ByteArray ba => ByteArrayBuilder -> ba
-toByteArray (ByteArrayBuilder n w) = BA.allocAndFreeze n $ void . runPtrWriter w
+toByteArray (ByteArrayBuilder n w) =
+    BA.allocAndFreeze n $ void . runPtrWriter w
 
 copyToPtr :: ByteArrayBuilder -> Ptr Word8 -> IO ()
 copyToPtr (ByteArrayBuilder _ b) = void . runPtrWriter b

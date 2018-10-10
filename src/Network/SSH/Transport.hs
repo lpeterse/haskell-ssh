@@ -34,7 +34,6 @@ import qualified Crypto.Cipher.ChaCha          as ChaCha
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import qualified Data.List.NonEmpty            as NEL
-import           Data.Memory.PtrMethods
 
 import           Network.SSH.Algorithms
 import qualified Network.SSH.Builder           as B
@@ -253,9 +252,9 @@ setChaCha20Poly1305Context env (KeyStreams keys) = do
     modifyMVar_ (tEncryptionCtxNext env) $ const $ case tAuthAgent env of
         Just {} -> newChaCha20Poly1305EncryptionContext headerKeySC mainKeySC
         Nothing -> newChaCha20Poly1305EncryptionContext headerKeyCS mainKeyCS
-    void $ swapMVar (tDecryptionCtxNext env) $! case tAuthAgent env of
-        Just {} -> chaCha20Poly1305DecryptionContext headerKeyCS mainKeyCS
-        Nothing -> chaCha20Poly1305DecryptionContext headerKeySC mainKeySC
+    modifyMVar_ (tDecryptionCtxNext env) $ const $ case tAuthAgent env of
+        Just {} -> pure $ chaCha20Poly1305DecryptionContext headerKeyCS mainKeyCS
+        Nothing -> pure $ chaCha20Poly1305DecryptionContext headerKeySC mainKeySC
     where
     -- Derive the required encryption/decryption keys.
     -- The integrity keys etc. are not needed with chacha20.
@@ -283,21 +282,26 @@ newChaCha20Poly1305EncryptionContext !headerKey !mainKey = do
             paddingLen = if p < 4 then p + 8 else p
                 where
                     p = 8 - ((1 + plainLen) `mod` 8)
-            nonceBA   = nonce packetsSent
         BA.alloc (headerLen + packetLen + macLen) $ \headerPtr -> do
+            let macPtr        = plusPtr packetPtr packetLen
+                noncePtr      = macPtr
+                nonceLen      = 8
+                nonceView     = BA.MemView noncePtr nonceLen
+                packetPtr     = plusPtr headerPtr headerLen
+                packetBuilder = B.word8 (fromIntegral paddingLen) <> plainBuilder <> B.zeroes paddingLen
+            -- Use the MAC area to store the nonce temporarily and
+            -- safe an allocation (made up 8% of all allocations in benchmark!)
+            B.copyToPtr (B.word64BE packetsSent) noncePtr
             -- Header
-            ChaChaM.initialize chaSt 20 headerKey nonceBA
+            ChaChaM.initialize chaSt 20 headerKey nonceView
             B.copyToPtr (B.word32BE $ fromIntegral packetLen) headerPtr
             ChaChaM.combineUnsafe chaSt headerPtr headerPtr headerLen
             -- Packet
-            let packetPtr = plusPtr headerPtr headerLen
-                packetBuilder = B.word8 (fromIntegral paddingLen) <> plainBuilder <> B.zeroes paddingLen
-            ChaChaM.initialize chaSt 20 mainKey nonceBA
+            ChaChaM.initialize chaSt 20 mainKey nonceView
             poly64 <- BA.alloc 64 $ (\polyPtr -> ChaChaM.generateUnsafe chaSt polyPtr 64)
             B.copyToPtr packetBuilder packetPtr
             ChaChaM.combineUnsafe chaSt packetPtr packetPtr packetLen
-            -- Mac
-            let macPtr = plusPtr packetPtr packetLen
+            -- MAC
             Poly1305M.authUnsafe polySt (BA.takeView (poly64 :: BA.Bytes) 32) (BA.MemView headerPtr $ headerLen + packetLen) macPtr
 
 -- Old version using immutable/pure interface from cryptonite:
@@ -583,9 +587,9 @@ kexHash (Version vc) (Version vs) ic is ks qc qs k
     = Hash.hash $ runPut $
         putString vc <>
         putString vs <>
-        putWord32 (len ic) <>
+        B.word32BE (len ic) <>
         put       ic <>
-        putWord32 (len is) <>
+        B.word32BE (len is) <>
         put       is <>
         put       ks <>
         put       qc <>

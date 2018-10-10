@@ -472,7 +472,7 @@ instance Encoding Disconnected where
         Disconnected <$> get <*> getString <*> getString
 
 instance Encoding DisconnectReason where
-    put r = putWord32 $ case r of
+    put r = B.word32BE $ case r of
         DisconnectHostNotAllowedToConnect     -> 1
         DisconnectProtocolError               -> 2
         DisconnectKeyExchangeFailed           -> 3
@@ -512,7 +512,7 @@ instance Encoding Ignore where
     get   = expectWord8 2 >> pure Ignore
 
 instance Encoding Unimplemented where
-    put (Unimplemented w) = putWord8 3 <> putWord32 w
+    put (Unimplemented w) = putWord8 3 <> B.word32BE w
     get = expectWord8 3 >> Unimplemented <$> getWord32
 
 instance Encoding Debug where
@@ -542,7 +542,7 @@ instance Encoding KexInit where
         putNameList (kexLanguagesClientToServer             kex) <>
         putNameList (kexLanguagesServerToClient             kex) <>
         putBool     (kexFirstPacketFollows                  kex) <>
-        putWord32 0 -- reserved for future extensions
+        B.word32BE 0 -- reserved for future extensions
     get = do
         expectWord8 20
         kex <- KexInit <$> get
@@ -597,15 +597,15 @@ instance Encoding ChannelOpen where
             ChannelOpenDirectTcpIp {} -> put (ChannelType "direct-tcpip")
             ChannelOpenOther t -> put t ) <>
         put rc <>
-        putWord32 rw <>
-        putWord32 rp <>
+        B.word32BE rw <>
+        B.word32BE rp <>
         case ct of
             ChannelOpenSession {} -> mempty
             ChannelOpenDirectTcpIp da dp sa sp ->
                 putString da <>
-                putWord32 dp <>
+                B.word32BE dp <>
                 putString sa <>
-                putWord32 sp
+                B.word32BE sp
             ChannelOpenOther {} -> mempty
     get = do
         expectWord8 90
@@ -630,8 +630,8 @@ instance Encoding ChannelOpenConfirmation where
         putWord8 91 <>
         put a <>
         put b <>
-        putWord32 ws <>
-        putWord32 ps
+        B.word32BE ws <>
+        B.word32BE ps
     get = do
         expectWord8 91
         ChannelOpenConfirmation
@@ -652,7 +652,7 @@ instance Encoding ChannelOpenFailure where
         ChannelOpenFailure <$> get <*> get <*> getString <*> getString
 
 instance Encoding ChannelOpenFailureReason where
-    put r = putWord32 $ case r of
+    put r = B.word32BE $ case r of
         ChannelOpenAdministrativelyProhibited -> 1
         ChannelOpenConnectFailed              -> 2
         ChannelOpenUnknownChannelType         -> 3
@@ -666,7 +666,7 @@ instance Encoding ChannelOpenFailureReason where
         w32 -> ChannelOpenOtherFailure w32
 
 instance Encoding ChannelWindowAdjust where
-    put (ChannelWindowAdjust cid ws) = putWord8 93 <> put cid <> putWord32 ws
+    put (ChannelWindowAdjust cid ws) = putWord8 93 <> put cid <> B.word32BE ws
     get = expectWord8 93 >> ChannelWindowAdjust <$> get <*> getWord32
 
 instance Encoding ChannelData where
@@ -674,7 +674,7 @@ instance Encoding ChannelData where
     get = expectWord8 94 >> ChannelData <$> get <*> (SBS.toShort <$> getString)
 
 instance Encoding ChannelExtendedData where
-    put (ChannelExtendedData cid x ba) = putWord8 95 <> put cid <> putWord32 x <> putString ba
+    put (ChannelExtendedData cid x ba) = putWord8 95 <> put cid <> B.word32BE x <> putString ba
     get = expectWord8 95 >> ChannelExtendedData <$> get <*> getWord32 <*> getString
 
 instance Encoding ChannelEof where
@@ -698,7 +698,7 @@ instance Encoding ChannelRequestPty where
     get = ChannelRequestPty <$> get
 
 instance Encoding ChannelRequestWindowChange where
-    put (ChannelRequestWindowChange x0 x1 x2 x3) = putWord32 x0 <> putWord32 x1 <> putWord32 x2 <> putWord32 x3
+    put (ChannelRequestWindowChange x0 x1 x2 x3) = B.word32BE x0 <> B.word32BE x1 <> B.word32BE x2 <> B.word32BE x3
     get = ChannelRequestWindowChange <$> getWord32 <*> getWord32 <*> getWord32 <*> getWord32
 
 instance Encoding ChannelRequestShell where
@@ -738,7 +738,7 @@ instance Encoding Algorithm where
     get = Algorithm <$> getString
 
 instance Encoding ChannelId where
-    put (ChannelId x) = putWord32 x
+    put (ChannelId x) = B.word32BE x
     get = ChannelId <$> getWord32
 
 instance Encoding ChannelType where
@@ -806,7 +806,7 @@ instance Encoding AuthMethod where
         other -> pure (AuthOther other)
 
 instance Encoding PublicKey where
-    put k = putWord32 (len k - lenWord32) <> case k of
+    put k = B.word32BE (len k - lenWord32) <> case k of
         PublicKeyEd25519 key ->
             putString ("ssh-ed25519" :: BS.ByteString) <> put key
         PublicKeyRSA key ->
@@ -819,7 +819,7 @@ instance Encoding PublicKey where
         other         -> PublicKeyOther <$> pure other
 
 instance Encoding Signature where
-    put s = putWord32 (len s - lenWord32) <> case s of
+    put s = B.word32BE (len s - lenWord32) <> case s of
         SignatureEd25519    sig -> putString ("ssh-ed25519" :: BS.ByteString) <> put       sig
         SignatureRSA        sig -> putString ("ssh-rsa"     :: BS.ByteString) <> putString sig -- FIXME
         SignatureOther algo sig -> putString algo                             <> putString sig -- FIXME
@@ -830,7 +830,7 @@ instance Encoding Signature where
 
 instance Encoding PtySettings where
     put (PtySettings env wc hc wp hp modes) =
-        putString env <> putWord32 wc <> putWord32 hc <> putWord32 wp <> putWord32 hp <> putString modes
+        putString env <> B.word32BE wc <> B.word32BE hc <> B.word32BE wp <> B.word32BE hp <> putString modes
     get =
         PtySettings <$> getString <*> getWord32 <*> getWord32 <*> getWord32 <*> getWord32 <*> getString
 
@@ -838,15 +838,9 @@ instance Encoding PtySettings where
 -- Util functions
 -------------------------------------------------------------------------------
 
-lenNameList :: (BA.ByteArray name) => [name] -> Word32
-lenNameList xs = lenWord32 + fromIntegral (g xs)
-    where
-        g [] = 0
-        g ys = sum (BA.length <$> ys) + length ys - 1
-
 putNameList :: (B.Builder b, BA.ByteArray name) => [name] -> b
 putNameList xs =
-    putWord32 (fromIntegral $ g xs) <>
+    B.word32BE (fromIntegral $ g xs) <>
     mconcat (fmap putBytes (L.intersperse (BA.singleton 0x2c) xs))
     where
         g [] = 0

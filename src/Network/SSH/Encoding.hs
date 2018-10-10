@@ -38,8 +38,8 @@ len = fromIntegral . B.length . put
 
 instance Encoding ExitCode where
     put = \case
-        ExitSuccess -> putWord32 0
-        ExitFailure x -> putWord32 (fromIntegral x)
+        ExitSuccess -> B.word32BE 0
+        ExitFailure x -> B.word32BE (fromIntegral x)
     get = getWord32 >>= \case
         0 -> pure ExitSuccess
         c -> pure (ExitFailure $ fromIntegral c)
@@ -72,9 +72,6 @@ expectWord8 i = do
 lenWord32 :: Word32
 lenWord32 = 4
 
-putWord32 :: B.Builder b => Word32 -> b
-putWord32 = B.word32BE
-
 getWord32 :: Get Word32
 getWord32 = G.getWord32be
 
@@ -103,10 +100,10 @@ lenString :: BA.ByteArrayAccess ba => ba -> Word32
 lenString ba = lenWord32 + lenBytes ba
 
 putString :: (B.Builder b, BA.ByteArrayAccess ba) => ba -> b
-putString ba = putWord32 (lenBytes ba) <> putBytes ba
+putString ba = B.word32BE (lenBytes ba) <> putBytes ba
 
 putShortString :: B.Builder b => SBS.ShortByteString -> b
-putShortString bs = putWord32 (fromIntegral $ SBS.length bs) <> B.shortByteString bs
+putShortString bs = B.word32BE (fromIntegral $ SBS.length bs) <> B.shortByteString bs
 
 getString :: BA.ByteArray ba => Get ba
 getString = do
@@ -139,7 +136,7 @@ skip = G.skip
 
 putPacked :: B.ByteArrayBuilder -> B.ByteArrayBuilder
 putPacked payload =
-    putWord32 packetLen <>
+    B.word32BE packetLen <>
     putWord8 (fromIntegral paddingLen) <>
     payload <>
     putByteString padding
@@ -167,12 +164,12 @@ putAsMPInt ba = f 0
         | BA.index ba i == 0 =
             f (i + 1)
         | BA.index ba i >= 128 =
-            putWord32 (fromIntegral $ baLen - i + 1) <>
+            B.word32BE (fromIntegral $ baLen - i + 1) <>
             putWord8 0 <>
             putWord8 (BA.index ba i) <>
             g (i + 1)
         | otherwise =
-            putWord32 (fromIntegral $ baLen - i) <>
+            B.word32BE (fromIntegral $ baLen - i) <>
             putWord8 (BA.index ba i) <>
             g (i + 1)
     g i | i >= baLen =
