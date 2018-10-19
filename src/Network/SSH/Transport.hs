@@ -12,6 +12,7 @@ module Network.SSH.Transport
 where
 
 import           Control.Applicative
+import           Control.Concurrent             ( threadDelay )
 import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM.TVar
@@ -164,9 +165,9 @@ withTransport config magent stream runWith = withFinalExceptionHandler $ do
         withRespondingExceptionHandler env run = (Right <$> run) `catch` \e-> case e of
             Disconnect _ DisconnectConnectionLost _ -> pure (Left e)
             Disconnect Local r (DisconnectMessage m) ->
-                withAsync (transportSendMessage env $ Disconnected r m mempty) $ \thread -> do
-                    t <- registerDelay (1000*1000)
-                    atomically $ void (waitCatchSTM thread) <|> (readTVar t >>= check)
+                withAsync (threadDelay (1000*1000)) $ \thread1 ->
+                withAsync (transportSendMessage env $ Disconnected r m mempty) $ \thread2 -> do
+                    atomically $ void (waitCatchSTM thread1) <|> void (waitCatchSTM thread2)
                     pure (Left e)
             _ -> pure (Left e)
 

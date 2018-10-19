@@ -60,8 +60,8 @@ newChaCha20Poly1305EncryptionContext ::
     (OutputStream stream, BA.ByteArrayAccess key) =>
     stream -> key -> key -> IO EncryptionContext
 newChaCha20Poly1305EncryptionContext _ headerKey mainKey = do
-    polySt <- Poly1305M.new
-    chaSt  <- ChaChaM.new
+    chaChaState <- ChaChaM.new
+    polyState <- Poly1305M.new
     poly64 <- BA.alloc (2 * polyKeyLen) (const $ pure ()) :: IO BA.Bytes
     pure $ \packetsSent plainBuilder -> do
         let plainLen   = B.babLength plainBuilder :: Int
@@ -77,17 +77,17 @@ newChaCha20Poly1305EncryptionContext _ headerKey mainKey = do
             -- safe an allocation (made up 8% of all allocations in benchmark)
             B.copyToPtr (B.word64BE packetsSent) noncePtr
             -- Header
-            ChaChaM.initialize chaSt chaChaRounds headerKey nonceView
+            ChaChaM.initialize chaChaState chaChaRounds headerKey nonceView
             B.copyToPtr (B.word32BE $ fromIntegral packetLen) headerPtr
-            ChaChaM.combineUnsafe chaSt headerPtr headerPtr headerLen
+            ChaChaM.combineUnsafe chaChaState headerPtr headerPtr headerLen
             -- Packet
             B.copyToPtr packetBuilder packetPtr
             BA.withByteArray poly64 $ \poly64Ptr -> do
-                ChaChaM.initialize chaSt chaChaRounds mainKey nonceView
-                ChaChaM.generateUnsafe chaSt poly64Ptr (2 * polyKeyLen)
-                ChaChaM.combineUnsafe chaSt packetPtr packetPtr packetLen
+                ChaChaM.initialize chaChaState chaChaRounds mainKey nonceView
+                ChaChaM.generateUnsafe chaChaState poly64Ptr (2 * polyKeyLen)
+                ChaChaM.combineUnsafe chaChaState packetPtr packetPtr packetLen
                 -- MAC
-                Poly1305M.authUnsafe polySt
+                Poly1305M.authUnsafe polyState
                     (BA.MemView poly64Ptr polyKeyLen)
                     (BA.MemView headerPtr $ headerLen + packetLen) macPtr
 
@@ -102,8 +102,8 @@ newChaCha20Poly1305DecryptionContext stream headerKey mainKey = do
     -- Both states get scrubbed on connection loss or after rekeying.
     -- The states do contain secret data while they are alive, but
     -- the ephemeral keys are stored in memory anyway.
-    chaSt  <- ChaChaM.new
-    polySt <- Poly1305M.new
+    chaChaState <- ChaChaM.new
+    polyState <- Poly1305M.new
     -- A piece of memory is allocated once for the lifetime of this
     -- decryption context. It does not contain confidential data and
     -- does not need to be scrubbed.
@@ -123,14 +123,14 @@ newChaCha20Poly1305DecryptionContext stream headerKey mainKey = do
         -- Receive and decrypt the header (packet length).
         -- The encrypted packet header is also needed for integrity check (below).
         receiveAllUnsafe stream (BA.MemView headerCryptPtr headerLen)
-        ChaChaM.initialize chaSt chaChaRounds headerKey (BA.MemView noncePtr nonceLen)
-        ChaChaM.combineUnsafe chaSt headerPlainPtr headerCryptPtr headerLen
+        ChaChaM.initialize chaChaState chaChaRounds headerKey (BA.MemView noncePtr nonceLen)
+        ChaChaM.combineUnsafe chaChaState headerPlainPtr headerCryptPtr headerLen
         packetLen <- peekPacketLen headerPlainPtr
         -- 64 (2*polyKeyLen) bytes shall be taken from the main key stream of which
         -- the first 32 are used for Poly1305. The other 32 bytes are
         -- not needed, but generated in order to get the correct ChaCha state.
-        ChaChaM.initialize chaSt chaChaRounds mainKey nonceView
-        ChaChaM.generateUnsafe chaSt polyKeyPtr (2 * polyKeyLen)
+        ChaChaM.initialize chaChaState chaChaRounds mainKey nonceView
+        ChaChaM.generateUnsafe chaChaState polyKeyPtr (2 * polyKeyLen)
         -- Receive and authenticate the remaining packet.
         (bsLen, bs) <- BA.allocRet (headerLen + packetLen + macLen) $ \bsPtr -> do
             let packetPtr       = bsPtr     `plusPtr` headerLen
@@ -140,7 +140,7 @@ newChaCha20Poly1305DecryptionContext stream headerKey mainKey = do
             -- Receive the announced packet len + mac.
             receiveAllUnsafe stream
                 (BA.MemView packetPtr (packetLen + macLen))
-            Poly1305M.authUnsafe polySt
+            Poly1305M.authUnsafe polyState
                 (BA.MemView  polyKeyPtr polyKeyLen)         -- authentication key
                 (BA.MemView  bsPtr (headerLen + packetLen)) -- authenticated data
                 macTrustedPtr                               -- mac destination
@@ -149,7 +149,7 @@ newChaCha20Poly1305DecryptionContext stream headerKey mainKey = do
                 False -> throwIO exceptionMacError
                 True  -> do
                     -- decrypt message in-place
-                    ChaChaM.combineUnsafe chaSt packetPtr packetPtr packetLen
+                    ChaChaM.combineUnsafe chaChaState packetPtr packetPtr packetLen
                     -- the first byte of the packet announces the number of padding bytes
                     paddingLen <- fromIntegral <$> (peekByteOff packetPtr 0 :: IO Word8)
                     -- RFC: the padding must be >=4 && <= 255
@@ -176,7 +176,7 @@ chaChaRounds  = 20
 minPaddingLen = 4
 
 paddingLenFor :: Int -> Int
-paddingLenFor plainLen = 
+paddingLenFor plainLen =
     if p < minPaddingLen then p + minBlockSize else p
     where
         minBlockSize = 8
