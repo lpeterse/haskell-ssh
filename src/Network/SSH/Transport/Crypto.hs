@@ -38,7 +38,15 @@ type DecryptionContext = Word64 -> IO BS.ByteString
 type EncryptionContext = Word64 -> B.ByteArrayBuilder -> IO BS.ByteString
 
 plainEncryptionContext :: OutputStream stream => stream -> EncryptionContext
-plainEncryptionContext _ _ plainText = pure $ runPut (putPacked plainText)
+plainEncryptionContext _ _ payload = pure $ runPut $
+    B.word32BE (fromIntegral packetLen) <>
+    putWord8 (fromIntegral paddingLen) <>
+    payload <>
+    B.zeroes (fromIntegral paddingLen)
+    where
+        payloadLen = B.babLength payload
+        paddingLen = paddingLenFor payloadLen
+        packetLen  = 1 + payloadLen + paddingLen
 
 plainDecryptionContext :: InputStream stream => stream -> DecryptionContext
 plainDecryptionContext stream = const $ allocaBytes headerLen $ \headerPtr -> do

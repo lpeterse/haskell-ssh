@@ -185,14 +185,14 @@ transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
         cipherText <- encrypt packets plainText
         sendAll stream cipherText
         modifyMVar_ (tBytesSent env) $ \bytes -> pure $! bytes + fromIntegral (BS.length cipherText)
-        case tryParse (runPut plainText) of
+        case runGet (runPut plainText) of
             Nothing         -> pure encrypt
             Just KexNewKeys -> readMVar (tEncryptionCtxNext env)
 
 transportReceiveMessage :: Encoding msg => Transport -> IO msg
 transportReceiveMessage env = do
     raw <- transportReceiveRawMessage env
-    maybe (throwIO $ exceptionUnexpectedMessage raw) pure (tryParse raw)
+    maybe (throwIO $ exceptionUnexpectedMessage raw) pure (runGet raw)
 
 transportReceiveRawMessage :: Transport -> IO BS.ByteString
 transportReceiveRawMessage env =
@@ -207,24 +207,14 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
         modifyMVar_ (tPacketsReceived env) $ \pacs  -> pure $! pacs + 1
         case interpreter plainText of
             Just i  -> i >> pure (decrypt, Nothing)
-            Nothing -> case tryParse plainText of
+            Nothing -> case runGet plainText of
                 Just KexNewKeys  -> do
                     (,Nothing) <$> readMVar (tDecryptionCtxNext env)
                 Nothing -> pure (decrypt, Just plainText)
     where
-        receiveAll :: BS.ByteString -> Int -> IO BS.ByteString
-        receiveAll acc requested
-            | BS.length acc >= requested = pure acc
-            | otherwise = do
-                bs <- receive stream requested
-                when (BS.null bs) (throwIO exceptionConnectionLost)
-                modifyMVar_ (tBytesReceived env) $ \bytes ->
-                    pure $! bytes + fromIntegral (BS.length bs)
-                receiveAll (acc <> bs) (requested - BS.length bs)
-
         interpreter plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5 <|> f i6
             where
-                f i = i <$> tryParse plainText
+                f i = i <$> runGet plainText
                 i0 (Disconnected r m _) = throwIO $ Disconnect Remote r (DisconnectMessage m)
                 i1 Debug             {} = pure ()
                 i2 Ignore            {} = pure ()
@@ -478,6 +468,8 @@ kexHash (Version vc) (Version vs) ic is ks qc qs k
         put       qc <>
         put       qs <>
         putAsMPInt k
+    where
+        len = fromIntegral . B.length . put
 
 kexKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> SessionId -> KeyStreams
 kexKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> k1 i : f [k1 i]
@@ -516,7 +508,7 @@ receiveVersion stream = do
     when (BS.null bs) e0
     case BS.elemIndex 0x0a bs of
         Nothing -> e1
-        Just i  -> maybe e1 pure . tryParse =<< receive stream (i+1)
+        Just i  -> maybe e1 pure . runGet =<< receive stream (i+1)
     where
         e0 = throwIO exceptionConnectionLost
         e1 = throwIO exceptionProtocolVersionNotSupported

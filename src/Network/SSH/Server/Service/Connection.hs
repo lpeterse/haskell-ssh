@@ -358,7 +358,7 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
             _ -> pure $ failure channel
         ChannelApplicationDirectTcpIp {} -> pure $ failure channel
     where
-        interpret f     = maybe (throwSTM exceptionInvalidChannelRequest) f (tryParse dat)
+        interpret f     = maybe (throwSTM exceptionInvalidChannelRequest) f (runGet dat)
         success channel
             | wantReply = sendMessage stream $ ChannelSuccess (chanIdRemote channel)
             | otherwise = pure ()

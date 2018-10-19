@@ -714,8 +714,8 @@ instance Encoding ChannelRequestSignal where
     get = ChannelRequestSignal <$> getString
 
 instance Encoding ChannelRequestExitStatus where
-    put (ChannelRequestExitStatus code) = put code
-    get = ChannelRequestExitStatus <$> get
+    put (ChannelRequestExitStatus code) = putExitCode code
+    get = ChannelRequestExitStatus <$> getExitCode
 
 instance Encoding ChannelRequestExitSignal where
     put (ChannelRequestExitSignal signame core msg lang) = putString signame <> putBool core <> putString msg <> putString lang
@@ -806,23 +806,27 @@ instance Encoding AuthMethod where
         other -> pure (AuthOther other)
 
 instance Encoding PublicKey where
-    put k = B.word32BE (len k - lenWord32) <> case k of
+    put k = B.word32BE (len k - 4) <> case k of
         PublicKeyEd25519 key ->
             putString ("ssh-ed25519" :: BS.ByteString) <> put key
         PublicKeyRSA key ->
             putString ("ssh-rsa" :: BS.ByteString) <> put key
         PublicKeyOther other ->
             putString other
+        where
+            len = fromIntegral . B.length . put -- FIXME
     get = getFramed $ getString >>= \case
         "ssh-ed25519" -> PublicKeyEd25519 <$> get
         "ssh-rsa"     -> PublicKeyRSA <$> get
         other         -> PublicKeyOther <$> pure other
 
 instance Encoding Signature where
-    put s = B.word32BE (len s - lenWord32) <> case s of
+    put s = B.word32BE (len s - 4) <> case s of
         SignatureEd25519    sig -> putString ("ssh-ed25519" :: BS.ByteString) <> put       sig
         SignatureRSA        sig -> putString ("ssh-rsa"     :: BS.ByteString) <> putString sig -- FIXME
         SignatureOther algo sig -> putString algo                             <> putString sig -- FIXME
+        where
+            len = fromIntegral . B.length . put -- FIXME
     get = getFramed $ getString >>= \case
         "ssh-ed25519" -> SignatureEd25519 <$> get
         "ssh-rsa"     -> SignatureRSA <$> getString --FIXME

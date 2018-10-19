@@ -66,7 +66,7 @@ testParserIdentity = testGroup "put . get == id"
     ]
     where
         parserIdentity :: (Encoding a, Eq a, Show a) => a -> Property
-        parserIdentity x = Just x === runGet get (runPut $ put x)
+        parserIdentity x = Just x === runGet (runPut $ put x)
 
 instance Arbitrary BS.ByteString where
     arbitrary = pure mempty

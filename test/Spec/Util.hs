@@ -61,7 +61,6 @@ instance MessageStream DummyTransport where
     sendMessage (DummyTransport (c,_)) msg = atomically $ writeTChan c $ runPut (put msg)
     receiveMessage (DummyTransport (_,c)) = do
         bs <- atomically $ readTChan c
-        case tryParse bs of
+        case runGet bs of
             Nothing  -> throwIO (exceptionUnexpectedMessage bs)
             Just msg -> pure msg
-
