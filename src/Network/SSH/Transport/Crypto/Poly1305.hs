@@ -11,7 +11,7 @@
 -- in order to reduce memory allocations when performing the
 -- same operation again and again. Remove when cryptonite offers this funtionality!
 --
-module Network.SSH.Crypto.Poly1305 where
+module Network.SSH.Transport.Crypto.Poly1305 where
 
 import           Data.Word
 import           Data.ByteArray (ByteArrayAccess, ScrubbedBytes)
@@ -24,7 +24,7 @@ newtype MutableState = MutableState ScrubbedBytes
 new :: IO MutableState
 new = MutableState <$> B.alloc 84 (const $ pure ())
 
-authUnsafe :: (ByteArrayAccess key, ByteArrayAccess ba) => MutableState -> key -> ba -> Ptr Word8 -> IO ()
+authUnsafe :: (ByteArrayAccess key, ByteArrayAccess dat) => MutableState -> key -> dat -> Ptr Word8 -> IO ()
 authUnsafe (MutableState ctx) key d dstPtr
     | B.length key /= 32 = error "Poly1305: key length expected 32 bytes"
     | otherwise          = 

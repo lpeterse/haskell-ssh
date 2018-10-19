@@ -10,6 +10,8 @@ import           Control.Concurrent.STM.TVar
 import           Control.Exception              ( bracket
                                                 , bracketOnError
                                                 , finally
+                                                , handle
+                                                , throwIO
                                                 )
 import           Control.Monad                  ( forM_
                                                 , void
@@ -24,15 +26,14 @@ import qualified System.Socket                 as S
 import qualified System.Socket.Family.Inet6    as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream     as S
+import qualified System.Socket.Unsafe          as S
 import           Data.Default
-import           System.Exit
 
 import           Network.SSH.Constants
 import           Network.SSH.Key
 import qualified Network.SSH.Server            as Server
 import           Network.SSH.Stream
 import           Network.SSH.AuthAgent
-import           Network.SSH.Transport
 
 main :: IO ()
 main = do
@@ -105,7 +106,15 @@ instance DuplexStream (S.Socket f S.Stream p) where
 
 instance OutputStream  (S.Socket f S.Stream p) where
     send stream bytes = S.send stream bytes S.msgNoSignal
+    sendUnsafe stream (BA.MemView ptr n) = fromIntegral <$>
+        handle f (S.unsafeSend stream ptr (fromIntegral n) S.msgNoSignal)
+        where
+            f e
+                | e == S.ePipe = pure 0
+                | otherwise    = throwIO e
 
 instance InputStream  (S.Socket f S.Stream p) where
     peek stream len = S.receive stream len (S.msgNoSignal <> S.msgPeek)
     receive stream len = S.receive stream len S.msgNoSignal
+    receiveUnsafe stream (BA.MemView ptr n) = fromIntegral <$>
+        S.unsafeReceive stream ptr (fromIntegral n) S.msgNoSignal

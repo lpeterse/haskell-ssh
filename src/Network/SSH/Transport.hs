@@ -3,7 +3,6 @@
 {-# LANGUAGE MultiWayIf                #-}
 {-# LANGUAGE TupleSections             #-}
 {-# LANGUAGE LambdaCase                #-}
-{-# LANGUAGE BangPatterns              #-}
 module Network.SSH.Transport
     ( Transport()
     , TransportConfig (..)
@@ -19,18 +18,14 @@ import           Control.Concurrent.STM.TVar
 import           Control.Exception              ( throwIO, handle, catch, fromException)
 import           Control.Monad                  ( when, void )
 import           Control.Monad.STM
-import           Data.Bits
 import           Data.Default
 import           Data.List
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
 import           GHC.Clock
-import           Foreign.Ptr
 import qualified Crypto.Hash                   as Hash
 import qualified Crypto.PubKey.Curve25519      as Curve25519
 import qualified Crypto.PubKey.Ed25519         as Ed25519
-import qualified Crypto.MAC.Poly1305           as Poly1305
-import qualified Crypto.Cipher.ChaCha          as ChaCha
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import qualified Data.List.NonEmpty            as NEL
@@ -39,8 +34,7 @@ import           Network.SSH.Algorithms
 import qualified Network.SSH.Builder           as B
 import           Network.SSH.AuthAgent
 import           Network.SSH.Constants
-import qualified Network.SSH.Crypto.ChaCha     as ChaChaM
-import qualified Network.SSH.Crypto.Poly1305   as Poly1305M
+import           Network.SSH.Transport.Crypto
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Message
@@ -90,11 +84,6 @@ instance Default TransportConfig where
         , onReceive                = const (pure ())
         }
 
-newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.Bytes])
-
-type DecryptionContext = Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
-type EncryptionContext = Word64 -> B.ByteArrayBuilder -> IO BS.ByteString
-
 data KexStep
     = Init       KexInit
     | EcdhInit   KexEcdhInit
@@ -132,10 +121,10 @@ withTransport config magent stream runWith = withFinalExceptionHandler $ do
     xPacketsSent         <- newMVar 0
     xBytesReceived       <- newMVar 0
     xPacketsReceived     <- newMVar 0
-    xEncryptionCtx       <- newMVar plainEncryptionContext
-    xEncryptionCtxNext   <- newMVar plainEncryptionContext
-    xDecryptionCtx       <- newMVar plainDecryptionContext
-    xDecryptionCtxNext   <- newMVar plainDecryptionContext
+    xEncryptionCtx       <- newMVar (plainEncryptionContext stream)
+    xEncryptionCtxNext   <- newMVar (plainEncryptionContext stream)
+    xDecryptionCtx       <- newMVar (plainDecryptionContext stream)
+    xDecryptionCtxNext   <- newMVar (plainDecryptionContext stream)
     xKexContinuation     <- newEmptyMVar
     xSessionId           <- newEmptyMVar
     xRekeyTime           <- newMVar =<< getEpochSeconds
@@ -212,7 +201,7 @@ transportReceiveRawMessageMaybe :: Transport -> IO (Maybe BS.ByteString)
 transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
     modifyMVar (tDecryptionCtx env) $ \decrypt -> do
         packets <- readMVar (tPacketsReceived env)
-        plainText <- decrypt packets (receiveAll mempty)
+        plainText <- decrypt packets
         onReceive (tConfig env) plainText
         modifyMVar_ (tPacketsReceived env) $ \pacs  -> pure $! pacs + 1
         case interpreter plainText of
@@ -248,125 +237,18 @@ transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
 -------------------------------------------------------------------------------
 
 setChaCha20Poly1305Context :: Transport -> KeyStreams -> IO ()
-setChaCha20Poly1305Context env (KeyStreams keys) = do
+setChaCha20Poly1305Context env@TransportEnv { tStream = stream } (KeyStreams keys) = do
     modifyMVar_ (tEncryptionCtxNext env) $ const $ case tAuthAgent env of
-        Just {} -> newChaCha20Poly1305EncryptionContext headerKeySC mainKeySC
-        Nothing -> newChaCha20Poly1305EncryptionContext headerKeyCS mainKeyCS
+        Just {} -> newChaCha20Poly1305EncryptionContext stream headerKeySC mainKeySC
+        Nothing -> newChaCha20Poly1305EncryptionContext stream headerKeyCS mainKeyCS
     modifyMVar_ (tDecryptionCtxNext env) $ const $ case tAuthAgent env of
-        Just {} -> pure $ chaCha20Poly1305DecryptionContext headerKeyCS mainKeyCS
-        Nothing -> pure $ chaCha20Poly1305DecryptionContext headerKeySC mainKeySC
+        Just {} -> newChaCha20Poly1305DecryptionContext stream headerKeyCS mainKeyCS
+        Nothing -> newChaCha20Poly1305DecryptionContext stream headerKeySC mainKeySC
     where
     -- Derive the required encryption/decryption keys.
     -- The integrity keys etc. are not needed with chacha20.
     mainKeyCS : headerKeyCS : _ = keys "C"
     mainKeySC : headerKeySC : _ = keys "D"
-
-plainEncryptionContext :: EncryptionContext
-plainEncryptionContext _ plainText = pure $ runPut (putPacked plainText)
-
-plainDecryptionContext :: DecryptionContext
-plainDecryptionContext _ getCipherText = do
-    paclen <- runGet getWord32 =<< getCipherText 4
-    when (paclen > maxPacketLength) (throwIO exceptionPacketLengthExceeded)
-    BS.drop 1 <$> getCipherText (fromIntegral paclen)
-
-newChaCha20Poly1305EncryptionContext :: BA.ByteArrayAccess key => key -> key -> IO (Word64 -> B.ByteArrayBuilder -> IO BS.ByteString)
-newChaCha20Poly1305EncryptionContext !headerKey !mainKey = do
-    polySt <- Poly1305M.new
-    chaSt <- ChaChaM.new
-    pure $ \packetsSent plainBuilder -> do
-        let headerLen  = 4
-            macLen     = 16
-            plainLen   = B.babLength plainBuilder :: Int
-            packetLen  = 1 + plainLen + paddingLen
-            paddingLen = if p < 4 then p + 8 else p
-                where
-                    p = 8 - ((1 + plainLen) `mod` 8)
-        BA.alloc (headerLen + packetLen + macLen) $ \headerPtr -> do
-            let macPtr        = plusPtr packetPtr packetLen
-                noncePtr      = macPtr
-                nonceLen      = 8
-                nonceView     = BA.MemView noncePtr nonceLen
-                packetPtr     = plusPtr headerPtr headerLen
-                packetBuilder = B.word8 (fromIntegral paddingLen) <> plainBuilder <> B.zeroes paddingLen
-            -- Use the MAC area to store the nonce temporarily and
-            -- safe an allocation (made up 8% of all allocations in benchmark!)
-            B.copyToPtr (B.word64BE packetsSent) noncePtr
-            -- Header
-            ChaChaM.initialize chaSt 20 headerKey nonceView
-            B.copyToPtr (B.word32BE $ fromIntegral packetLen) headerPtr
-            ChaChaM.combineUnsafe chaSt headerPtr headerPtr headerLen
-            -- Packet
-            ChaChaM.initialize chaSt 20 mainKey nonceView
-            poly64 <- BA.alloc 64 $ (\polyPtr -> ChaChaM.generateUnsafe chaSt polyPtr 64)
-            B.copyToPtr packetBuilder packetPtr
-            ChaChaM.combineUnsafe chaSt packetPtr packetPtr packetLen
-            -- MAC
-            Poly1305M.authUnsafe polySt (BA.takeView (poly64 :: BA.Bytes) 32) (BA.MemView headerPtr $ headerLen + packetLen) macPtr
-
--- Old version using immutable/pure interface from cryptonite:
-{-  BA.alloc (headerLen + packetLen + macLen) $ \ptr -> do
-        let headSt   = ChaCha.initialize 20 headerKey nonceBA
-        let headCiph = fst $ ChaCha.generate headSt 4 :: BA.Bytes
-        let mainSt   = ChaCha.initialize 20 mainKey nonceBA
-        let mainCiph = fst $ ChaCha.generate mainSt (64 + packetLen) :: BA.Bytes
-            BA.withByteArray headCiph $ \headCiphPtr ->
-            BA.withByteArray mainCiph $ \mainCiphPtr -> do
-                -- Header
-                B.copyToPtr (B.word32BE $ fromIntegral packetLen) ptr
-                memXor ptr ptr headCiphPtr headerLen
-                -- Payload
-                B.copyToPtr (B.word8 $ fromIntegral paddingLen) (plusPtr ptr headerLen)
-                B.copyToPtr plainBuilder (plusPtr ptr $ headerLen + 1)
-                memSet (plusPtr ptr $ headerLen + 1 + plainLen) 0 paddingLen
-                memXor (plusPtr ptr headerLen) (plusPtr ptr headerLen) (plusPtr mainCiphPtr 64) packetLen
-                let auth = Poly1305.auth (BA.MemView mainCiphPtr 32) (BA.MemView ptr $ headerLen + packetLen)
-                BA.copyByteArrayToPtr auth (plusPtr ptr $ headerLen + packetLen)
-                pure ()
--}
-
-chaCha20Poly1305DecryptionContext :: BA.ByteArrayAccess key => key -> key -> Word64 -> (Int -> IO BS.ByteString) -> IO BS.ByteString
-chaCha20Poly1305DecryptionContext headerKey mainKey packetsReceived getCipher = do
-    cipherLen <- getCipher 4
-
-    let nonceBA         = nonce packetsReceived
-        ccMain          = ChaCha.initialize 20 mainKey nonceBA
-        ccHeader        = ChaCha.initialize 20 headerKey nonceBA
-        (poly, ccMain') = ChaCha.generate ccMain 64
-        paclen          = fromWord32be $ fst $ ChaCha.combine ccHeader cipherLen
-        maclen          = 16
-
-    -- Receive both and then split/slice to reduce memory allocation/fragmentation.
-    (cipherPac,mac) <- BS.splitAt paclen <$> getCipher (paclen + maclen)
-
-    -- Check message integrity with Poly1305 authentication tag.
-    let authTagReceived = Poly1305.Auth $ BA.convert mac :: Poly1305.Auth
-        authTagExpected = Poly1305.auth (BS.take 32 poly) (cipherLen <> cipherPac)
-    when (authTagReceived /= authTagExpected) (throwIO exceptionMacError)
-
-    let plainPac = fst (ChaCha.combine ccMain' cipherPac)
-    maybe (throwIO exceptionInvalidPacket)
-        (\(h,t) -> pure  $ BS.take (BS.length t - fromIntegral h) t)
-        (BS.uncons plainPac)
-    where
-        fromWord32be ba =
-                 fromIntegral (BA.index ba 0) `shiftL` 24
-            .|.  fromIntegral (BA.index ba 1) `shiftL` 16
-            .|.  fromIntegral (BA.index ba 2) `shiftL` 8
-            .|.  fromIntegral (BA.index ba 3) `shiftL` 0
-
--- The sequence number is always the lower 32 bits of the number of
--- packets received - 1. By specification, it wraps around every 2^32 packets.
--- Special care must be taken wrt to rekeying as the sequence number
--- is used as nonce in the ChaCha20Poly1305 encryption mode.
-nonce :: Word64 -> BA.Bytes
-nonce i = BA.pack
-    [ 0, 0, 0, 0
-    , fromIntegral $ i `shiftR` 24
-    , fromIntegral $ i `shiftR` 16
-    , fromIntegral $ i `shiftR` 8
-    , fromIntegral $ i `shiftR` 0
-    ]
 
 -------------------------------------------------------------------------------
 -- KEY EXCHANGE ---------------------------------------------------------------

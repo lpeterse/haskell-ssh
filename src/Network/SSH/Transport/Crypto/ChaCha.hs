@@ -11,7 +11,7 @@
 -- in order to reduce memory allocations when performing the
 -- same operation again and again. Remove when cryptonite offers this funtionality!
 --
-module Network.SSH.Crypto.ChaCha where
+module Network.SSH.Transport.Crypto.ChaCha where
 
 import           Data.Word
 import           Data.ByteArray (ByteArrayAccess, ScrubbedBytes)
