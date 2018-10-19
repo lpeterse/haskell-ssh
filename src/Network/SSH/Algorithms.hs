@@ -5,18 +5,19 @@ import qualified Data.ByteString               as BS
 
 data HostKeyAlgorithm
     = SshEd25519
-    deriving (Eq, Ord, Show)
+    deriving (Eq, Show)
 
 data KeyExchangeAlgorithm
     = Curve25519Sha256AtLibsshDotOrg
-    deriving (Eq, Ord, Show)
+    deriving (Eq, Show)
 
 data EncryptionAlgorithm
     = Chacha20Poly1305AtOpensshDotCom
-    deriving (Eq, Ord, Show)
+    deriving (Eq, Show)
 
 data CompressionAlgorithm
     = None
+    deriving (Eq, Show)
 
 class Algorithm a where
     algorithmName :: a -> BS.ByteString

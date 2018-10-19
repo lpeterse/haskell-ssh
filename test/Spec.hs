@@ -1,5 +1,6 @@
 import           Test.Tasty
 
+import qualified Spec.Algorithms
 import qualified Spec.Key
 import qualified Spec.Message
 import qualified Spec.Server
@@ -10,7 +11,8 @@ import qualified Spec.TStreamingQueue
 
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH"
-    [ Spec.Key.tests
+    [ Spec.Algorithms.tests
+    , Spec.Key.tests
     , Spec.Message.tests
     , Spec.Server.tests
     , Spec.Server.Service.Connection.tests
