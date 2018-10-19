@@ -4,6 +4,7 @@ module Spec.Transport ( tests ) where
 import           Control.Concurrent.Async
 import           Control.Exception
 import qualified Crypto.PubKey.Ed25519    as Ed25519
+import           Data.Default
 
 import           Test.Tasty
 import           Test.Tasty.HUnit
@@ -15,6 +16,7 @@ import           Network.SSH.Exception
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Transport
+import           Network.SSH.Transport.Crypto
 
 import           Spec.Util
 
@@ -32,8 +34,8 @@ test01 :: TestTree
 test01 = testCase "key exchange yields same session id on both sides" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
-    withAsync (runServer serverSocket defaultConfig agent `finally` close serverSocket) $ \server ->
-        withAsync (runClient clientSocket defaultConfig `finally` close clientSocket) $ \client -> do
+    withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket def `finally` close clientSocket) $ \client -> do
             (Right sid1, Right sid2) <- waitBoth server client
             assertEqual "session ids" sid1 sid2
     where
@@ -44,8 +46,8 @@ test02 :: TestTree
 test02 = testCase "server sends first message, client receives" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
-    withAsync (runServer serverSocket defaultConfig agent `finally` close serverSocket) $ \server ->
-        withAsync (runClient clientSocket defaultConfig `finally` close clientSocket) $ \client -> do
+    withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket def `finally` close clientSocket) $ \client -> do
             (s,c) <- waitBoth server client
             assertEqual "s" (Right ()) s
             assertEqual "c" (Right "ABCD") c
@@ -61,7 +63,7 @@ test03 :: TestTree
 test03 = testCase "client sends incorrect version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
-    withAsync (runServer serverSocket defaultConfig agent `finally` close serverSocket) $ \server -> do
+    withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket "GET / HTTP/1.1\n\n"
         wait server >>= assertEqual "res" (Left exceptionProtocolVersionNotSupported)
     where
@@ -71,7 +73,7 @@ test04 :: TestTree
 test04 = testCase "client sends incomplete version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
-    withAsync (runServer serverSocket defaultConfig agent `finally` close serverSocket) $ \server -> do
+    withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket "SSH-2.0-OpenSSH_4.3"
         wait server >>= assertEqual "res" (Left exceptionProtocolVersionNotSupported)
     where
@@ -81,7 +83,7 @@ test05 :: TestTree
 test05 = testCase "client disconnects hard before sending version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
-    withAsync (runServer serverSocket defaultConfig agent `finally` close serverSocket) $ \server -> do
+    withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         close clientSocket
         wait server >>= assertEqual "res" (Left exceptionConnectionLost)
     where
@@ -91,23 +93,12 @@ test06 :: TestTree
 test06 = testCase "client disconnects gracefully after sending version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> AuthAgent $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
-    withAsync (runServer serverSocket defaultConfig agent `finally` close serverSocket) $ \server -> do
+    withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket $ runPut $ put $ Version "SSH-2.0-OpenSSH_4.3"
-        sendAll clientSocket $ runPut $ putPacked $ Disconnected DisconnectByApplication "ABC" mempty
+        sendAll clientSocket =<< plainEncryptionContext clientSocket 0 (put $ Disconnected DisconnectByApplication "ABC" mempty)
         wait server >>= assertEqual "res" (Left $ Disconnect Remote DisconnectByApplication "ABC")
     where
         runServer stream config agent = withTransport config (Just agent) stream (const pure)
-
-defaultConfig :: TransportConfig
-defaultConfig = TransportConfig
-    { tHostKeyAlgorithms  = pure SshEd25519
-    , tKexAlgorithms      = pure Curve25519Sha256AtLibsshDotOrg
-    , tEncAlgorithms      = pure Chacha20Poly1305AtOpensshDotCom
-    , tOnSend             = const (pure ())
-    , tOnReceive          = const (pure ())
-    , tMaxTimeBeforeRekey = 3600
-    , tMaxDataBeforeRekey = 1000 * 1000 * 1000 
-    }
 
 {-
 assertCorrectSignature ::

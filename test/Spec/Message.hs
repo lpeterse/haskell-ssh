@@ -8,7 +8,6 @@ import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
 import qualified Data.ByteString          as BS
-import qualified Data.Serialize           as B
 import           System.Exit
 
 import           Test.Tasty
@@ -20,7 +19,6 @@ import           Network.SSH.Message
 tests :: TestTree
 tests = testGroup "Network.SSH.Message"
     [ testParserIdentity
-    , testLengthProperty
     ]
 
 testParserIdentity :: TestTree
@@ -68,54 +66,7 @@ testParserIdentity = testGroup "put . get == id"
     ]
     where
         parserIdentity :: (Encoding a, Eq a, Show a) => a -> Property
-        parserIdentity x = Right x === B.runGet get (B.runPut $ put x)
-
-testLengthProperty :: TestTree
-testLengthProperty = testGroup "length (put x) == len x"
-    [ QC.testProperty ":: Disconnected"               (lengthProperty :: Disconnected               -> Property)
-    , QC.testProperty ":: DisconnectReason"           (lengthProperty :: DisconnectReason           -> Property)
-    , QC.testProperty ":: Ignore"                     (lengthProperty :: Ignore                     -> Property)
-    , QC.testProperty ":: Unimplemented"              (lengthProperty :: Unimplemented              -> Property)
-    , QC.testProperty ":: Debug"                      (lengthProperty :: Debug                      -> Property)
-    , QC.testProperty ":: ServiceRequest"             (lengthProperty :: ServiceRequest             -> Property)
-    , QC.testProperty ":: ServiceAccept"              (lengthProperty :: ServiceAccept              -> Property)
-    , QC.testProperty ":: KexInit"                    (lengthProperty :: KexInit                    -> Property)
-    , QC.testProperty ":: KexNewKeys"                 (lengthProperty :: KexNewKeys                 -> Property)
-    , QC.testProperty ":: KexEcdhInit"                (lengthProperty :: KexEcdhInit                -> Property)
-    , QC.testProperty ":: KexEcdhReply"               (lengthProperty :: KexEcdhReply               -> Property)
-    , QC.testProperty ":: UserAuthRequest"            (lengthProperty :: UserAuthRequest            -> Property)
-    , QC.testProperty ":: UserAuthFailure"            (lengthProperty :: UserAuthFailure            -> Property)
-    , QC.testProperty ":: UserAuthSuccess"            (lengthProperty :: UserAuthSuccess            -> Property)
-    , QC.testProperty ":: UserAuthBanner"             (lengthProperty :: UserAuthBanner             -> Property)
-    , QC.testProperty ":: UserAuthPublicKeyOk"        (lengthProperty :: UserAuthPublicKeyOk        -> Property)
-    , QC.testProperty ":: ChannelOpen"                (lengthProperty :: ChannelOpen                -> Property)
-    , QC.testProperty ":: ChannelOpenConfirmation"    (lengthProperty :: ChannelOpenConfirmation    -> Property)
-    , QC.testProperty ":: ChannelOpenFailure"         (lengthProperty :: ChannelOpenFailure         -> Property)
-    , QC.testProperty ":: ChannelOpenFailureReason"   (lengthProperty :: ChannelOpenFailureReason   -> Property)
-    , QC.testProperty ":: ChannelWindowAdjust"        (lengthProperty :: ChannelWindowAdjust        -> Property)
-    , QC.testProperty ":: ChannelData"                (lengthProperty :: ChannelData                -> Property)
-    , QC.testProperty ":: ChannelExtendedData"        (lengthProperty :: ChannelExtendedData        -> Property)
-    , QC.testProperty ":: ChannelEof"                 (lengthProperty :: ChannelEof                 -> Property)
-    , QC.testProperty ":: ChannelClose"               (lengthProperty :: ChannelClose               -> Property)
-    , QC.testProperty ":: ChannelRequest"             (lengthProperty :: ChannelRequest             -> Property)
-    , QC.testProperty ":: ChannelRequestEnv"          (lengthProperty :: ChannelRequestEnv          -> Property)
-    , QC.testProperty ":: ChannelRequestPty"          (lengthProperty :: ChannelRequestPty          -> Property)
-    , QC.testProperty ":: ChannelRequestWindowChange" (lengthProperty :: ChannelRequestWindowChange -> Property)
-    , QC.testProperty ":: ChannelRequestShell"        (lengthProperty :: ChannelRequestShell        -> Property)
-    , QC.testProperty ":: ChannelRequestExec"         (lengthProperty :: ChannelRequestExec         -> Property)
-    , QC.testProperty ":: ChannelRequestSignal"       (lengthProperty :: ChannelRequestSignal       -> Property)
-    , QC.testProperty ":: ChannelRequestExitSignal"   (lengthProperty :: ChannelRequestExitSignal   -> Property)
-    , QC.testProperty ":: ChannelRequestExitStatus"   (lengthProperty :: ChannelRequestExitStatus   -> Property)
-    , QC.testProperty ":: ChannelSuccess"             (lengthProperty :: ChannelSuccess             -> Property)
-    , QC.testProperty ":: ChannelFailure"             (lengthProperty :: ChannelFailure             -> Property)
-    , QC.testProperty ":: Version"                    (lengthProperty :: Version                    -> Property)
-    , QC.testProperty ":: PublicKey"                  (lengthProperty :: PublicKey                  -> Property)
-    , QC.testProperty ":: Signature"                  (lengthProperty :: Signature                  -> Property)
-    , QC.testProperty ":: Message"                    (lengthProperty :: Message                    -> Property)
-    ]
-    where
-        lengthProperty :: (Encoding a, Eq a, Show a) => a -> Property
-        lengthProperty x = len x === fromIntegral (BS.length $ B.runPut $ put x)
+        parserIdentity x = Just x === runGet get (runPut $ put x)
 
 instance Arbitrary BS.ByteString where
     arbitrary = pure mempty
@@ -249,7 +200,11 @@ instance Arbitrary ChannelWindowAdjust where
     arbitrary = ChannelWindowAdjust <$> arbitrary <*> arbitrary
 
 instance Arbitrary ChannelData where
-    arbitrary = ChannelData <$> arbitrary <*> arbitrary
+    arbitrary = ChannelData <$> arbitrary <*> elements
+        [ ""
+        , "abc"
+        , "asdhaskdjhaskhdkjahsdkjahsdkjhasdkjahdkj"
+        ]
 
 instance Arbitrary ChannelExtendedData where
     arbitrary = ChannelExtendedData <$> arbitrary <*> arbitrary <*> arbitrary

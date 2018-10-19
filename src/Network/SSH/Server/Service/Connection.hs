@@ -148,7 +148,7 @@ instance Default (ConnectionConfig identity) where
 
 serveConnection :: forall stream identity. MessageStream stream =>
     ConnectionConfig identity -> stream -> identity -> IO ()
-serveConnection config stream identity = bracket open close $ \connection ->
+serveConnection config stream idnt = bracket open close $ \connection ->
     forever $ receiveMessage stream >>= \case
         ConnectionChannelOpen         req -> connectionChannelOpen         connection stream req
         ConnectionChannelClose        req -> connectionChannelClose        connection stream req
@@ -160,7 +160,7 @@ serveConnection config stream identity = bracket open close $ \connection ->
         open :: IO (Connection identity)
         open = Connection
             <$> pure config
-            <*> pure identity
+            <*> pure idnt
             <*> newTVarIO mempty
 
         close :: Connection identity -> IO ()
@@ -443,14 +443,14 @@ forkSessionExecHandler stream channel sessState handle = do
         waitStdout :: STM (IO Bool)
         waitStdout = do
             bs <- Q.dequeueShort (sessStdout sessState) (chanMaxPacketSizeRemote channel)
-            pure $ do 
+            pure $ do
                 sendMessage stream $ ChannelData (chanIdRemote channel) bs
                 pure True
 
         waitStderr :: STM (IO Bool)
         waitStderr = do
             bs <- Q.dequeue (sessStderr sessState) (chanMaxPacketSizeRemote channel)
-            pure $ do 
+            pure $ do
                 sendMessage stream $ ChannelExtendedData (chanIdRemote channel) 1 bs
                 pure True
 
@@ -458,7 +458,7 @@ forkSessionExecHandler stream channel sessState handle = do
         waitLocalWindowAdjust = do
             check =<< Q.askWindowSpaceAdjustRecommended (sessStdin sessState)
             increaseBy <- Q.fillWindowSpace (sessStdin sessState)
-            pure $ do 
+            pure $ do
                 sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increaseBy
                 pure True
 

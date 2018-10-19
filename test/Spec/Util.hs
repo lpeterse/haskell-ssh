@@ -32,16 +32,14 @@ newSocketPair = atomically $ do
     pure (DummySocket x y, DummySocket y x)
 
 instance DuplexStream DummySocket
-instance DuplexStreamPeekable DummySocket
 
 instance OutputStream DummySocket where
     send (DummySocket q _) = send q
 
 instance InputStream DummySocket where
-    receive (DummySocket _ q) = receive q
-
-instance InputStreamPeekable DummySocket where
     peek (DummySocket _ q) = peek q
+    receive (DummySocket _ q) = receive q
+    receiveUnsafe (DummySocket _ q) = receiveUnsafe q
 
 close :: DummySocket -> IO ()
 close (DummySocket q _) = atomically $ Q.terminate q

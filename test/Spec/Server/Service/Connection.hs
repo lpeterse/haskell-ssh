@@ -4,13 +4,14 @@ module Spec.Server.Service.Connection ( tests ) where
 import           Control.Applicative
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async
+import           Control.Concurrent.STM.TChan
+import           Control.Concurrent.STM.TMVar
+import           Control.Concurrent.STM.TVar
 import           Control.Exception
 import           Control.Monad
-import           System.Exit
 import           Control.Monad.STM
-import           Control.Concurrent.STM.TChan
-import           Control.Concurrent.STM.TVar
-import           Control.Concurrent.STM.TMVar
+import           System.Exit
+import           Data.Default
 import qualified Data.Map.Strict as M
 
 import           Network.SSH.Server.Service.Connection
@@ -46,8 +47,8 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
 test01 :: TestTree
 test01  = testCase "open one session channel" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    withAsync (runConnection config serverStream ()) $ \_ -> do
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
     where
@@ -63,8 +64,8 @@ test01  = testCase "open one session channel" $ do
 test02 :: TestTree
 test02  = testCase "open two session channels" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    withAsync (runConnection config serverStream ()) $ \_ -> do
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -86,8 +87,8 @@ test02  = testCase "open two session channels" $ do
 test03 :: TestTree
 test03  = testCase "open two session channels (exceed limit)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxCount = 1, channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    withAsync (runConnection config serverStream ()) $ \_ -> do
+    let config = def { channelMaxCount = 1, channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -108,8 +109,8 @@ test03  = testCase "open two session channels (exceed limit)" $ do
 test04 :: TestTree
 test04  = testCase "open two session channels (close first, reuse first)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    withAsync (runConnection config serverStream ()) $ \_ -> do
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -134,8 +135,8 @@ test04  = testCase "open two session channels (close first, reuse first)" $ do
 test05 :: TestTree
 test05  = testCase "open unknown channel type" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    withAsync (runConnection config serverStream ()) $ \_ -> do
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
     where
@@ -150,8 +151,8 @@ test05  = testCase "open unknown channel type" $ do
 test06 :: TestTree
 test06  = testCase "close non-existing channel id" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig
-    withAsync (runConnection config serverStream ()) $ \thread -> do
+    let config = def
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
         sendMessage clientStream req0
         assertThrows "exp0" exp0 $ wait thread
     where
@@ -162,8 +163,8 @@ test06  = testCase "close non-existing channel id" $ do
 test07 :: TestTree
 test07  = testCase "close channel (don't reuse unless acknowledged)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
-    withAsync (runConnection config serverStream ()) $ \thread -> do
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -196,8 +197,8 @@ test07  = testCase "close channel (don't reuse unless acknowledged)" $ do
 test08 :: TestTree
 test08  = testCase "close channel (reuse when acknowledged)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
-    withAsync (runConnection config serverStream ()) $ \thread -> do
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -231,8 +232,8 @@ test08  = testCase "close channel (reuse when acknowledged)" $ do
 testRequest01 :: TestTree
 testRequest01 = testCase "reject unknown / unimplemented requests" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    withAsync (runConnection config serverStream ()) $ \thread -> do
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -252,8 +253,8 @@ testRequest01 = testCase "reject unknown / unimplemented requests" $ do
 testRequestSession01 :: TestTree
 testRequestSession01 = testCase "env request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
-    withAsync (runConnection config serverStream ()) $ \thread -> do
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -282,8 +283,8 @@ testRequestSession01 = testCase "env request" $ do
 testRequestSession02 :: TestTree
 testRequestSession02 = testCase "pty request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = defaultConnectionConfig { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
-    withAsync (runConnection config serverStream ()) $ \thread -> do
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1

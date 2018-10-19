@@ -6,6 +6,7 @@ import           Crypto.Error
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
 import qualified Data.ByteString          as BS
+import           Data.Default
 
 import           Network.SSH.Exception
 import           Network.SSH.Server.Service.UserAuth
@@ -38,7 +39,7 @@ tests = testGroup "Network.SSH.Server.Service.UserAuth"
 testInactive01 :: TestTree
 testInactive01 = testCase "request user auth service" $ do
     (client, server) <- newDummyTransportPair
-    withAsync (withAuthentication defaultUserAuthConfig server sess with) $ \_ -> do
+    withAsync (withAuthentication def server sess with) $ \_ -> do
         sendMessage client req0
         receiveMessage client >>= assertEqual "res0" res0
     where
@@ -50,7 +51,7 @@ testInactive01 = testCase "request user auth service" $ do
 testInactive02 :: TestTree
 testInactive02 = testCase "request other service" $ do
     (client, server) <- newDummyTransportPair
-    withAsync (withAuthentication defaultUserAuthConfig server sess with) $ \thread -> do
+    withAsync (withAuthentication def server sess with) $ \thread -> do
         sendMessage client req0
         assertThrows "exp0" exp0 (wait thread)
     where
@@ -62,7 +63,7 @@ testInactive02 = testCase "request other service" $ do
 testInactive03 :: TestTree
 testInactive03 = testCase "dispatch other message" $ do
     (client, server) <- newDummyTransportPair
-    withAsync (withAuthentication defaultUserAuthConfig server sess with) $ \thread -> do
+    withAsync (withAuthentication def server sess with) $ \thread -> do
         sendMessage client req0
         assertThrows "exp0" exp0 (wait thread)
     where
@@ -73,7 +74,7 @@ testInactive03 = testCase "dispatch other message" $ do
 
 testActive01 :: TestTree
 testActive01 = testCase "authenticate by public key (no signature)" $ do
-    let config = defaultUserAuthConfig { onAuthRequest = onAuth }
+    let config = def { onAuthRequest = onAuth }
     (client, server) <- newDummyTransportPair
     withAsync (withAuthentication config server sess with) $ \_ -> do
         sendMessage client req0
@@ -98,7 +99,7 @@ testActive01 = testCase "authenticate by public key (no signature)" $ do
 
 testActive02 :: TestTree
 testActive02 = testCase "authenticate by public key (incorrect signature)" $ do
-    let config = defaultUserAuthConfig { onAuthRequest = onAuth }
+    let config = def { onAuthRequest = onAuth }
     (client, server) <- newDummyTransportPair
     withAsync (withAuthentication config server sess with) $ \_ -> do
         sendMessage client req0
@@ -123,7 +124,7 @@ testActive02 = testCase "authenticate by public key (incorrect signature)" $ do
 
 testActive03 :: TestTree
 testActive03 = testCase "authenticate by public key (correct signature, user accepted)" $ do
-    let config = defaultUserAuthConfig { onAuthRequest = onAuth }
+    let config = def { onAuthRequest = onAuth }
     (client, server) <- newDummyTransportPair
     withAsync (withAuthentication config server sess with) $ \thread -> do
         sendMessage client req0
@@ -155,7 +156,7 @@ testActive03 = testCase "authenticate by public key (correct signature, user acc
 
 testActive04 :: TestTree
 testActive04 = testCase "authenticate by public key (correct signature, user accepted, service not available)" $ do
-    let config = defaultUserAuthConfig { onAuthRequest = \_ _ _ -> pure (Just idnt) }
+    let config = def { onAuthRequest = \_ _ _ -> pure (Just idnt) }
     (client, server) <- newDummyTransportPair
     withAsync (withAuthentication config server sess with) $ \thread -> do
         sendMessage client req0
@@ -183,7 +184,7 @@ testActive04 = testCase "authenticate by public key (correct signature, user acc
 
 testActive05 :: TestTree
 testActive05 = testCase "authenticate by public key (correct signature, user rejected)" $ do
-    let config = defaultUserAuthConfig { onAuthRequest = \_ _ _ -> pure Nothing }
+    let config = def { onAuthRequest = \_ _ _ -> pure Nothing }
     (client, server) <- newDummyTransportPair
     withAsync (withAuthentication config server sess with) $ \_ -> do
         sendMessage client req0
@@ -208,7 +209,7 @@ testActive05 = testCase "authenticate by public key (correct signature, user rej
 
 testActive06 :: TestTree
 testActive06 = testCase "authenticate by public key (key/signature type mismatch)" $ do
-    let config = defaultUserAuthConfig { onAuthRequest = \_ _ _ -> pure Nothing }
+    let config = def { onAuthRequest = \_ _ _ -> pure Nothing }
     (client, server) <- newDummyTransportPair
     withAsync (withAuthentication config server sess with) $ \_ -> do
         sendMessage client req0
@@ -233,7 +234,7 @@ testActive06 = testCase "authenticate by public key (key/signature type mismatch
 
 testActive07 :: TestTree
 testActive07 = testCase "authenticate by other method (AuthNone)" $ do
-    let config = defaultUserAuthConfig { onAuthRequest = \_ _ _ -> pure Nothing }
+    let config = def { onAuthRequest = \_ _ _ -> pure Nothing }
     (client, server) <- newDummyTransportPair
     withAsync (withAuthentication config server sess with) $ \_ -> do
         sendMessage client req0

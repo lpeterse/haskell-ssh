@@ -13,3 +13,7 @@ class InputStream stream where
     peek          :: stream -> Int -> IO BS.ByteString
     receive       :: stream -> Int -> IO BS.ByteString
     receiveUnsafe :: stream -> BA.MemView -> IO Int
+    receiveUnsafe q (BA.MemView ptr n) = do
+        bs <- receive q n
+        BA.copyByteArrayToPtr bs ptr
+        pure (BS.length bs)
