@@ -182,16 +182,16 @@ data ServiceAccept
 data KexInit
     = KexInit
     { kexCookie                              :: Cookie
-    , kexKexAlgorithms                       :: [BS.ByteString]
-    , kexServerHostKeyAlgorithms             :: [BS.ByteString]
-    , kexEncryptionAlgorithmsClientToServer  :: [BS.ByteString]
-    , kexEncryptionAlgorithmsServerToClient  :: [BS.ByteString]
-    , kexMacAlgorithmsClientToServer         :: [BS.ByteString]
-    , kexMacAlgorithmsServerToClient         :: [BS.ByteString]
-    , kexCompressionAlgorithmsClientToServer :: [BS.ByteString]
-    , kexCompressionAlgorithmsServerToClient :: [BS.ByteString]
-    , kexLanguagesClientToServer             :: [BS.ByteString]
-    , kexLanguagesServerToClient             :: [BS.ByteString]
+    , kexKexAlgorithms                       :: [SBS.ShortByteString]
+    , kexServerHostKeyAlgorithms             :: [SBS.ShortByteString]
+    , kexEncryptionAlgorithmsClientToServer  :: [SBS.ShortByteString]
+    , kexEncryptionAlgorithmsServerToClient  :: [SBS.ShortByteString]
+    , kexMacAlgorithmsClientToServer         :: [SBS.ShortByteString]
+    , kexMacAlgorithmsServerToClient         :: [SBS.ShortByteString]
+    , kexCompressionAlgorithmsClientToServer :: [SBS.ShortByteString]
+    , kexCompressionAlgorithmsServerToClient :: [SBS.ShortByteString]
+    , kexLanguagesClientToServer             :: [SBS.ShortByteString]
+    , kexLanguagesServerToClient             :: [SBS.ShortByteString]
     , kexFirstPacketFollows                  :: Bool
     } deriving (Eq, Show)
 
@@ -391,8 +391,8 @@ newtype SessionId         = SessionId         BS.ByteString
     deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype UserName          = UserName          BS.ByteString
     deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
-newtype AuthMethodName    = AuthMethodName    BS.ByteString
-    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype AuthMethodName    = AuthMethodName    SBS.ShortByteString
+    deriving (Eq, Ord, Show)
 newtype ServiceName       = ServiceName       BS.ByteString
     deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
 newtype ChannelType       = ChannelType       BS.ByteString
@@ -842,18 +842,19 @@ instance Encoding PtySettings where
 -- Util functions
 -------------------------------------------------------------------------------
 
-putNameList :: (B.Builder b, BA.ByteArray name) => [name] -> b
-putNameList xs =
-    B.word32BE (fromIntegral $ g xs) <>
-    mconcat (fmap putBytes (L.intersperse (BA.singleton 0x2c) xs))
+putNameList :: (B.Builder b) => [SBS.ShortByteString] -> b
+putNameList xs = B.word32BE (fromIntegral $ g xs) <> h xs
     where
         g [] = 0
-        g ys = sum (BA.length <$> ys) + length ys - 1
+        g ys = sum (SBS.length <$> ys) + length ys - 1
+        h [] = mempty
+        h [y] = B.shortByteString y
+        h (y:ys) = B.shortByteString y <> B.word8 0x2c <> h ys
 
-getNameList :: (BA.ByteArray name) => Get [name]
+getNameList :: Get [SBS.ShortByteString]
 getNameList = do
     s <- getString :: Get BS.ByteString
-    pure $ BA.convert <$> BS.split 0x2c s
+    pure $ SBS.toShort <$> BS.split 0x2c s
 
 instance Encoding Curve25519.PublicKey where
     put = putString

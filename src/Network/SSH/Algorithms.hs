@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Algorithms where
 
-import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Short               as SBS
 
 data HostKeyAlgorithm
     = SshEd25519
@@ -20,7 +20,7 @@ data CompressionAlgorithm
     deriving (Eq, Show)
 
 class Algorithm a where
-    algorithmName :: a -> BS.ByteString
+    algorithmName :: a -> SBS.ShortByteString
 
 instance Algorithm HostKeyAlgorithm where
     algorithmName SshEd25519 = "ssh-ed25519"

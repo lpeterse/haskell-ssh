@@ -15,7 +15,6 @@ import           Control.Applicative
 import           Control.Concurrent             ( threadDelay )
 import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
-import           Control.Concurrent.STM.TVar
 import           Control.Exception              ( throwIO, handle, catch, fromException)
 import           Control.Monad                  ( when, void )
 import           Control.Monad.STM
@@ -29,6 +28,7 @@ import qualified Crypto.PubKey.Curve25519      as Curve25519
 import qualified Crypto.PubKey.Ed25519         as Ed25519
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Short         as SBS
 import qualified Data.List.NonEmpty            as NEL
 
 import           Network.SSH.Algorithms
@@ -398,7 +398,7 @@ kexCommonKexAlgorithm ski cki = case kexKexAlgorithms cki `intersect` kexKexAlgo
         | x == algorithmName Curve25519Sha256AtLibsshDotOrg -> pure Curve25519Sha256AtLibsshDotOrg
     _ -> throwIO exceptionKexNoCommonKexAlgorithm
 
-kexCommonEncAlgorithm :: KexInit -> KexInit -> (KexInit -> [BS.ByteString]) -> IO EncryptionAlgorithm
+kexCommonEncAlgorithm :: KexInit -> KexInit -> (KexInit -> [SBS.ShortByteString]) -> IO EncryptionAlgorithm
 kexCommonEncAlgorithm ski cki f = case f cki `intersect` f ski of
     (x:_)
         | x == algorithmName Chacha20Poly1305AtOpensshDotCom -> pure Chacha20Poly1305AtOpensshDotCom
