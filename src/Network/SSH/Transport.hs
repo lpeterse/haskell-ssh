@@ -43,6 +43,7 @@ import           Network.SSH.Transport.Crypto
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Message
+import           Network.SSH.Name
 import           Network.SSH.Stream
 
 data Transport
@@ -394,26 +395,26 @@ kexServerContinuation env cookie authAgent = serverKex0
 kexCommonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
 kexCommonKexAlgorithm ski cki = case kexKexAlgorithms cki `intersect` kexKexAlgorithms ski of
     (x:_)
-        | x == algorithmName Curve25519Sha256AtLibsshDotOrg -> pure Curve25519Sha256AtLibsshDotOrg
+        | x == name Curve25519Sha256AtLibsshDotOrg -> pure Curve25519Sha256AtLibsshDotOrg
     _ -> throwIO exceptionKexNoCommonKexAlgorithm
 
-kexCommonEncAlgorithm :: KexInit -> KexInit -> (KexInit -> [SBS.ShortByteString]) -> IO EncryptionAlgorithm
+kexCommonEncAlgorithm :: KexInit -> KexInit -> (KexInit -> [Name]) -> IO EncryptionAlgorithm
 kexCommonEncAlgorithm ski cki f = case f cki `intersect` f ski of
     (x:_)
-        | x == algorithmName Chacha20Poly1305AtOpensshDotCom -> pure Chacha20Poly1305AtOpensshDotCom
+        | x == name Chacha20Poly1305AtOpensshDotCom -> pure Chacha20Poly1305AtOpensshDotCom
     _ -> throwIO exceptionKexNoCommonEncryptionAlgorithm
 
 kexInit :: TransportConfig -> Cookie -> KexInit
 kexInit config cookie = KexInit
     {   kexCookie                              = cookie
-    ,   kexServerHostKeyAlgorithms             = NEL.toList $ fmap algorithmName (serverHostKeyAlgorithms config)
-    ,   kexKexAlgorithms                       = NEL.toList $ fmap algorithmName (kexAlgorithms config)
-    ,   kexEncryptionAlgorithmsClientToServer  = NEL.toList $ fmap algorithmName (encryptionAlgorithms config)
-    ,   kexEncryptionAlgorithmsServerToClient  = NEL.toList $ fmap algorithmName (encryptionAlgorithms config)
+    ,   kexServerHostKeyAlgorithms             = NEL.toList $ fmap name (serverHostKeyAlgorithms config)
+    ,   kexKexAlgorithms                       = NEL.toList $ fmap name (kexAlgorithms config)
+    ,   kexEncryptionAlgorithmsClientToServer  = NEL.toList $ fmap name (encryptionAlgorithms config)
+    ,   kexEncryptionAlgorithmsServerToClient  = NEL.toList $ fmap name (encryptionAlgorithms config)
     ,   kexMacAlgorithmsClientToServer         = []
     ,   kexMacAlgorithmsServerToClient         = []
-    ,   kexCompressionAlgorithmsClientToServer = [algorithmName None]
-    ,   kexCompressionAlgorithmsServerToClient = [algorithmName None]
+    ,   kexCompressionAlgorithmsClientToServer = [name None]
+    ,   kexCompressionAlgorithmsServerToClient = [name None]
     ,   kexLanguagesClientToServer             = []
     ,   kexLanguagesServerToClient             = []
     ,   kexFirstPacketFollows                  = False

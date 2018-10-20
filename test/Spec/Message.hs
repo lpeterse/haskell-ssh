@@ -302,14 +302,6 @@ instance Arbitrary ServiceName where
         [ "ssh-connection"
         ]
 
-instance Arbitrary AuthMethodName where
-    arbitrary = elements $ fmap AuthMethodName
-        [ "none"
-        , "hostbased"
-        , "password"
-        , "publickey"
-        ]
-
 instance Arbitrary AuthMethod where
     arbitrary = oneof
         [ pure AuthNone
@@ -317,6 +309,9 @@ instance Arbitrary AuthMethod where
         , AuthPassword  <$> arbitrary
         , AuthPublicKey <$> arbitrary <*> arbitrary <*> arbitrary
         ]
+
+instance Arbitrary Name where
+    arbitrary = elements [ "abc" ]
 
 instance Arbitrary PublicKey where
     arbitrary = oneof
@@ -335,14 +330,13 @@ instance Arbitrary Signature where
     arbitrary = oneof
         [ SignatureEd25519           <$> x1
         , SignatureRSA               <$> x2
-        , SignatureOther "ssh-other" <$> x3
+        , pure (SignatureOther "ssh-other")
         ]
         where
             x1 = pure $ case Ed25519.signature ("\169\150V0\235\151\ENQ\149w\DC1\172wKV]W|\b\ETB\f@\158\178\254\158\168\v>\180&\164D\DELF\204\133p\186\195(\169\177\144\168\STX\DC2\153!B\252\154o\251\230\154\164T\223\243\148'i\a\EOT" :: BS.ByteString) of
               CryptoPassed sig -> sig
               CryptoFailed _   -> undefined
             x2 = pure "SIGNATURE_RSA"
-            x3 = pure "SIGNATURE_OTHER"
 
 instance Arbitrary Curve25519.PublicKey where
     arbitrary = pure $ case Curve25519.publicKey ("\179g~\181\170\169\154\205\211\ft\162\&0@0dO\FS\DLEA\166@[r\150t~W\221cOF" :: BS.ByteString) of

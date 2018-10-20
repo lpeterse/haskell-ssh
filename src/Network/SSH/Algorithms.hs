@@ -1,7 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Network.SSH.Algorithms where
 
-import qualified Data.ByteString.Short               as SBS
+import qualified Data.ByteArray        as BA
+import qualified Data.ByteString.Short as SBS
+import           Data.String
+
+import           Network.SSH.Name
 
 data HostKeyAlgorithm
     = SshEd25519
@@ -19,17 +24,14 @@ data CompressionAlgorithm
     = None
     deriving (Eq, Show)
 
-class Algorithm a where
-    algorithmName :: a -> SBS.ShortByteString
+instance HasName HostKeyAlgorithm where
+    name SshEd25519 = Name "ssh-ed25519"
 
-instance Algorithm HostKeyAlgorithm where
-    algorithmName SshEd25519 = "ssh-ed25519"
+instance HasName KeyExchangeAlgorithm where
+    name Curve25519Sha256AtLibsshDotOrg = Name "curve25519-sha256@libssh.org"
 
-instance Algorithm KeyExchangeAlgorithm where
-    algorithmName Curve25519Sha256AtLibsshDotOrg = "curve25519-sha256@libssh.org"
+instance HasName EncryptionAlgorithm where
+    name Chacha20Poly1305AtOpensshDotCom = Name "chacha20-poly1305@openssh.com"
 
-instance Algorithm EncryptionAlgorithm where
-    algorithmName Chacha20Poly1305AtOpensshDotCom = "chacha20-poly1305@openssh.com"
-
-instance Algorithm CompressionAlgorithm where
-    algorithmName None = "none"
+instance HasName CompressionAlgorithm where
+    name None = Name "none"

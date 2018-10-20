@@ -73,9 +73,7 @@ module Network.SSH.Message
   , ChannelFailure (..)
 
     -- * Misc
-  , Algorithm (..)
   , AuthMethod (..)
-  , AuthMethodName (..)
   , ChannelId (..)
   , ChannelMaxPacketSize
   , ChannelType (..)
@@ -110,6 +108,7 @@ import qualified Network.SSH.Builder as B
 import           Network.SSH.Exception
 import           Network.SSH.Encoding
 import           Network.SSH.Key
+import           Network.SSH.Name
 
 class MessageStream a where
     sendMessage :: forall msg. Encoding msg => a -> msg -> IO ()
@@ -180,16 +179,16 @@ data ServiceAccept
 data KexInit
     = KexInit
     { kexCookie                              :: Cookie
-    , kexKexAlgorithms                       :: [SBS.ShortByteString]
-    , kexServerHostKeyAlgorithms             :: [SBS.ShortByteString]
-    , kexEncryptionAlgorithmsClientToServer  :: [SBS.ShortByteString]
-    , kexEncryptionAlgorithmsServerToClient  :: [SBS.ShortByteString]
-    , kexMacAlgorithmsClientToServer         :: [SBS.ShortByteString]
-    , kexMacAlgorithmsServerToClient         :: [SBS.ShortByteString]
-    , kexCompressionAlgorithmsClientToServer :: [SBS.ShortByteString]
-    , kexCompressionAlgorithmsServerToClient :: [SBS.ShortByteString]
-    , kexLanguagesClientToServer             :: [SBS.ShortByteString]
-    , kexLanguagesServerToClient             :: [SBS.ShortByteString]
+    , kexKexAlgorithms                       :: [Name]
+    , kexServerHostKeyAlgorithms             :: [Name]
+    , kexEncryptionAlgorithmsClientToServer  :: [Name]
+    , kexEncryptionAlgorithmsServerToClient  :: [Name]
+    , kexMacAlgorithmsClientToServer         :: [Name]
+    , kexMacAlgorithmsServerToClient         :: [Name]
+    , kexCompressionAlgorithmsClientToServer :: [Name]
+    , kexCompressionAlgorithmsServerToClient :: [Name]
+    , kexLanguagesClientToServer             :: [Name]
+    , kexLanguagesServerToClient             :: [Name]
     , kexFirstPacketFollows                  :: Bool
     } deriving (Eq, Show)
 
@@ -216,7 +215,7 @@ data UserAuthRequest
     deriving (Eq, Show)
 
 data UserAuthFailure
-    = UserAuthFailure [AuthMethodName] Bool
+    = UserAuthFailure [Name] Bool
     deriving (Eq, Show)
 
 data UserAuthSuccess
@@ -228,7 +227,7 @@ data UserAuthBanner
     deriving (Eq, Show)
 
 data UserAuthPublicKeyOk
-    = UserAuthPublicKeyOk Algorithm PublicKey
+    = UserAuthPublicKeyOk PublicKey
     deriving (Eq, Show)
 
 data ChannelOpen
@@ -348,14 +347,21 @@ data AuthMethod
     = AuthNone
     | AuthHostBased
     | AuthPassword  Password
-    | AuthPublicKey Algorithm PublicKey (Maybe Signature)
-    | AuthOther     SBS.ShortByteString
+    | AuthPublicKey PublicKey (Maybe Signature)
+    | AuthOther     Name
     deriving (Eq, Show)
+
+instance HasName AuthMethod where
+    name AuthNone         = Name "none"
+    name AuthHostBased    = Name "hostbased"
+    name AuthPassword {}  = Name "password"
+    name AuthPublicKey {} = Name "publickey"
+    name (AuthOther n)    = n
 
 data Signature
     = SignatureEd25519 Ed25519.Signature
     | SignatureRSA     BS.ByteString
-    | SignatureOther   BS.ByteString BS.ByteString
+    | SignatureOther   Name
     deriving (Eq, Show)
 
 data PtySettings
@@ -376,15 +382,11 @@ newtype Cookie            = Cookie            SBS.ShortByteString
     deriving (Eq, Ord, Show)
 newtype Version           = Version           SBS.ShortByteString
     deriving (Eq, Ord, Show)
-newtype Algorithm         = Algorithm         SBS.ShortByteString
-    deriving (Eq, Ord, Show)
 newtype Password          = Password          SBS.ShortByteString
     deriving (Eq, Ord, Show)
 newtype SessionId         = SessionId         SBS.ShortByteString
     deriving (Eq, Ord, Show)
 newtype UserName          = UserName          SBS.ShortByteString
-    deriving (Eq, Ord, Show)
-newtype AuthMethodName    = AuthMethodName    SBS.ShortByteString
     deriving (Eq, Ord, Show)
 newtype ServiceName       = ServiceName       SBS.ShortByteString
     deriving (Eq, Ord, Show)
@@ -570,11 +572,11 @@ instance Encoding UserAuthRequest where
 instance Encoding UserAuthFailure where
     put (UserAuthFailure ms ps) =
         putWord8 51 <>
-        putNameList ((\(AuthMethodName x)->x) <$> ms) <>
+        putNameList ms <>
         putBool ps
     get =  do
         expectWord8 51
-        UserAuthFailure <$> (fmap AuthMethodName <$> getNameList) <*> getBool
+        UserAuthFailure <$> getNameList <*> getBool
 
 instance Encoding UserAuthSuccess where
     put UserAuthSuccess = putWord8 52
@@ -585,8 +587,8 @@ instance Encoding UserAuthBanner where
     get = expectWord8 53 >> UserAuthBanner <$> getShortString <*> getShortString
 
 instance Encoding UserAuthPublicKeyOk where
-    put (UserAuthPublicKeyOk alg pk) = putWord8 60 <> put alg <> put pk
-    get = expectWord8 60 >> UserAuthPublicKeyOk <$> get <*> get
+    put (UserAuthPublicKeyOk pk) = putWord8 60 <> putName (name pk) <> put pk
+    get = expectWord8 60 >> getName >> UserAuthPublicKeyOk <$> get
 
 instance Encoding ChannelOpen where
     put (ChannelOpen rc rw rp ct) =
@@ -732,10 +734,6 @@ instance Encoding Cookie where
     put (Cookie s) = B.shortByteString s
     get = Cookie . SBS.toShort <$> getBytes 16
 
-instance Encoding Algorithm where
-    put (Algorithm s) = putShortString s
-    get = Algorithm <$> getShortString
-
 instance Encoding ChannelId where
     put (ChannelId x) = B.word32BE x
     get = ChannelId <$> getWord32
@@ -776,60 +774,53 @@ instance Encoding Version where
                 x -> untilCRLF (i+1) (x:xs)
 
 instance Encoding AuthMethod where
-    put = \case
-        AuthNone ->
-            putString ("none" :: BS.ByteString)
-        AuthHostBased ->
-            putString ("hostbased" :: BS.ByteString)
+    put m = putName (name m) <> case m of
+        AuthNone -> mempty
+        AuthHostBased -> mempty
         AuthPassword (Password pw) ->
-            putString ("password" :: BS.ByteString) <> putBool False <> putShortString pw
-        AuthPublicKey (Algorithm algo) pk msig ->
-            putString ("publickey" :: BS.ByteString) <> case msig of
-                Nothing  -> putBool False <> putShortString algo <> put pk
-                Just sig -> putBool True <> putShortString algo <> put pk <> put sig
-        AuthOther other ->
-            putShortString other
-    get = getShortString >>= \case
-        "none" ->
+            putBool False <> putShortString pw
+        AuthPublicKey pk msig -> case msig of
+            Nothing  -> putBool False <> putName (name pk) <> put pk
+            Just sig -> putBool True <> putName (name pk) <> put pk <> put sig
+        AuthOther {} -> mempty
+    get = getName >>= \case
+        Name "none" ->
             pure AuthNone
-        "hostbased" ->
+        Name "hostbased" ->
             pure AuthHostBased
-        "password" ->
+        Name "password" ->
             void getBool >> AuthPassword  <$> (Password <$> getShortString)
-        "publickey" -> do
+        Name "publickey" -> do
             signed <- getBool
-            algo   <- Algorithm <$> getShortString
+            void getShortString -- is redundant, ignore!
             key    <- get
             msig   <- if signed then Just <$> get else pure Nothing
-            pure (AuthPublicKey algo key msig)
+            pure (AuthPublicKey key msig)
         other -> pure (AuthOther other)
 
 instance Encoding PublicKey where
-    put k = B.word32BE (len k - 4) <> case k of
-        PublicKeyEd25519 key ->
-            putString ("ssh-ed25519" :: BS.ByteString) <> put key
-        PublicKeyRSA key ->
-            putString ("ssh-rsa" :: BS.ByteString) <> put key
-        PublicKeyOther other ->
-            putString other
+    put k = B.word32BE (len k - 4) <> putName (name k) <> case k of
+        PublicKeyEd25519 key -> put key
+        PublicKeyRSA     key -> put key
+        PublicKeyOther other -> mempty
         where
             len = fromIntegral . B.length . put -- FIXME
-    get = getFramed $ getString >>= \case
-        "ssh-ed25519" -> PublicKeyEd25519 <$> get
-        "ssh-rsa"     -> PublicKeyRSA <$> get
-        other         -> PublicKeyOther <$> pure other
+    get = getFramed $ getName >>= \case
+        Name "ssh-ed25519" -> PublicKeyEd25519 <$> get
+        Name "ssh-rsa"     -> PublicKeyRSA <$> get
+        other              -> PublicKeyOther <$> pure other
 
 instance Encoding Signature where
     put s = B.word32BE (len s - 4) <> case s of
         SignatureEd25519    sig -> putString ("ssh-ed25519" :: BS.ByteString) <> put       sig
         SignatureRSA        sig -> putString ("ssh-rsa"     :: BS.ByteString) <> putString sig -- FIXME
-        SignatureOther algo sig -> putString algo                             <> putString sig -- FIXME
+        SignatureOther algo     -> putName algo
         where
             len = fromIntegral . B.length . put -- FIXME
-    get = getFramed $ getString >>= \case
-        "ssh-ed25519" -> SignatureEd25519 <$> get
-        "ssh-rsa"     -> SignatureRSA <$> getString --FIXME
-        other         -> SignatureOther other <$> getString
+    get = getFramed $ getName >>= \case
+        Name "ssh-ed25519" -> SignatureEd25519 <$> get
+        Name "ssh-rsa"     -> SignatureRSA <$> getString --FIXME
+        other              -> SignatureOther <$> pure other
 
 instance Encoding PtySettings where
     put (PtySettings env wc hc wp hp modes) =
@@ -841,19 +832,19 @@ instance Encoding PtySettings where
 -- Util functions
 -------------------------------------------------------------------------------
 
-putNameList :: (B.Builder b) => [SBS.ShortByteString] -> b
+putNameList :: (B.Builder b) => [Name] -> b
 putNameList xs = B.word32BE (fromIntegral $ g xs) <> h xs
     where
         g [] = 0
-        g ys = sum (SBS.length <$> ys) + length ys - 1
+        g ys = sum ((\(Name y) -> SBS.length y) <$> ys) + length ys - 1
         h [] = mempty
-        h [y] = B.shortByteString y
-        h (y:ys) = B.shortByteString y <> B.word8 0x2c <> h ys
+        h [Name y] = B.shortByteString y
+        h (Name y:ys) = B.shortByteString y <> B.word8 0x2c <> h ys
 
-getNameList :: Get [SBS.ShortByteString]
+getNameList :: Get [Name]
 getNameList = do
     s <- getString :: Get BS.ByteString
-    pure $ SBS.toShort <$> BS.split 0x2c s
+    pure $ Name . SBS.toShort <$> BS.split 0x2c s
 
 instance Encoding Curve25519.PublicKey where
     put = putString

@@ -34,6 +34,7 @@ library:
   source-dirs: src
   ghc-options: -Wall -fno-warn-orphans
   exposed-modules:
+    - Network.SSH
     - Network.SSH.Algorithms
     - Network.SSH.AuthAgent
     - Network.SSH.Internal
@@ -61,7 +62,7 @@ executables:
     source-dirs:         app
     ghc-options:
     - -O2
-    - -threaded
+#    - -threaded
     - -rtsopts
     dependencies:
     - hssh

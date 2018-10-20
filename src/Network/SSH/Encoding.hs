@@ -12,6 +12,7 @@ import           Data.Word
 import           System.Exit
 
 import qualified Network.SSH.Builder           as B
+import           Network.SSH.Name
 
 type Get = G.Get
 
@@ -87,6 +88,12 @@ getShortString = SBS.toShort <$> getString
 
 getString :: BA.ByteArray ba => Get ba
 getString = getWord32 >>= getBytes
+
+getName :: Get Name
+getName = Name <$> getShortString
+
+putName :: B.Builder b => Name -> b
+putName (Name n) = putShortString n
 
 putBool :: B.Builder b => Bool -> b
 putBool False = putWord8 0

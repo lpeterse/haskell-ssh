@@ -88,9 +88,9 @@ serveHttp idnt req = pure $ Just $ \stream-> do
 
 runExec :: Server.Session identity -> SBS.ShortByteString -> IO ExitCode
 runExec (Server.Session identity pty env stdin stdout stderr) _command = withAsync receiver $ const $ do
-    forM_ [1 .. 60000 ] $ \i -> do
+    forM_ [1 ..  ] $ \i -> do
         void $ send stdout abc
-        threadDelay 1000
+        threadDelay 100
     pure (ExitFailure 23)
     where
         receiver = forever $ do

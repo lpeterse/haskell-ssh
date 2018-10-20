@@ -1,7 +1,8 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE MultiWayIf        #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeFamilies      #-}
+{-# LANGUAGE LambdaCase                  #-}
+{-# LANGUAGE MultiWayIf                  #-}
+{-# LANGUAGE OverloadedStrings           #-}
+{-# LANGUAGE TypeFamilies                #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving  #-}
 module Network.SSH.Key
     (   KeyPair (..)
     ,   PublicKey (..)
@@ -22,8 +23,11 @@ import           Data.Bits
 import           Data.ByteArray
 import qualified Data.ByteArray         as BA
 import qualified Data.ByteArray.Parse   as BP
+import qualified Data.ByteString.Short  as SBS
 import           Data.String
 import           Data.Word
+
+import           Network.SSH.Name
 
 data KeyPair
     = KeyPairEd25519 Ed25519.PublicKey Ed25519.SecretKey
@@ -32,8 +36,13 @@ data KeyPair
 data PublicKey
     = PublicKeyEd25519 Ed25519.PublicKey
     | PublicKeyRSA     RSA.PublicKey
-    | PublicKeyOther   BA.Bytes
+    | PublicKeyOther   Name
     deriving (Eq, Show)
+
+instance HasName PublicKey where
+    name PublicKeyEd25519 {} = Name "ssh-ed25519"
+    name PublicKeyRSA {}     = Name "ssh-rsa"
+    name (PublicKeyOther n)  = n
 
 toPublicKey :: KeyPair -> PublicKey
 toPublicKey (KeyPairEd25519 pk _) = PublicKeyEd25519 pk
@@ -213,6 +222,3 @@ parsePrivateKeyFile passphrase = do
                 _ -> fail $ "Unsupported algorithm " ++ show (convert algo :: BA.Bytes)
             comment <- BA.convert <$> getString
             pure (key, comment)
-
-instance IsString BA.Bytes where
-    fromString = BA.pack . map (fromIntegral . fromEnum)

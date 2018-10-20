@@ -12,6 +12,7 @@ import           Network.SSH.Encoding
 import           Network.SSH.Exception
 import           Network.SSH.Key
 import           Network.SSH.Message
+import           Network.SSH.Name
 
 data UserAuthConfig identity
     = UserAuthConfig
@@ -36,18 +37,18 @@ withAuthentication config transport session serviceHandler = do
         _ -> throwIO exceptionServiceNotAvailable
     where
         sendSupportedAuthMethods =
-            sendMessage transport $ UserAuthFailure [AuthMethodName "publickey"] False
-        sendPublicKeyIsOk algo pk =
-            sendMessage transport $ UserAuthPublicKeyOk algo pk
+            sendMessage transport $ UserAuthFailure ["publickey"] False
+        sendPublicKeyIsOk pk =
+            sendMessage transport $ UserAuthPublicKeyOk pk
         sendSuccess =
             sendMessage transport UserAuthSuccess
 
         authenticate = do
             UserAuthRequest user service method <- receiveMessage transport
             case method of
-                AuthPublicKey algo pk msig -> case msig of
+                AuthPublicKey pk msig -> case msig of
                     Just sig
-                        | verifyAuthSignature session user service algo pk sig -> do
+                        | verifyAuthSignature session user service pk sig -> do
                             onAuthRequest config user service pk >>= \case
                                 Just idnt -> case serviceHandler service of
                                     Just h  -> sendSuccess >> h idnt
@@ -59,14 +60,14 @@ withAuthentication config transport session serviceHandler = do
                             sendSupportedAuthMethods
                             authenticate
                     Nothing -> do
-                        sendPublicKeyIsOk algo pk
+                        sendPublicKeyIsOk pk
                         authenticate
                 _ -> do
                     sendSupportedAuthMethods
                     authenticate
 
-verifyAuthSignature :: SessionId -> UserName -> ServiceName -> Algorithm -> PublicKey -> Signature -> Bool
-verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey signature =
+verifyAuthSignature :: SessionId -> UserName -> ServiceName -> PublicKey -> Signature -> Bool
+verifyAuthSignature sessionIdentifier userName serviceName publicKey signature =
     case (publicKey,signature) of
         (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
         -- TODO: Implement RSA
@@ -81,5 +82,5 @@ verifyAuthSignature sessionIdentifier userName serviceName algorithm publicKey s
             put           serviceName <>
             putString     ("publickey" :: BS.ByteString) <>
             putWord8      1 <>
-            put           algorithm <>
+            putName       (name publicKey) <>
             put           publicKey
