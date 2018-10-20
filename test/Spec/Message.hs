@@ -181,7 +181,7 @@ instance Arbitrary UserAuthBanner where
     arbitrary = UserAuthBanner <$> arbitrary <*> arbitrary
 
 instance Arbitrary UserAuthPublicKeyOk where
-    arbitrary = UserAuthPublicKeyOk <$> arbitrary <*> arbitrary
+    arbitrary = UserAuthPublicKeyOk <$> arbitrary
 
 instance Arbitrary ChannelOpen where
     arbitrary = ChannelOpen <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
@@ -285,12 +285,6 @@ instance Arbitrary Password where
         [ "1234567890"
         ]
 
-instance Arbitrary Algorithm where
-    arbitrary = elements $ fmap Algorithm
-        [ "ssh-ed25519"
-        , "ssh-rsa"
-        ]
-
 instance Arbitrary UserName where
     arbitrary = elements $ fmap UserName
         [ "franz"
@@ -307,7 +301,7 @@ instance Arbitrary AuthMethod where
         [ pure AuthNone
         , pure AuthHostBased
         , AuthPassword  <$> arbitrary
-        , AuthPublicKey <$> arbitrary <*> arbitrary <*> arbitrary
+        , AuthPublicKey <$> arbitrary <*> arbitrary
         ]
 
 instance Arbitrary Name where

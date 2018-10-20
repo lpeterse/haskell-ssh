@@ -20,7 +20,7 @@ import           Network.SSH.Server.Service.UserAuth
 import           Network.SSH.Stream (DuplexStream ())
 import           Network.SSH.Transport
 
-serve :: (DuplexStream stream) => Config identity -> AuthAgent -> stream -> IO Disconnect
+serve :: (DuplexStream stream, AuthAgent agent) => Config identity -> agent -> stream -> IO Disconnect
 serve config agent stream = run >>= \case
     Left  d  -> pure d
     Right () -> pure $ Disconnect Local DisconnectByApplication mempty

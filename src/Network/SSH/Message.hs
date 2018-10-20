@@ -364,6 +364,11 @@ data Signature
     | SignatureOther   Name
     deriving (Eq, Show)
 
+instance HasName Signature where
+    name SignatureEd25519 {} = Name "ssh-ed25519"
+    name SignatureRSA {}     = Name "ssh-rsa"
+    name (SignatureOther n)  = n
+
 data PtySettings
     = PtySettings
     { ptyEnv          :: SBS.ShortByteString
@@ -801,20 +806,20 @@ instance Encoding AuthMethod where
 instance Encoding PublicKey where
     put k = B.word32BE (len k - 4) <> putName (name k) <> case k of
         PublicKeyEd25519 key -> put key
-        PublicKeyRSA     key -> put key
+        PublicKeyRSA     key -> putRsaPublicKey key
         PublicKeyOther other -> mempty
         where
             len = fromIntegral . B.length . put -- FIXME
     get = getFramed $ getName >>= \case
         Name "ssh-ed25519" -> PublicKeyEd25519 <$> get
-        Name "ssh-rsa"     -> PublicKeyRSA <$> get
+        Name "ssh-rsa"     -> PublicKeyRSA <$> getRsaPublicKey
         other              -> PublicKeyOther <$> pure other
 
 instance Encoding Signature where
-    put s = B.word32BE (len s - 4) <> case s of
-        SignatureEd25519    sig -> putString ("ssh-ed25519" :: BS.ByteString) <> put       sig
-        SignatureRSA        sig -> putString ("ssh-rsa"     :: BS.ByteString) <> putString sig -- FIXME
-        SignatureOther algo     -> putName algo
+    put s = B.word32BE (len s - 4) <> putName (name s) <> case s of
+        SignatureEd25519    sig -> put       sig
+        SignatureRSA        sig -> putString sig -- FIXME
+        SignatureOther {}       -> mempty
         where
             len = fromIntegral . B.length . put -- FIXME
     get = getFramed $ getName >>= \case
@@ -864,28 +869,30 @@ instance Encoding Ed25519.Signature where
         CryptoPassed k -> pure k
         CryptoFailed _ -> fail ""
 
-instance Encoding RSA.PublicKey where
-    put (RSA.PublicKey _ n e) =
-        putInteger n <>
-        putInteger e
-        where
-          putInteger x = putString bs
-              where
-                  bs      = BA.pack $ g $ f x [] :: BS.ByteString
-                  f 0 acc = acc
-                  f i acc = let (q,r) = quotRem i 256
-                            in  f q (fromIntegral r : acc)
-                  g []        = []
-                  g yys@(y:_) | y > 128   = 0:yys
-                              | otherwise = yys
-    get = do
-        (n,_) <- getIntegerAndSize
-        (e,s) <- getIntegerAndSize
-        pure $ RSA.PublicKey s n e
-        where
-            -- Observing the encoded length is far cheaper than calculating the
-            -- log2 of the resulting integer.
-            getIntegerAndSize :: Get (Integer, Int)
-            getIntegerAndSize = do
-              ws <- dropWhile (== 0) . (BA.unpack :: BS.ByteString -> [Word8]) <$> getString -- eventually remove leading 0 byte
-              pure (foldl' (\acc w8-> acc * 256 + fromIntegral w8) 0 ws, length ws * 8)
+putRsaPublicKey :: B.Builder b => RSA.PublicKey -> b
+putRsaPublicKey (RSA.PublicKey _ n e) =
+    putInteger n <>
+    putInteger e
+    where
+        putInteger x = putString bs
+            where
+                bs      = BA.pack $ g $ f x [] :: BS.ByteString
+                f 0 acc = acc
+                f i acc = let (q,r) = quotRem i 256
+                        in  f q (fromIntegral r : acc)
+                g []        = []
+                g yys@(y:_) | y > 128   = 0:yys
+                            | otherwise = yys
+
+getRsaPublicKey :: Get RSA.PublicKey
+getRsaPublicKey = do
+    (n,_) <- getIntegerAndSize
+    (e,s) <- getIntegerAndSize
+    pure $ RSA.PublicKey s n e
+    where
+        -- Observing the encoded length is far cheaper than calculating the
+        -- log2 of the resulting integer.
+        getIntegerAndSize :: Get (Integer, Int)
+        getIntegerAndSize = do
+            ws <- dropWhile (== 0) . (BA.unpack :: BS.ByteString -> [Word8]) <$> getString -- eventually remove leading 0 byte
+            pure (foldl' (\acc w8-> acc * 256 + fromIntegral w8) 0 ws, length ws * 8)

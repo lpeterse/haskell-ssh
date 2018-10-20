@@ -29,19 +29,19 @@ tests = testGroup "Network.SSH.Transport"
 test01 :: TestTree
 test01 = testCase "key exchange yields same session id on both sides" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket def `finally` close clientSocket) $ \client -> do
             (Right sid1, Right sid2) <- waitBoth server client
             assertEqual "session ids" sid1 sid2
     where
         runServer stream config agent = withTransport config (Just agent) stream (const pure)
-        runClient stream config  = withTransport config Nothing stream (const pure)
+        runClient stream config  = withTransport config (Nothing :: Maybe KeyPair) stream (const pure)
 
 test02 :: TestTree
 test02 = testCase "server sends first message, client receives" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket def `finally` close clientSocket) $ \client -> do
             (s,c) <- waitBoth server client
@@ -51,14 +51,14 @@ test02 = testCase "server sends first message, client receives" $ do
         runServer stream config agent = withTransport config (Just agent) stream $ \transport _ -> do
             sendMessage transport (ChannelData (ChannelId 0) "ABCD")
             pure ()
-        runClient stream config  = withTransport config Nothing stream $ \transport _ -> do
+        runClient stream config  = withTransport config (Nothing :: Maybe KeyPair) stream $ \transport _ -> do
             ChannelData _ msg <- receiveMessage transport
             pure msg
 
 test03 :: TestTree
 test03 = testCase "client sends incorrect version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket "GET / HTTP/1.1\n\n"
         wait server >>= assertEqual "res" (Left exceptionProtocolVersionNotSupported)
@@ -68,7 +68,7 @@ test03 = testCase "client sends incorrect version string" $ do
 test04 :: TestTree
 test04 = testCase "client sends incomplete version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket "SSH-2.0-OpenSSH_4.3"
         wait server >>= assertEqual "res" (Left exceptionProtocolVersionNotSupported)
@@ -78,7 +78,7 @@ test04 = testCase "client sends incomplete version string" $ do
 test05 :: TestTree
 test05 = testCase "client disconnects hard before sending version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> fromKeyPair $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         close clientSocket
         wait server >>= assertEqual "res" (Left exceptionConnectionLost)
@@ -88,7 +88,7 @@ test05 = testCase "client disconnects hard before sending version string" $ do
 test06 :: TestTree
 test06 = testCase "client disconnects gracefully after sending version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> AuthAgent $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket $ runPut $ put $ Version "SSH-2.0-OpenSSH_4.3"
         void $ plainEncryptionContext clientSocket 0 (put $ Disconnected DisconnectByApplication "ABC" mempty)

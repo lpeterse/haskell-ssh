@@ -47,10 +47,10 @@ import           Network.SSH.Name
 import           Network.SSH.Stream
 
 data Transport
-    = forall stream. DuplexStream stream => TransportEnv
+    = forall stream agent. (DuplexStream stream, AuthAgent agent) => TransportEnv
     { tStream                   :: stream
     , tConfig                   :: TransportConfig
-    , tAuthAgent                :: Maybe AuthAgent
+    , tAuthAgent                :: Maybe agent
     , tClientVersion            :: Version
     , tServerVersion            :: Version
     , tBytesSent                :: MVar Word64
@@ -106,8 +106,8 @@ instance MessageStream Transport where
         transportReceiveMessage t
 
 withTransport ::
-    (DuplexStream stream) =>
-    TransportConfig -> Maybe AuthAgent -> stream ->
+    (DuplexStream stream, AuthAgent agent) =>
+    TransportConfig -> Maybe agent -> stream ->
     (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
 withTransport config magent stream runWith = withFinalExceptionHandler $ do
     (clientVersion, serverVersion) <- case magent of
@@ -228,11 +228,11 @@ transportReceiveRawMessageMaybe env =
 -------------------------------------------------------------------------------
 
 setChaCha20Poly1305Context :: Transport -> KeyStreams -> IO ()
-setChaCha20Poly1305Context env@TransportEnv { tStream = stream } (KeyStreams keys) = do
-    modifyMVar_ (tEncryptionCtxNext env) $ const $ case tAuthAgent env of
+setChaCha20Poly1305Context env@TransportEnv { tStream = stream, tAuthAgent = agent } (KeyStreams keys) = do
+    modifyMVar_ (tEncryptionCtxNext env) $ const $ case agent of
         Just {} -> newChaCha20Poly1305EncryptionContext stream headerKeySC mainKeySC
         Nothing -> newChaCha20Poly1305EncryptionContext stream headerKeyCS mainKeyCS
-    modifyMVar_ (tDecryptionCtxNext env) $ const $ case tAuthAgent env of
+    modifyMVar_ (tDecryptionCtxNext env) $ const $ case agent of
         Just {} -> newChaCha20Poly1305DecryptionContext stream headerKeyCS mainKeyCS
         Nothing -> newChaCha20Poly1305DecryptionContext stream headerKeySC mainKeySC
     where
@@ -246,9 +246,9 @@ setChaCha20Poly1305Context env@TransportEnv { tStream = stream } (KeyStreams key
 -------------------------------------------------------------------------------
 
 kexInitialize :: Transport -> IO SessionId
-kexInitialize env = do
+kexInitialize env@TransportEnv { tAuthAgent = agent } = do
     cookie <- newCookie
-    putMVar (tKexContinuation env) $ case tAuthAgent env of
+    putMVar (tKexContinuation env) $ case agent of
         Just aa -> kexServerContinuation env cookie aa
         Nothing -> kexClientContinuation env cookie
     kexTrigger env
@@ -339,7 +339,7 @@ kexClientContinuation env cookie = clientKex0
                 hash = kexHash cv sv cki ski shk cek sek sec
 
 -- NB: Uses transportSendMessage to avoid rekeying-loop
-kexServerContinuation :: Transport -> Cookie -> AuthAgent -> KexContinuation
+kexServerContinuation :: AuthAgent agent => Transport -> Cookie -> agent -> KexContinuation
 kexServerContinuation env cookie authAgent = serverKex0
     where
         serverKex0 :: KexContinuation
@@ -386,7 +386,7 @@ kexServerContinuation env cookie authAgent = serverKex0
                             sek  = Curve25519.toPublic sekSecret
                             sec  = Curve25519.dh cek sekSecret
                             hash = kexHash cv sv cki ski shk cek sek sec
-                        sig <- maybe (throwIO exceptionKexNoSignature) pure =<< signHash authAgent shk hash
+                        sig <- maybe (throwIO exceptionKexNoSignature) pure =<< getSignature authAgent shk hash
                         sid <- trySetSessionId env (SessionId $ SBS.toShort $ BA.convert hash)
                         setChaCha20Poly1305Context env $ kexKeys sec hash sid
                         transportSendMessage env (KexEcdhReply shk sek sig)

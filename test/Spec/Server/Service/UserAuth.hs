@@ -82,14 +82,13 @@ testActive01 = testCase "authenticate by public key (no signature)" $ do
         with _ = Just undefined
         user = UserName "fnord"
         srvc = ServiceName "ssh-connection"
-        algo = Algorithm "ssh-ed25519"
         sess = SessionId "\196\249b\160;FF\DLE\173\&1>\179w=\238\210\140\&8!:\139=QUx\169C\209\165\FS\185I"
         pubk = PublicKeyEd25519 (pass $ Ed25519.publicKey ("\185\EOT\150\CAN\142)\175\161\242\141/\SI\214=n$?\189Z\172\214\190\EM\190^\226\r\241\197\&8\235\130" :: BS.ByteString))
-        auth = AuthPublicKey algo pubk Nothing
+        auth = AuthPublicKey pubk Nothing
         req0 = MsgServiceRequest $ ServiceRequest (ServiceName "ssh-userauth")
         res0 = ServiceAccept (ServiceName "ssh-userauth")
         req1 = MsgUserAuthRequest $ UserAuthRequest user srvc auth
-        res1 = UserAuthPublicKeyOk algo pubk
+        res1 = UserAuthPublicKeyOk pubk
         pass (CryptoPassed x) = x
         pass _                = undefined
         onAuth _ _ _ = pure (Just user)
@@ -110,7 +109,7 @@ testActive02 = testCase "authenticate by public key (incorrect signature)" $ do
         sess = SessionId "\196\249b\160;FF\DLE\173\&1>\179w=\238\210\140\&8!:\139=QUx\169C\209\165\FS\185I"
         pubk = PublicKeyEd25519 (pass $ Ed25519.publicKey ("\185\EOT\150\CAN\142)\175\161\242\141/\SI\214=n$?\189Z\172\214\190\EM\190^\226\r\241\197\&8\235\130" :: BS.ByteString))
         sign = SignatureEd25519 (pass $ Ed25519.signature ("\NUL\NULG\NULw2\NUL\b|\ETX\239\136\213&|\145Zp\ACK\240p\243\128\vL\139N\ESC\207LI\t?\139D\DC36\206\252p\172\190)\238 {\\*\206\203\253\176\vE\EM\SYNkG\211\&2\192\201\EOT\ACK" :: BS.ByteString))
-        auth = AuthPublicKey (Algorithm "ssh-ed25519") pubk (Just sign)
+        auth = AuthPublicKey pubk (Just sign)
         req0 = ServiceRequest (ServiceName "ssh-userauth")
         res0 = ServiceAccept (ServiceName "ssh-userauth")
         req1 = UserAuthRequest user srvc auth
@@ -133,11 +132,10 @@ testActive03 = testCase "authenticate by public key (correct signature, user acc
         idnt = "identity" :: String
         user = UserName "fnord"
         srvc = ServiceName "ssh-connection"
-        algo = Algorithm "ssh-ed25519"
         sess = SessionId "\196\249b\160;FF\DLE\173\&1>\179w=\238\210\140\&8!:\139=QUx\169C\209\165\FS\185I"
         pubk = PublicKeyEd25519 (pass $ Ed25519.publicKey ("\185\EOT\150\CAN\142)\175\161\242\141/\SI\214=n$?\189Z\172\214\190\EM\190^\226\r\241\197\&8\235\130" :: BS.ByteString))
         sign = SignatureEd25519 (pass $ Ed25519.signature ("\152\211G\164w2\253\b|\ETX\239\136\213&|\145Zp\ACK\240p\243\128\vL\139N\ESC\207LI\t?\139D\DC36\206\252p\172\190)\238 {\\*\206\203\253\176\vE\EM\SYNkG\211\&2\192\201\EOT\ACK" :: BS.ByteString))
-        auth = AuthPublicKey algo pubk (Just sign)
+        auth = AuthPublicKey pubk (Just sign)
         req0 = ServiceRequest (ServiceName "ssh-userauth")
         res0 = ServiceAccept (ServiceName "ssh-userauth")
         req1 = UserAuthRequest user srvc auth
@@ -164,11 +162,10 @@ testActive04 = testCase "authenticate by public key (correct signature, user acc
         idnt = "identity" :: String
         user = UserName "fnord"
         srvc = ServiceName "unavailable-service"
-        algo = Algorithm "ssh-ed25519"
         sess = SessionId "\196\249b\160;FF\DLE\173\&1>\179w=\238\210\140\&8!:\139=QUx\169C\209\165\FS\185I"
         pubk = PublicKeyEd25519 (pass $ Ed25519.publicKey ("J\190r%\232\247\220\n\160\129m\132\RS\193\NULL\128\152}\142\SUB\161\f\229\f\137\254M\192>n\182" :: BS.ByteString))
         sign = SignatureEd25519 (pass $ Ed25519.signature ("\244\173\199<\202 \204Q\185z\EOTU\v\236\&37\"u\248TE^3fk\158|@^\215\142\DC4\234\234\DC1\224\236\FS{\CAN\144^\140\148X\169\174+\\:y\226\&9K\141\182:\NUL_\245\DC1a\228\b" :: BS.ByteString))
-        auth = AuthPublicKey algo pubk (Just sign)
+        auth = AuthPublicKey pubk (Just sign)
         req0 = ServiceRequest (ServiceName "ssh-userauth")
         res0 = ServiceAccept (ServiceName "ssh-userauth")
         req1 = UserAuthRequest user srvc auth
@@ -191,11 +188,10 @@ testActive05 = testCase "authenticate by public key (correct signature, user rej
     where
         user = UserName "fnord"
         srvc = ServiceName "ssh-connection"
-        algo = Algorithm "ssh-ed25519"
         sess = SessionId "\196\249b\160;FF\DLE\173\&1>\179w=\238\210\140\&8!:\139=QUx\169C\209\165\FS\185I"
         pubk = PublicKeyEd25519 (pass $ Ed25519.publicKey ("\185\EOT\150\CAN\142)\175\161\242\141/\SI\214=n$?\189Z\172\214\190\EM\190^\226\r\241\197\&8\235\130" :: BS.ByteString))
         sign = SignatureEd25519 (pass $ Ed25519.signature ("\152\211G\164w2\253\b|\ETX\239\136\213&|\145Zp\ACK\240p\243\128\vL\139N\ESC\207LI\t?\139D\DC36\206\252p\172\190)\238 {\\*\206\203\253\176\vE\EM\SYNkG\211\&2\192\201\EOT\ACK" :: BS.ByteString))
-        auth = AuthPublicKey algo pubk (Just sign)
+        auth = AuthPublicKey pubk (Just sign)
         req0 = ServiceRequest (ServiceName "ssh-userauth")
         res0 = ServiceAccept (ServiceName "ssh-userauth")
         req1 = UserAuthRequest user srvc auth
@@ -216,11 +212,10 @@ testActive06 = testCase "authenticate by public key (key/signature type mismatch
     where
         user = UserName "fnord"
         srvc = ServiceName "ssh-connection"
-        algo = Algorithm "ssh-ed25519"
         sess = SessionId "\196\249b\160;FF\DLE\173\&1>\179w=\238\210\140\&8!:\139=QUx\169C\209\165\FS\185I"
         pubk = PublicKeyRSA $ RSA.PublicKey 24 65537 2834792
         sign = SignatureEd25519 (pass $ Ed25519.signature ("\152\211G\164w2\253\b|\ETX\239\136\213&|\145Zp\ACK\240p\243\128\vL\139N\ESC\207LI\t?\139D\DC36\206\252p\172\190)\238 {\\*\206\203\253\176\vE\EM\SYNkG\211\&2\192\201\EOT\ACK" :: BS.ByteString))
-        auth = AuthPublicKey algo pubk (Just sign)
+        auth = AuthPublicKey pubk (Just sign)
         req0 = MsgServiceRequest $ ServiceRequest (ServiceName "ssh-userauth")
         res0 = ServiceAccept (ServiceName "ssh-userauth")
         req1 = MsgUserAuthRequest $ UserAuthRequest user srvc auth

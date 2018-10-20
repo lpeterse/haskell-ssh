@@ -23,6 +23,7 @@ import           Data.Bits
 import           Data.ByteArray
 import qualified Data.ByteArray         as BA
 import qualified Data.ByteArray.Parse   as BP
+import qualified Data.ByteString        as BS
 import qualified Data.ByteString.Short  as SBS
 import           Data.String
 import           Data.Word
@@ -47,18 +48,18 @@ instance HasName PublicKey where
 toPublicKey :: KeyPair -> PublicKey
 toPublicKey (KeyPairEd25519 pk _) = PublicKeyEd25519 pk
 
-decodePrivateKeyFile :: ( MonadFail m, BA.ByteArray input, IsString input, Show input
-                        , BA.ByteArray passphrase, BA.ByteArray comment )
-                     => passphrase -> input -> m [(KeyPair, comment)]
-decodePrivateKeyFile passphrase = f . BP.parse (parsePrivateKeyFile passphrase)
+decodePrivateKeyFile ::
+    ( MonadFail m, BA.ByteArray input, BA.ByteArrayAccess passphrase, BA.ByteArray comment )
+    => passphrase -> input -> m [(KeyPair, comment)]
+decodePrivateKeyFile passphrase = f . BP.parse (parsePrivateKeyFile passphrase) . BA.convert
     where
         f (BP.ParseOK _ a) = pure a
         f (BP.ParseFail e) = fail e
         f (BP.ParseMore c) = f (c Nothing)
 
-parsePrivateKeyFile :: ( BA.ByteArray input, IsString input, Show input
-                       , BA.ByteArray passphrase, BA.ByteArray comment )
-                    => passphrase -> BP.Parser input [(KeyPair, comment)]
+parsePrivateKeyFile ::
+    ( BA.ByteArrayAccess passphrase, BA.ByteArray comment )
+    => passphrase -> BP.Parser BS.ByteString [(KeyPair, comment)]
 parsePrivateKeyFile passphrase = do
     BP.bytes "-----BEGIN OPENSSH PRIVATE KEY-----"
     void $ many space
@@ -155,7 +156,7 @@ parsePrivateKeyFile passphrase = do
                 rounds <- fromIntegral <$> getWord32be
                 pure $ \case
                     Cipher.KeySizeFixed len ->
-                      CryptoPassed $ BCryptPBKDF.generate (BCryptPBKDF.Parameters rounds len) passphrase salt
+                      CryptoPassed $ BCryptPBKDF.generate (BCryptPBKDF.Parameters rounds len) (BA.convert passphrase :: BA.Bytes) salt
                     _ -> undefined -- impossible
             _ -> fail $ "Unsupported key derivation function " ++ show (convert kdfAlgo :: BA.Bytes)
 

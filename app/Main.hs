@@ -40,8 +40,7 @@ main = do
     file                <- BS.readFile "./resources/id_ed25519"
     (privateKey, _) : _ <-
         decodePrivateKeyFile BS.empty file :: IO [(KeyPair, BA.Bytes)]
-    let agent = fromKeyPair privateKey
-    bracket open close (accept config agent)
+    bracket open close (accept config privateKey)
   where
     config = def
         { Server.transportConfig = def
