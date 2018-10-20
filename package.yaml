@@ -37,6 +37,7 @@ library:
     - Network.SSH
     - Network.SSH.Server
     - Network.SSH.Client
+    - Network.SSH.Internal
 
 tests:
   hssh-test:

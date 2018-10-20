@@ -19,7 +19,7 @@ import           Network.SSH.Name
 
 -- | Configuration for the user authentication layer.
 --
--- After a successfull key exchange the client will usually
+-- After a successful key exchange the client will usually
 -- request the @user-auth@ service to authenticate against.
 -- In this implementation, the @user-auth@ service is the
 -- only service available after key exchange and the client

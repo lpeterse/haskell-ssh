@@ -10,8 +10,6 @@ import           Data.Default
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
-import           Network.SSH.AuthAgent
-import           Network.SSH.Key
 import           Network.SSH.Internal
 
 import           Spec.Util

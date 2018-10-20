@@ -73,7 +73,7 @@ import           Network.SSH.Transport
 --
 -- handleShellRequest :: `OutputStream` stdout => `Session` `Network.SSH.UserName` -> IO `System.Exit.ExitCode`
 -- handleShellRequest (Session user pty env stdin stdout stderr) = do
---     send stdout "Hellow, world!\\n"
+--     send stdout "Hello, world!\\n"
 --     pure `System.Exit.ExitSuccess`
 -- @
 serve :: (DuplexStream stream, AuthAgent agent) => Config identity -> agent -> stream -> IO Disconnect

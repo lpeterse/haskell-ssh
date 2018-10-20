@@ -11,7 +11,6 @@ import           Control.Monad
 import           Test.Tasty.HUnit
 
 import           Network.SSH.Internal
-import           Network.SSH.Stream
 
 assertThrows :: (Eq e, Exception e) => String -> e -> IO a -> Assertion
 assertThrows label e action = (action >> failure0) `catch` \e'-> when (e /= e') (failure1 e')
