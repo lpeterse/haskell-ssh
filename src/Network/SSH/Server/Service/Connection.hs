@@ -105,6 +105,7 @@ data Address
     } deriving (Eq, Ord, Show)
 
 instance S.InputStream DirectTcpIpState where
+    peek x = S.peek (dtiStreamIn x)
     receive x = S.receive (dtiStreamIn x)
 
 instance S.OutputStream DirectTcpIpState where

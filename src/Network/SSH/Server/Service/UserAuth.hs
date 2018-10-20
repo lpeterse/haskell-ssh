@@ -31,13 +31,13 @@ withAuthentication ::
 withAuthentication config transport session serviceHandler = do
     ServiceRequest srv <- receiveMessage transport
     case srv of
-        ServiceName "ssh-userauth" -> do
+        Name "ssh-userauth" -> do
             sendMessage transport (ServiceAccept srv)
             authenticate
         _ -> throwIO exceptionServiceNotAvailable
     where
         sendSupportedAuthMethods =
-            sendMessage transport $ UserAuthFailure ["publickey"] False
+            sendMessage transport $ UserAuthFailure [Name "publickey"] False
         sendPublicKeyIsOk pk =
             sendMessage transport $ UserAuthPublicKeyOk pk
         sendSuccess =
@@ -78,9 +78,9 @@ verifyAuthSignature sessionIdentifier userName serviceName publicKey signature =
         signedData = runPut $
             put           sessionIdentifier <>
             putWord8      50 <>
-            put           userName <>
-            put           serviceName <>
-            putString     ("publickey" :: BS.ByteString) <>
+            putName       userName <>
+            putName       serviceName <>
+            putName       (Name "publickey") <>
             putWord8      1 <>
             putName       (name publicKey) <>
             put           publicKey

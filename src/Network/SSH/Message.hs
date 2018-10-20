@@ -383,6 +383,9 @@ data PtySettings
 type ChannelWindowSize = Word32
 type ChannelMaxPacketSize = Word32
 
+type UserName = Name
+type ServiceName = Name
+
 newtype Cookie            = Cookie            SBS.ShortByteString
     deriving (Eq, Ord, Show)
 newtype Version           = Version           SBS.ShortByteString
@@ -390,10 +393,6 @@ newtype Version           = Version           SBS.ShortByteString
 newtype Password          = Password          SBS.ShortByteString
     deriving (Eq, Ord, Show)
 newtype SessionId         = SessionId         SBS.ShortByteString
-    deriving (Eq, Ord, Show)
-newtype UserName          = UserName          SBS.ShortByteString
-    deriving (Eq, Ord, Show)
-newtype ServiceName       = ServiceName       SBS.ShortByteString
     deriving (Eq, Ord, Show)
 newtype ChannelType       = ChannelType       SBS.ShortByteString
     deriving (Eq, Ord, Show)
@@ -526,12 +525,12 @@ instance Encoding Debug where
     get = expectWord8 4 >> Debug <$> getBool <*> getShortString <*> getShortString
 
 instance Encoding ServiceRequest where
-    put (ServiceRequest name) = putWord8 5 <> put name
-    get = expectWord8 5 >> ServiceRequest <$> get
+    put (ServiceRequest n) = putWord8 5 <> putName n
+    get = expectWord8 5 >> ServiceRequest <$> getName
 
 instance Encoding ServiceAccept where
-    put (ServiceAccept name) = putWord8 6 <> put name
-    get = expectWord8 6 >> ServiceAccept <$> get
+    put (ServiceAccept n) = putWord8 6 <> putName n
+    get = expectWord8 6 >> ServiceAccept <$> getName
 
 instance Encoding KexInit where
     put kex =
@@ -571,8 +570,8 @@ instance Encoding KexEcdhReply where
     get = expectWord8 31 >> KexEcdhReply <$> get <*> get <*> get
 
 instance Encoding UserAuthRequest where
-    put (UserAuthRequest un sn am) = putWord8 50 <> put un <> put sn <> put am
-    get = expectWord8 50 >> UserAuthRequest <$> get <*> get <*> get
+    put (UserAuthRequest un sn am) = putWord8 50 <> putName un <> putName sn <> put am
+    get = expectWord8 50 >> UserAuthRequest <$> getName <*> getName <*> get
 
 instance Encoding UserAuthFailure where
     put (UserAuthFailure ms ps) =
@@ -750,14 +749,6 @@ instance Encoding ChannelType where
 instance Encoding SessionId where
     put (SessionId x) = putShortString x
     get = SessionId <$> getShortString
-
-instance Encoding ServiceName where
-    put (ServiceName x) = putShortString x
-    get = ServiceName <$> getShortString
-
-instance Encoding UserName where
-    put (UserName x) = putShortString x
-    get = UserName <$> getShortString
 
 instance Encoding Version where
     put (Version x) =
