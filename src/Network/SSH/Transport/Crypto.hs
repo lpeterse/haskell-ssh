@@ -12,13 +12,13 @@ module Network.SSH.Transport.Crypto
     )
 where
 
-import           Control.Exception              ( throwIO )
+import           Control.Exception              ( throwIO, bracket )
 import           Control.Monad                  ( when )
 import           Data.Bits                      ( unsafeShiftL, (.|.) )
 import           Data.Memory.PtrMethods         ( memCopy, memConstEqual )
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
-import           Foreign.Marshal.Alloc          ( allocaBytes )
+import           Foreign.Marshal.Alloc          ( allocaBytes, mallocBytes, free )
 import           Foreign.Ptr
 import           Foreign.Storable               ( peekByteOff )
 import qualified Data.ByteArray                as BA
@@ -35,18 +35,23 @@ import qualified Network.SSH.Transport.Crypto.Poly1305 as Poly1305M
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.Bytes])
 
 type DecryptionContext = Word64 -> IO BS.ByteString
-type EncryptionContext = Word64 -> B.ByteArrayBuilder -> IO BS.ByteString
+type EncryptionContext = Word64 -> B.ByteArrayBuilder -> IO Int
 
 plainEncryptionContext :: OutputStream stream => stream -> EncryptionContext
-plainEncryptionContext _ _ payload = pure $ runPut $
-    B.word32BE (fromIntegral packetLen) <>
-    putWord8 (fromIntegral paddingLen) <>
-    payload <>
-    B.zeroes (fromIntegral paddingLen)
+plainEncryptionContext stream _ payload = allocaBytes messageLen $ \ptr -> do
+    B.copyToPtr messageBuilder ptr
+    sendAllUnsafe stream (BA.MemView ptr messageLen)
+    pure packetLen
     where
         payloadLen = B.babLength payload
-        paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8
+        paddingLen = 16 - (headerLen + 1 + payloadLen) `mod` 8
         packetLen  = 1 + payloadLen + paddingLen
+        messageLen = headerLen + packetLen
+        messageBuilder =
+            B.word32BE (fromIntegral packetLen) <>
+            putWord8 (fromIntegral paddingLen) <>
+            payload <>
+            B.zeroes (fromIntegral paddingLen)
 
 plainDecryptionContext :: InputStream stream => stream -> DecryptionContext
 plainDecryptionContext stream = const $ allocaBytes headerLen $ \headerPtr -> do
@@ -67,7 +72,7 @@ plainDecryptionContext stream = const $ allocaBytes headerLen $ \headerPtr -> do
 newChaCha20Poly1305EncryptionContext ::
     (OutputStream stream, BA.ByteArrayAccess key) =>
     stream -> key -> key -> IO EncryptionContext
-newChaCha20Poly1305EncryptionContext _ headerKey mainKey = do
+newChaCha20Poly1305EncryptionContext stream headerKey mainKey = do
     chaChaState <- ChaChaM.new
     polyState <- Poly1305M.new
     poly64 <- BA.alloc (2 * polyKeyLen) (const $ pure ()) :: IO BA.Bytes
@@ -75,8 +80,10 @@ newChaCha20Poly1305EncryptionContext _ headerKey mainKey = do
         let plainLen   = B.babLength plainBuilder :: Int
             packetLen  = 1 + plainLen + paddingLen
             paddingLen = paddingLenFor plainLen
-        BA.alloc (headerLen + packetLen + macLen) $ \headerPtr -> do
-            let macPtr        = plusPtr packetPtr packetLen
+            messageLen = headerLen + packetLen + macLen
+        allocaBytes messageLen $ \messagePtr -> do
+            let headerPtr     = messagePtr
+                macPtr        = plusPtr packetPtr packetLen
                 noncePtr      = macPtr
                 nonceView     = BA.MemView noncePtr nonceLen
                 packetPtr     = plusPtr headerPtr headerLen
@@ -98,6 +105,8 @@ newChaCha20Poly1305EncryptionContext _ headerKey mainKey = do
                 Poly1305M.authUnsafe polyState
                     (BA.MemView poly64Ptr polyKeyLen)
                     (BA.MemView headerPtr $ headerLen + packetLen) macPtr
+            sendAllUnsafe stream (BA.MemView messagePtr messageLen)
+            pure messageLen
 
 newChaCha20Poly1305DecryptionContext ::
     InputStream stream => BA.ByteArrayAccess key =>
@@ -197,6 +206,14 @@ receiveAllUnsafe stream v@(BA.MemView ptr n)
         m <- receiveUnsafe stream v
         when (m <= 0) (throwIO exceptionConnectionLost)
         receiveAllUnsafe stream (BA.MemView (plusPtr ptr m) (n - m))
+
+sendAllUnsafe :: OutputStream stream => stream -> BA.MemView -> IO ()
+sendAllUnsafe stream v@(BA.MemView ptr n)
+    | n <= 0 = pure ()
+    | otherwise = do
+        m <- sendUnsafe stream v
+        when (m <= 0) (throwIO exceptionConnectionLost)
+        sendAllUnsafe stream (BA.MemView (plusPtr ptr m) (n - m))
 
 peekPacketLen :: Ptr Word8 -> IO Int
 peekPacketLen ptr = do

@@ -172,22 +172,17 @@ withTransport config magent stream runWith = withFinalExceptionHandler $ do
             _ -> pure (Left e)
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
-transportSendMessage env msg =
-    transportSendRawMessage env (put msg)
-
-transportSendRawMessage :: Transport -> B.ByteArrayBuilder -> IO ()
-transportSendRawMessage env@TransportEnv { tStream = stream } plainText =
-    modifyMVar_ (tEncryptionCtx env) $ \encrypt -> do
-        onSend (tConfig env) (runPut plainText)
-        -- NB: Increase packet counter before sending in order
-        --     to avoid nonce reuse in exceptional cases!
+transportSendMessage env@TransportEnv { tStream = stream } msg =
+    modifyMVar_ (tEncryptionCtx env) $ \sendEncrypted -> do
+        onSend (tConfig env) (runPut payload)
         packets <- modifyMVar (tPacketsSent env) $ \p -> pure . (,p) $! p + 1
-        cipherText <- encrypt packets plainText
-        sendAll stream cipherText
-        modifyMVar_ (tBytesSent env) $ \bytes -> pure $! bytes + fromIntegral (BS.length cipherText)
-        case runGet (runPut plainText) of
-            Nothing         -> pure encrypt
-            Just KexNewKeys -> readMVar (tEncryptionCtxNext env)
+        sent <- sendEncrypted packets payload
+        modifyMVar_ (tBytesSent env) $ \bytes -> pure $! bytes + fromIntegral sent
+        if B.babLength payload == 1 && runGet (runPut payload) == Just KexNewKeys
+            then readMVar (tEncryptionCtxNext env)
+            else pure sendEncrypted
+    where
+        payload = put msg
 
 transportReceiveMessage :: Encoding msg => Transport -> IO msg
 transportReceiveMessage env = do
