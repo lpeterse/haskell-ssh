@@ -78,6 +78,14 @@ exceptionPacketLengthExceeded :: Disconnect
 exceptionPacketLengthExceeded =
     Disconnect Local DisconnectProtocolError "packet length exceeded"
 
+exceptionAuthenticationTimeout :: Disconnect
+exceptionAuthenticationTimeout =
+    Disconnect Local DisconnectByApplication "authentication timeout"
+
+exceptionAuthenticationLimitExceeded :: Disconnect
+exceptionAuthenticationLimitExceeded =
+    Disconnect Local DisconnectByApplication "authentication limit exceeded"
+
 exceptionServiceNotAvailable :: Disconnect
 exceptionServiceNotAvailable =
     Disconnect Local DisconnectServiceNotAvailable mempty

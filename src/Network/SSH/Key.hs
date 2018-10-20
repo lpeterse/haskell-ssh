@@ -4,6 +4,7 @@
 {-# LANGUAGE TypeFamilies                #-}
 module Network.SSH.Key
     (   KeyPair (..)
+    ,   newKeyPair
     ,   PublicKey (..)
     ,   decodePrivateKeyFile
     ,   toPublicKey
@@ -42,6 +43,10 @@ instance HasName PublicKey where
     name PublicKeyEd25519 {} = Name "ssh-ed25519"
     name PublicKeyRSA {}     = Name "ssh-rsa"
     name (PublicKeyOther n)  = n
+
+newKeyPair :: IO KeyPair
+newKeyPair = 
+    (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
 
 toPublicKey :: KeyPair -> PublicKey
 toPublicKey (KeyPairEd25519 pk _) = PublicKeyEd25519 pk

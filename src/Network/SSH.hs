@@ -3,15 +3,21 @@ module Network.SSH
       -- ** AuthAgent
       AuthAgent (..)
     , KeyPair (..)
+      -- ** newKeyPair
+    , newKeyPair
       -- ** decodePrivateKeyFile
     , decodePrivateKeyFile
       -- * Input / Output
-    , DuplexStream (..)
+    , DuplexStream
     , InputStream (..)
     , OutputStream (..)
+      -- * Transport
+    , TransportConfig (..)
       -- * Misc
       -- ** Name
     , Name ()
+    , UserName
+    , ServiceName
     , HasName (..)
       -- ** Algorithms
     , HostKeyAlgorithm (..)
@@ -30,3 +36,4 @@ import Network.SSH.Key
 import Network.SSH.Message
 import Network.SSH.Name
 import Network.SSH.Stream
+import Network.SSH.Transport
