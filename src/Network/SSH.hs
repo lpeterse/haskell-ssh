@@ -5,6 +5,10 @@ module Network.SSH
     , KeyPair (..)
       -- ** decodePrivateKeyFile
     , decodePrivateKeyFile
+      -- * Input / Output
+    , DuplexStream (..)
+    , InputStream (..)
+    , OutputStream (..)
       -- * Misc
       -- ** Name
     , Name ()
@@ -25,3 +29,4 @@ import Network.SSH.AuthAgent
 import Network.SSH.Key
 import Network.SSH.Message
 import Network.SSH.Name
+import Network.SSH.Stream

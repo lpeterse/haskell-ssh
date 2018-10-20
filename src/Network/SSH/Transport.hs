@@ -177,7 +177,7 @@ withTransport config magent stream runWith = withFinalExceptionHandler $ do
             _ -> pure (Left e)
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
-transportSendMessage env@TransportEnv { tStream = stream } msg =
+transportSendMessage env msg =
     modifyMVar_ (tEncryptionCtx env) $ \sendEncrypted -> do
         onSend (tConfig env) (runPut payload)
         packets <- modifyMVar (tPacketsSent env) $ \p -> pure . (,p) $! p + 1

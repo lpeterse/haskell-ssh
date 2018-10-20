@@ -1,15 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Spec.Server.Service.Connection ( tests ) where
     
-import           Control.Applicative
-import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async
-import           Control.Concurrent.STM.TChan
-import           Control.Concurrent.STM.TMVar
-import           Control.Concurrent.STM.TVar
-import           Control.Exception
-import           Control.Monad
-import           Control.Monad.STM
 import           System.Exit
 import           Data.Default
 import qualified Data.Map.Strict as M
@@ -160,7 +152,7 @@ test07 :: TestTree
 test07  = testCase "close channel (don't reuse unless acknowledged)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -194,7 +186,7 @@ test08 :: TestTree
 test08  = testCase "close channel (reuse when acknowledged)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -229,7 +221,7 @@ testRequest01 :: TestTree
 testRequest01 = testCase "reject unknown / unimplemented requests" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -250,7 +242,7 @@ testRequestSession01 :: TestTree
 testRequestSession01 = testCase "env request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -280,7 +272,7 @@ testRequestSession02 :: TestTree
 testRequestSession02 = testCase "pty request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1

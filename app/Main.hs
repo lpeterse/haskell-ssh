@@ -30,10 +30,8 @@ import qualified System.Socket.Type.Stream     as S
 import qualified System.Socket.Unsafe          as S
 import           Data.Default
 
-import           Network.SSH.Key
+import           Network.SSH
 import qualified Network.SSH.Server            as Server
-import           Network.SSH.Stream
-import           Network.SSH.AuthAgent
 
 main :: IO ()
 main = do

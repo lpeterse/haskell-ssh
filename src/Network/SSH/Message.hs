@@ -75,18 +75,18 @@ module Network.SSH.Message
     -- * Misc
   , AuthMethod (..)
   , ChannelId (..)
-  , ChannelMaxPacketSize
   , ChannelType (..)
+  , ChannelPacketSize
   , ChannelWindowSize
   , Cookie (), newCookie, nilCookie
   , Password (..)
   , PtySettings (..)
   , PublicKey (..)
-  , ServiceName (..)
   , SessionId (..)
   , Signature (..)
-  , UserName (..)
   , Version (..)
+  , ServiceName
+  , UserName
   ) where
 
 import           Control.Applicative
@@ -231,7 +231,7 @@ data UserAuthPublicKeyOk
     deriving (Eq, Show)
 
 data ChannelOpen
-    = ChannelOpen ChannelId ChannelWindowSize ChannelMaxPacketSize ChannelOpenType
+    = ChannelOpen ChannelId ChannelWindowSize ChannelPacketSize ChannelOpenType
     deriving (Eq, Show)
 
 data ChannelOpenType
@@ -246,7 +246,7 @@ data ChannelOpenType
     deriving (Eq, Show)
 
 data ChannelOpenConfirmation
-    = ChannelOpenConfirmation ChannelId ChannelId ChannelWindowSize ChannelMaxPacketSize
+    = ChannelOpenConfirmation ChannelId ChannelId ChannelWindowSize ChannelPacketSize
     deriving (Eq, Show)
 
 data ChannelOpenFailure
@@ -381,21 +381,26 @@ data PtySettings
 
 
 type ChannelWindowSize = Word32
-type ChannelMaxPacketSize = Word32
+type ChannelPacketSize = Word32
 
 type UserName = Name
 type ServiceName = Name
 
 newtype Cookie            = Cookie            SBS.ShortByteString
     deriving (Eq, Ord, Show)
+
 newtype Version           = Version           SBS.ShortByteString
     deriving (Eq, Ord, Show)
+
 newtype Password          = Password          SBS.ShortByteString
     deriving (Eq, Ord, Show)
+
 newtype SessionId         = SessionId         SBS.ShortByteString
     deriving (Eq, Ord, Show)
+
 newtype ChannelType       = ChannelType       SBS.ShortByteString
     deriving (Eq, Ord, Show)
+
 newtype ChannelId         = ChannelId         Word32
     deriving (Eq, Ord, Show)
 
@@ -695,7 +700,7 @@ instance Encoding ChannelRequest where
     get = expectWord8 98 >> ChannelRequest <$> get <*> getShortString <*> getBool <*> getRemainingByteString
 
 instance Encoding ChannelRequestEnv where
-    put (ChannelRequestEnv name value) = putShortString name <> putShortString value
+    put (ChannelRequestEnv key value) = putShortString key <> putShortString value
     get = ChannelRequestEnv <$> getShortString <*> getShortString
 
 instance Encoding ChannelRequestPty where
@@ -798,7 +803,7 @@ instance Encoding PublicKey where
     put k = B.word32BE (len k - 4) <> putName (name k) <> case k of
         PublicKeyEd25519 key -> put key
         PublicKeyRSA     key -> putRsaPublicKey key
-        PublicKeyOther other -> mempty
+        PublicKeyOther    {} -> mempty
         where
             len = fromIntegral . B.length . put -- FIXME
     get = getFramed $ getName >>= \case
@@ -808,9 +813,9 @@ instance Encoding PublicKey where
 
 instance Encoding Signature where
     put s = B.word32BE (len s - 4) <> putName (name s) <> case s of
-        SignatureEd25519    sig -> put       sig
-        SignatureRSA        sig -> putString sig -- FIXME
-        SignatureOther {}       -> mempty
+        SignatureEd25519 sig -> put       sig
+        SignatureRSA     sig -> putString sig -- FIXME
+        SignatureOther    {} -> mempty
         where
             len = fromIntegral . B.length . put -- FIXME
     get = getFramed $ getName >>= \case

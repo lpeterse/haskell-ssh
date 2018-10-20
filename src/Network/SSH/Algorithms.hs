@@ -1,10 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Network.SSH.Algorithms where
-
-import qualified Data.ByteArray        as BA
-import qualified Data.ByteString.Short as SBS
-import           Data.String
 
 import           Network.SSH.Name
 

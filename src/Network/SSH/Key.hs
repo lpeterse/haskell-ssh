@@ -2,7 +2,6 @@
 {-# LANGUAGE MultiWayIf                  #-}
 {-# LANGUAGE OverloadedStrings           #-}
 {-# LANGUAGE TypeFamilies                #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving  #-}
 module Network.SSH.Key
     (   KeyPair (..)
     ,   PublicKey (..)
@@ -24,7 +23,6 @@ import           Data.ByteArray
 import qualified Data.ByteArray         as BA
 import qualified Data.ByteArray.Parse   as BP
 import qualified Data.ByteString        as BS
-import qualified Data.ByteString.Short  as SBS
 import           Data.String
 import           Data.Word
 

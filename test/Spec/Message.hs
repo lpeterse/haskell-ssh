@@ -285,17 +285,6 @@ instance Arbitrary Password where
         [ "1234567890"
         ]
 
-instance Arbitrary UserName where
-    arbitrary = elements $ fmap UserName
-        [ "franz"
-        , "franz-nord"
-        ]
-
-instance Arbitrary ServiceName where
-    arbitrary = elements $ fmap ServiceName
-        [ "ssh-connection"
-        ]
-
 instance Arbitrary AuthMethod where
     arbitrary = oneof
         [ pure AuthNone
