@@ -53,7 +53,7 @@ main = do
             { Server.onAuthRequest = \username _ _ -> pure (Just username)
             }
         , Server.connectionConfig  = def
-            { Server.onExecRequest        = Just runExec
+            { Server.onSessionRequest     = handleSessionRequest
             , Server.onDirectTcpIpRequest = serveHttp
             }
         }
@@ -73,8 +73,8 @@ main = do
                 void $ forkIO $ (serveStream `finally` S.close stream)
                 atomically $ check =<< readTVar ownershipTransferred
 
-serveHttp :: DuplexStream stream => identity -> Server.DirectTcpIpRequest -> IO (Maybe (stream -> IO ()))
-serveHttp idnt req = pure $ Just $ \stream-> do
+serveHttp :: (Show identity) => Server.DirectTcpIpRequest identity -> IO (Maybe Server.DirectTcpIpHandler)
+serveHttp req = pure $ Just $ Server.DirectTcpIpHandler $ \stream-> do
     bs <- receive stream 4096
     void $ send stream "HTTP/1.1 200 OK\n"
     void $ send stream "Content-Type: text/plain\n\n"
@@ -83,17 +83,12 @@ serveHttp idnt req = pure $ Just $ \stream-> do
     void $ send stream bs
     print bs
 
-runExec :: Server.Session identity -> SBS.ShortByteString -> IO ExitCode
-runExec (Server.Session identity pty env stdin stdout stderr) _command = withAsync receiver $ const $ do
+handleSessionRequest :: Server.SessionRequest identity -> IO (Maybe Server.SessionHandler)
+handleSessionRequest req = pure $ Just $ Server.SessionHandler $ \env pty command stdin stdout stderr -> do
     forM_ [1 ..  ] $ \i -> do
         void $ send stdout abc
-        threadDelay 100
+        threadDelay 1000
     pure (ExitFailure 23)
-    where
-        receiver = forever $ do
-            bs <- receive stdin 200
-            print (BS.length bs)
-            threadDelay 1000000
 
 abc :: BS.ByteString
 abc = "ABC"

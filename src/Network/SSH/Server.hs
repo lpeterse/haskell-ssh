@@ -8,10 +8,22 @@ module Network.SSH.Server (
     , UserAuthConfig (..)
     -- * Connection Layer
     , ConnectionConfig (..)
-    -- ** session
-    , Session (..)
-    -- ** direct-tcpip
+    -- ** Session
+    -- *** Request
+    , SessionRequest (..)
+    -- *** Handler
+    , SessionHandler (..)
+    -- *** Environment
+    , Environment ()
+    -- *** PtySettings
+    , PtySettings ()
+    -- *** Command
+    , Command ()
+    -- ** Direct TCP/IP
+    -- *** Request
     , DirectTcpIpRequest (..)
+    -- *** Handler
+    , DirectTcpIpHandler (..)
     , Address (..)
     ) where
 

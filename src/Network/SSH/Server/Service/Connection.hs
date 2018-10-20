@@ -11,7 +11,13 @@ module Network.SSH.Server.Service.Connection
     , ConnectionConfig (..)
     , Address (..)
     , Session (..)
+    , SessionRequest (..)
+    , SessionHandler (..)
+    , Environment (..)
+    , PtySettings (..)
+    , Command (..)
     , DirectTcpIpRequest (..)
+    , DirectTcpIpHandler (..)
     , ConnectionMsg (..)
     , serveConnection
     ) where
@@ -23,6 +29,7 @@ import           Control.Concurrent.STM.TMVar
 import           Control.Monad                (join, when, forever, unless)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import           Control.Exception            (bracket, bracketOnError)
+import qualified Data.ByteArray               as BA
 import qualified Data.ByteString.Short        as SBS
 import           Data.Default
 import qualified Data.Map.Strict              as M
@@ -43,11 +50,13 @@ data Connection identity
     , connChannels     :: TVar (M.Map ChannelId Channel)
     }
 
+newtype DirectTcpIpHandler =
+    DirectTcpIpHandler (forall stream. S.DuplexStream stream => stream -> IO ())
+
 data ConnectionConfig identity
     = ConnectionConfig
-    { onExecRequest         :: Maybe (Session identity -> SBS.ShortByteString -> IO ExitCode)
-    , onShellRequest        :: Maybe (Session identity -> IO ExitCode)
-    , onDirectTcpIpRequest  :: forall stream. S.DuplexStream stream => identity -> DirectTcpIpRequest -> IO (Maybe (stream -> IO ()))
+    { onSessionRequest      :: SessionRequest identity -> IO (Maybe SessionHandler)
+    , onDirectTcpIpRequest  :: DirectTcpIpRequest identity -> IO (Maybe DirectTcpIpHandler)
     , channelMaxCount       :: Word16
     , channelMaxQueueSize   :: Word32
     , channelMaxPacketSize  :: Word32
@@ -69,12 +78,22 @@ data ChannelApplication
 
 data SessionState
     = SessionState
-    { sessEnvironment :: TVar (M.Map SBS.ShortByteString SBS.ShortByteString)
+    { sessHandler     :: SessionHandler
+    , sessEnvironment :: TVar (M.Map SBS.ShortByteString SBS.ShortByteString)
     , sessPtySettings :: TVar (Maybe PtySettings)
     , sessStdin       :: Q.TStreamingQueue
     , sessStdout      :: Q.TStreamingQueue
     , sessStderr      :: Q.TStreamingQueue
     }
+
+data SessionRequest identity
+    = SessionRequest identity
+
+newtype SessionHandler =
+    SessionHandler (forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr)
+        => Environment -> Maybe PtySettings -> Maybe Command -> stdin -> stdout -> stderr -> IO ExitCode)
+
+newtype Environment = Environment (M.Map SBS.ShortByteString SBS.ShortByteString)
 
 data Session identity
     = forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr) => Session
@@ -92,11 +111,12 @@ data DirectTcpIpState
     , dtiStreamOut    :: Q.TStreamingQueue
     }
 
-data DirectTcpIpRequest
+data DirectTcpIpRequest identity
     = DirectTcpIpRequest
-    { destination   :: Address
+    { dtiIdentiy    :: identity
+    , destination   :: Address
     , origin        :: Address
-      } deriving (Eq, Ord, Show)
+    } deriving (Eq, Ord, Show)
 
 data Address
     = Address
@@ -138,9 +158,8 @@ instance Encoding ConnectionMsg where
 
 instance Default (ConnectionConfig identity) where
     def = ConnectionConfig
-        { onExecRequest                 = Nothing
-        , onShellRequest                = Nothing
-        , onDirectTcpIpRequest          = \_ _ -> pure Nothing
+        { onSessionRequest              = const $ pure Nothing
+        , onDirectTcpIpRequest          = const $ pure Nothing
         , channelMaxCount               = 256
         , channelMaxQueueSize           = 32 * 1024
         , channelMaxPacketSize          = 32 * 1024
@@ -175,30 +194,35 @@ connectionChannelOpen :: forall stream identity. MessageStream stream =>
     Connection identity -> stream -> ChannelOpen -> IO ()
 connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindowSize remotePacketSize channelType) =
     case channelType of
-        ChannelOpenSession -> do
-            env      <- newTVarIO mempty
-            pty      <- newTVarIO Nothing
-            wsLocal  <- newTVarIO maxQueueSize
-            wsRemote <- newTVarIO remoteWindowSize
-            stdIn    <- atomically $ Q.newTStreamingQueue maxQueueSize wsLocal
-            stdOut   <- atomically $ Q.newTStreamingQueue maxQueueSize wsRemote
-            stdErr   <- atomically $ Q.newTStreamingQueue maxQueueSize wsRemote
-            let app = ChannelApplicationSession SessionState
-                    { sessEnvironment = env
-                    , sessPtySettings = pty
-                    , sessStdin       = stdIn
-                    , sessStdout      = stdOut
-                    , sessStderr      = stdErr
-                    }
-            atomically (openApplicationChannel app) >>= \case
-                Left failure           -> sendMessage stream failure
-                Right (_,confirmation) -> sendMessage stream confirmation
-        ChannelOpenDirectTcpIp da dp oa op -> do
-            let req = DirectTcpIpRequest (Address da dp) (Address oa op)
-            onDirectTcpIpRequest (connConfig connection) (connIdentity connection) req >>= \case
+        ChannelOpenSession ->
+            onSessionRequest (connConfig connection) (SessionRequest (connIdentity connection)) >>= \case
                 Nothing ->
                     sendMessage stream $ openFailure ChannelOpenAdministrativelyProhibited
                 Just handler -> do
+                    env      <- newTVarIO mempty
+                    pty      <- newTVarIO Nothing
+                    wsLocal  <- newTVarIO maxQueueSize
+                    wsRemote <- newTVarIO remoteWindowSize
+                    stdIn    <- atomically $ Q.newTStreamingQueue maxQueueSize wsLocal
+                    stdOut   <- atomically $ Q.newTStreamingQueue maxQueueSize wsRemote
+                    stdErr   <- atomically $ Q.newTStreamingQueue maxQueueSize wsRemote
+                    let app = ChannelApplicationSession SessionState
+                            { sessHandler     = handler
+                            , sessEnvironment = env
+                            , sessPtySettings = pty
+                            , sessStdin       = stdIn
+                            , sessStdout      = stdOut
+                            , sessStderr      = stdErr
+                            }
+                    atomically (openApplicationChannel app) >>= \case
+                        Left failure           -> sendMessage stream failure
+                        Right (_,confirmation) -> sendMessage stream confirmation
+        ChannelOpenDirectTcpIp da dp oa op -> do
+            let req = DirectTcpIpRequest (connIdentity connection) (Address da dp) (Address oa op)
+            onDirectTcpIpRequest (connConfig connection) req >>= \case
+                Nothing ->
+                    sendMessage stream $ openFailure ChannelOpenAdministrativelyProhibited
+                Just (DirectTcpIpHandler handler) -> do
                     wsLocal   <- newTVarIO maxQueueSize
                     wsRemote  <- newTVarIO remoteWindowSize
                     streamIn  <- atomically $ Q.newTStreamingQueue maxQueueSize wsLocal
@@ -326,31 +350,27 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
                 writeTVar (sessPtySettings sessionState) (Just settings)
                 pure $ success channel
             "shell" -> interpret $ \ChannelRequestShell -> do
-                st <- Session (connIdentity connection)
-                    <$> readTVar (sessEnvironment sessionState)
-                    <*> readTVar (sessPtySettings sessionState)
-                    <*> pure (sessStdin  sessionState)
-                    <*> pure (sessStdout sessionState)
-                    <*> pure (sessStderr sessionState)
-                case onShellRequest (connConfig connection) of
-                    Nothing->
-                        pure $ failure channel
-                    Just exec -> pure $ do
-                        forkSessionExecHandler stream channel sessionState (exec st)
-                        success channel
+                env    <- Environment <$> readTVar (sessEnvironment sessionState)
+                pty    <- readTVar (sessPtySettings sessionState)
+                stdin  <- pure (sessStdin  sessionState)
+                stdout <- pure (sessStdout sessionState)
+                stderr <- pure (sessStderr sessionState)
+                let SessionHandler handler = sessHandler sessionState
+                pure $ do
+                    forkSessionHandler stream channel stdin stdout stderr $
+                        handler env pty Nothing stdin stdout stderr
+                    success channel
             "exec" -> interpret $ \(ChannelRequestExec command) -> do
-                st <- Session (connIdentity connection)
-                    <$> readTVar (sessEnvironment sessionState)
-                    <*> readTVar (sessPtySettings sessionState)
-                    <*> pure (sessStdin  sessionState)
-                    <*> pure (sessStdout sessionState)
-                    <*> pure (sessStderr sessionState)
-                case onExecRequest (connConfig connection) of
-                    Nothing->
-                        pure $ failure channel
-                    Just exec -> pure $ do
-                        forkSessionExecHandler stream channel sessionState (exec st command)
-                        success channel
+                env    <- Environment <$> readTVar (sessEnvironment sessionState)
+                pty    <- readTVar (sessPtySettings sessionState)
+                stdin  <- pure (sessStdin  sessionState)
+                stdout <- pure (sessStdout sessionState)
+                stderr <- pure (sessStderr sessionState)
+                let SessionHandler handler = sessHandler sessionState
+                pure $ do
+                    forkSessionHandler stream channel stdin stdout stderr $
+                        handler env pty (Just command) stdin stdout stderr
+                    success channel
             -- "signal" ->
             -- "exit-status" ->
             -- "exit-signal" ->
@@ -405,10 +425,10 @@ forkDirectTcpIpHandler stream channel st handle = do
                 sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increaseBy
                 pure True
 
-forkSessionExecHandler :: forall stream. MessageStream stream =>
-    stream -> Channel -> SessionState -> IO ExitCode -> IO ()
-forkSessionExecHandler stream channel sessState handle = do
-    registerThread channel handle supervise
+forkSessionHandler :: forall stream stdin stdout stderr. MessageStream stream =>
+    stream -> Channel -> Q.TStreamingQueue -> Q.TStreamingQueue -> Q.TStreamingQueue -> IO ExitCode -> IO ()
+forkSessionHandler stream channel stdin stdout stderr run = do
+    registerThread channel run supervise
     where
         -- The supervisor thread waits for several event sources simultaneously,
         -- handles them and loops until the session thread has terminated and exit
@@ -442,22 +462,22 @@ forkSessionExecHandler stream channel sessState handle = do
 
         waitStdout :: STM (IO Bool)
         waitStdout = do
-            bs <- Q.dequeueShort (sessStdout sessState) (chanMaxPacketSizeRemote channel)
+            bs <- Q.dequeueShort stdout (chanMaxPacketSizeRemote channel)
             pure $ do
                 sendMessage stream $ ChannelData (chanIdRemote channel) bs
                 pure True
 
         waitStderr :: STM (IO Bool)
         waitStderr = do
-            bs <- Q.dequeueShort (sessStderr sessState) (chanMaxPacketSizeRemote channel)
+            bs <- Q.dequeueShort stderr (chanMaxPacketSizeRemote channel)
             pure $ do
                 sendMessage stream $ ChannelExtendedData (chanIdRemote channel) 1 bs
                 pure True
 
         waitLocalWindowAdjust :: STM (IO Bool)
         waitLocalWindowAdjust = do
-            check =<< Q.askWindowSpaceAdjustRecommended (sessStdin sessState)
-            increaseBy <- Q.fillWindowSpace (sessStdin sessState)
+            check =<< Q.askWindowSpaceAdjustRecommended stdin
+            increaseBy <- Q.fillWindowSpace stdin
             pure $ do
                 sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increaseBy
                 pure True

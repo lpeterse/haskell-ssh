@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE ExistentialQuantification  #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Network.SSH.Message
   ( -- * Message
     Message (..)
@@ -80,6 +81,7 @@ module Network.SSH.Message
   , ChannelWindowSize
   , Cookie (), newCookie, nilCookie
   , Password (..)
+  , Command (..)
   , PtySettings (..)
   , PublicKey (..)
   , SessionId (..)
@@ -100,6 +102,7 @@ import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import qualified Data.ByteString.Short    as SBS
 import           Data.Foldable
+import           Data.String
 import           Data.Typeable
 import           Data.Word
 import           System.Exit
@@ -314,7 +317,7 @@ data ChannelRequestShell
 
 data ChannelRequestExec
     = ChannelRequestExec
-    { crCommand       :: SBS.ShortByteString
+    { crCommand       :: Command
     } deriving (Eq, Show)
 
 data ChannelRequestSignal
@@ -403,6 +406,9 @@ newtype ChannelType       = ChannelType       SBS.ShortByteString
 
 newtype ChannelId         = ChannelId         Word32
     deriving (Eq, Ord, Show)
+
+newtype Command           = Command           BS.ByteString
+    deriving (Eq, Ord, Show, BA.ByteArrayAccess, IsString)
 
 newCookie :: MonadRandom m => m Cookie
 newCookie  = Cookie . SBS.toShort <$> getRandomBytes 16
@@ -716,8 +722,8 @@ instance Encoding ChannelRequestShell where
     get   = pure ChannelRequestShell
 
 instance Encoding ChannelRequestExec where
-    put (ChannelRequestExec command) = putShortString command
-    get = ChannelRequestExec <$> getShortString
+    put (ChannelRequestExec (Command c)) = putString c
+    get = ChannelRequestExec <$> (Command <$> getString)
 
 instance Encoding ChannelRequestSignal where
     put (ChannelRequestSignal signame) = putShortString signame
