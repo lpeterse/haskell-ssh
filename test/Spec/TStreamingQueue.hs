@@ -8,7 +8,7 @@ import           Control.Concurrent.STM.TVar
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
-import           Network.SSH.TStreamingQueue
+import           Network.SSH.Internal
 
 tests :: TestTree
 tests = testGroup "Network.SSH.TStreamingQueue"

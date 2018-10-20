@@ -23,7 +23,6 @@ import           Control.Concurrent.STM.TMVar
 import           Control.Monad                (join, when, forever, unless)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import           Control.Exception            (bracket, bracketOnError)
-import qualified Data.ByteString              as BS
 import qualified Data.ByteString.Short        as SBS
 import           Data.Default
 import qualified Data.Map.Strict              as M

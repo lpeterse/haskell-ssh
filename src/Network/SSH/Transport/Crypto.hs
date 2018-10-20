@@ -12,13 +12,13 @@ module Network.SSH.Transport.Crypto
     )
 where
 
-import           Control.Exception              ( throwIO, bracket )
+import           Control.Exception              ( throwIO )
 import           Control.Monad                  ( when )
 import           Data.Bits                      ( unsafeShiftL, (.|.) )
 import           Data.Memory.PtrMethods         ( memCopy, memConstEqual )
 import           Data.Monoid                    ( (<>) )
 import           Data.Word
-import           Foreign.Marshal.Alloc          ( allocaBytes, mallocBytes, free )
+import           Foreign.Marshal.Alloc          ( allocaBytes )
 import           Foreign.Ptr
 import           Foreign.Storable               ( peekByteOff )
 import qualified Data.ByteArray                as BA

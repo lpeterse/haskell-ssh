@@ -14,11 +14,7 @@ import           System.Exit
 import           Data.Default
 import qualified Data.Map.Strict as M
 
-import           Network.SSH.Server.Service.Connection
-import           Network.SSH.Message
-import           Network.SSH.Encoding
-import           Network.SSH.Exception
-import           Network.SSH.Server.Config
+import           Network.SSH.Internal
 
 import           Test.Tasty
 import           Test.Tasty.HUnit

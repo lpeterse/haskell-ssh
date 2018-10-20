@@ -3,6 +3,7 @@ module Spec.Transport ( tests ) where
 
 import           Control.Concurrent.Async
 import           Control.Exception
+import           Control.Monad ( void )
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import           Data.Default
 
@@ -10,12 +11,8 @@ import           Test.Tasty
 import           Test.Tasty.HUnit
 
 import           Network.SSH.AuthAgent
-import           Network.SSH.Encoding
-import           Network.SSH.Exception
 import           Network.SSH.Key
-import           Network.SSH.Message
-import           Network.SSH.Transport
-import           Network.SSH.Transport.Crypto
+import           Network.SSH.Internal
 
 import           Spec.Util
 
@@ -94,7 +91,7 @@ test06 = testCase "client disconnects gracefully after sending version string" $
     agent <- (\sk -> AuthAgent $ KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket $ runPut $ put $ Version "SSH-2.0-OpenSSH_4.3"
-        sendAll clientSocket =<< plainEncryptionContext clientSocket 0 (put $ Disconnected DisconnectByApplication "ABC" mempty)
+        void $ plainEncryptionContext clientSocket 0 (put $ Disconnected DisconnectByApplication "ABC" mempty)
         wait server >>= assertEqual "res" (Left $ Disconnect Remote DisconnectByApplication "ABC")
     where
         runServer stream config agent = withTransport config (Just agent) stream (const pure)

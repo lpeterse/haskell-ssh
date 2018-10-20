@@ -8,6 +8,10 @@ module Network.SSH.Transport
     , TransportConfig (..)
     , Disconnected (..)
     , withTransport
+    , plainEncryptionContext
+    , plainDecryptionContext
+    , newChaCha20Poly1305EncryptionContext
+    , newChaCha20Poly1305DecryptionContext
     )
 where
 
@@ -194,7 +198,7 @@ transportReceiveRawMessage env =
     maybe (transportReceiveRawMessage env) pure =<< transportReceiveRawMessageMaybe env
 
 transportReceiveRawMessageMaybe :: Transport -> IO (Maybe BS.ByteString)
-transportReceiveRawMessageMaybe env@TransportEnv { tStream = stream } =
+transportReceiveRawMessageMaybe env =
     modifyMVar (tDecryptionCtx env) $ \decrypt -> do
         packets <- readMVar (tPacketsReceived env)
         plainText <- decrypt packets

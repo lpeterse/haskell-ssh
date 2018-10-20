@@ -1,5 +1,5 @@
 -- |
--- Module      : Network.SSH.Crypto.Poly1305
+-- Module      : Network.SSH.Transport.Crypto.Poly1305
 -- License     : BSD-style
 -- Maintainer  : Vincent Hanquez <vincent@snarc.org>
 -- Stability   : experimental
@@ -25,15 +25,13 @@ new :: IO MutableState
 new = MutableState <$> B.alloc 84 (const $ pure ())
 
 authUnsafe :: (ByteArrayAccess key, ByteArrayAccess dat) => MutableState -> key -> dat -> Ptr Word8 -> IO ()
-authUnsafe (MutableState ctx) key d dstPtr
-    | B.length key /= 32 = error "Poly1305: key length expected 32 bytes"
-    | otherwise          = 
-        B.withByteArray ctx $ \ctxPtr ->
-        B.withByteArray key $ \keyPtr -> do
-            c_poly1305_init (castPtr ctxPtr) keyPtr
-            B.withByteArray d $ \dataPtr ->
-                c_poly1305_update (castPtr ctxPtr) dataPtr (fromIntegral $ B.length d)
-            c_poly1305_finalize dstPtr (castPtr ctxPtr)
+authUnsafe (MutableState ctx) key d dstPtr =
+    B.withByteArray ctx $ \ctxPtr ->
+    B.withByteArray key $ \keyPtr -> do
+        c_poly1305_init (castPtr ctxPtr) keyPtr
+        B.withByteArray d $ \dataPtr ->
+            c_poly1305_update (castPtr ctxPtr) dataPtr (fromIntegral $ B.length d)
+        c_poly1305_finalize dstPtr (castPtr ctxPtr)
 
 foreign import ccall unsafe "cryptonite_poly1305.h cryptonite_poly1305_init"
     c_poly1305_init :: Ptr state -> Ptr Word8 -> IO ()

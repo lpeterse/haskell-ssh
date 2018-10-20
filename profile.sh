@@ -12,6 +12,6 @@ sh -c "sleep 3 && ssh fnord@localhost -vvvv ls > /dev/null"  &
 sh -c "sleep 3 && ssh fnord@localhost -vvvv ls > /dev/null"  &
 sh -c "sleep 3 && ssh fnord@localhost -vvvv ls > /dev/null"  &
 
-sudo timeout -s2 70 ~/.local/bin/hssh-demo +RTS -s -p -hd  || true
+sudo timeout -s2 70 ~/.local/bin/hssh-demo +RTS -s -p -hm  || true
 #sudo ~/.local/bin/hssh-demo +RTS -s -p -hd || true
 #sudo ~/.local/bin/hssh-demo +RTS -s || true

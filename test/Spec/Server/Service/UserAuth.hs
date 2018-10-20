@@ -8,13 +8,10 @@ import qualified Crypto.PubKey.RSA        as RSA
 import qualified Data.ByteString          as BS
 import           Data.Default
 
-import           Network.SSH.Exception
-import           Network.SSH.Server.Service.UserAuth
-import           Network.SSH.Message
-import           Network.SSH.Server.Config
-
 import           Test.Tasty
 import           Test.Tasty.HUnit
+
+import           Network.SSH.Internal
 
 import           Spec.Util
 

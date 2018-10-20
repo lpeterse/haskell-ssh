@@ -12,3 +12,6 @@ hp:
 	hp2pretty hssh-demo.hp
 	chromium-browser hssh-demo.svg || true
 	chromium hssh-demo.svg || true
+
+doc:
+	stack haddock

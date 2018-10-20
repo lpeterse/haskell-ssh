@@ -8,13 +8,13 @@ import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
 import qualified Data.ByteString          as BS
+import qualified Data.ByteString.Short    as SBS
 import           System.Exit
 
 import           Test.Tasty
 import           Test.Tasty.QuickCheck    as QC
 
-import           Network.SSH.Encoding
-import           Network.SSH.Message
+import           Network.SSH.Internal
 
 tests :: TestTree
 tests = testGroup "Network.SSH.Message"
@@ -69,7 +69,18 @@ testParserIdentity = testGroup "put . get == id"
         parserIdentity x = Just x === runGet (runPut $ put x)
 
 instance Arbitrary BS.ByteString where
-    arbitrary = pure mempty
+    arbitrary = elements
+        [ ""
+        , "1"
+        , "1234567890"
+        ]
+
+instance Arbitrary SBS.ShortByteString where
+    arbitrary = elements
+        [ ""
+        , "1"
+        , "1234567890"
+        ]
 
 instance Arbitrary Message where
     arbitrary = oneof

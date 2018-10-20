@@ -30,7 +30,6 @@ import qualified System.Socket.Type.Stream     as S
 import qualified System.Socket.Unsafe          as S
 import           Data.Default
 
-import           Network.SSH.Constants
 import           Network.SSH.Key
 import qualified Network.SSH.Server            as Server
 import           Network.SSH.Stream
@@ -38,7 +37,6 @@ import           Network.SSH.AuthAgent
 
 main :: IO ()
 main = do
-    print version
     file                <- BS.readFile "./resources/id_ed25519"
     (privateKey, _) : _ <-
         decodePrivateKeyFile BS.empty file :: IO [(KeyPair, BA.Bytes)]

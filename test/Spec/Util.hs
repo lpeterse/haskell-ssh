@@ -10,11 +10,8 @@ import           Control.Monad
 
 import           Test.Tasty.HUnit
 
-import           Network.SSH.Encoding
-import           Network.SSH.Exception
+import           Network.SSH.Internal
 import           Network.SSH.Stream
-import           Network.SSH.Message
-import qualified Network.SSH.TStreamingQueue as Q
 
 assertThrows :: (Eq e, Exception e) => String -> e -> IO a -> Assertion
 assertThrows label e action = (action >> failure0) `catch` \e'-> when (e /= e') (failure1 e')
@@ -22,13 +19,13 @@ assertThrows label e action = (action >> failure0) `catch` \e'-> when (e /= e') 
         failure0 = assertFailure (label ++ ": should have thrown " ++ show e)
         failure1 e' = assertFailure (label ++ ": should have thrown " ++ show e ++ " (saw " ++ show e' ++ " instead)")
 
-data DummySocket = DummySocket Q.TStreamingQueue Q.TStreamingQueue
+data DummySocket = DummySocket TStreamingQueue TStreamingQueue
 
 newSocketPair :: IO (DummySocket, DummySocket)
 newSocketPair = atomically $ do
     window <- newTVar 1000000000
-    x <- Q.newTStreamingQueue 1000000000 window
-    y <- Q.newTStreamingQueue 1000000000 window
+    x <- newTStreamingQueue 1000000000 window
+    y <- newTStreamingQueue 1000000000 window
     pure (DummySocket x y, DummySocket y x)
 
 instance DuplexStream DummySocket
@@ -42,7 +39,7 @@ instance InputStream DummySocket where
     receiveUnsafe (DummySocket _ q) = receiveUnsafe q
 
 close :: DummySocket -> IO ()
-close (DummySocket q _) = atomically $ Q.terminate q
+close (DummySocket q _) = atomically $ terminate q
 
 sendAll :: DummySocket -> BS.ByteString -> IO ()
 sendAll (DummySocket q _) bs = do

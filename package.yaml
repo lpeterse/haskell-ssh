@@ -33,6 +33,13 @@ dependencies:
 library:
   source-dirs: src
   ghc-options: -Wall -fno-warn-orphans
+  exposed-modules:
+    - Network.SSH.Algorithms
+    - Network.SSH.AuthAgent
+    - Network.SSH.Internal
+    - Network.SSH.Key
+    - Network.SSH.Server
+    - Network.SSH.Stream
 
 tests:
   hssh-test:

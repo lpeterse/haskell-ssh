@@ -6,8 +6,6 @@ import           Test.Tasty.HUnit
 
 import           Network.SSH.Algorithms
 
-import           Spec.Util
-
 tests :: TestTree
 tests = testGroup "Network.SSH.Algorithms"
     [ testGroup "HostKeyAlgorithm"
