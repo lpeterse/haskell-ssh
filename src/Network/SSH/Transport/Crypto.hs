@@ -45,7 +45,7 @@ plainEncryptionContext _ _ payload = pure $ runPut $
     B.zeroes (fromIntegral paddingLen)
     where
         payloadLen = B.babLength payload
-        paddingLen = paddingLenFor payloadLen
+        paddingLen = 16 - (4 + 1 + payloadLen) `mod` 8
         packetLen  = 1 + payloadLen + paddingLen
 
 plainDecryptionContext :: InputStream stream => stream -> DecryptionContext

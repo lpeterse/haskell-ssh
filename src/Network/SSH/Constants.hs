@@ -2,6 +2,7 @@
 module Network.SSH.Constants where
 
 import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Short         as SBS
 import qualified Data.Version                  as V
 import           Data.Word
 import           Data.Monoid                    ( (<>) )
@@ -13,7 +14,7 @@ import qualified Paths_hssh                    as Library
 version :: Version
 version = Version ("SSH-2.0-hssh_" <> v)
   where
-    v = BS.pack $ fmap (fromIntegral . fromEnum) (V.showVersion Library.version)
+    v = SBS.toShort $ BS.pack $ fmap (fromIntegral . fromEnum) (V.showVersion Library.version)
 
 maxPacketLength :: Word32
 maxPacketLength = 35000

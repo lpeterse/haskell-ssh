@@ -4,6 +4,7 @@ module Network.SSH.Exception where
 
 import           Control.Exception              ( Exception )
 import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Short         as SBS
 import           Data.String
 import           Data.Word
 
@@ -32,7 +33,7 @@ data DisconnectReason
     | DisconnectOtherReason Word32
     deriving (Eq, Ord, Show)
 
-newtype DisconnectMessage = DisconnectMessage BS.ByteString
+newtype DisconnectMessage = DisconnectMessage SBS.ShortByteString
     deriving (Eq, Ord, Show, Semigroup, Monoid, IsString)
 
 instance Exception Disconnect where
@@ -114,4 +115,4 @@ exceptionUnexpectedMessage raw
         x0  = (x `div` 100) + 48
         x1  = ((x `div` 10) `mod` 10) + 48
         x2  = (x `mod` 10) + 48
-        msg = DisconnectMessage $ "unexpected message type " <> BS.pack [x0,x1,x2] 
+        msg = DisconnectMessage $ SBS.toShort $ "unexpected message type " <> BS.pack [x0,x1,x2] 

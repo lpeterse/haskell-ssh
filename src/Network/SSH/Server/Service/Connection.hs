@@ -46,7 +46,7 @@ data Connection identity
 
 data ConnectionConfig identity
     = ConnectionConfig
-    { onExecRequest         :: Maybe (Session identity -> BS.ByteString -> IO ExitCode)
+    { onExecRequest         :: Maybe (Session identity -> SBS.ShortByteString -> IO ExitCode)
     , onShellRequest        :: Maybe (Session identity -> IO ExitCode)
     , onDirectTcpIpRequest  :: forall stream. S.DuplexStream stream => identity -> DirectTcpIpRequest -> IO (Maybe (stream -> IO ()))
     , channelMaxCount       :: Word16
@@ -70,7 +70,7 @@ data ChannelApplication
 
 data SessionState
     = SessionState
-    { sessEnvironment :: TVar (M.Map BS.ByteString BS.ByteString)
+    { sessEnvironment :: TVar (M.Map SBS.ShortByteString SBS.ShortByteString)
     , sessPtySettings :: TVar (Maybe PtySettings)
     , sessStdin       :: Q.TStreamingQueue
     , sessStdout      :: Q.TStreamingQueue
@@ -80,7 +80,7 @@ data SessionState
 data Session identity
     = forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr) => Session
     { identity    :: identity
-    , environment :: M.Map BS.ByteString BS.ByteString
+    , environment :: M.Map SBS.ShortByteString SBS.ShortByteString
     , ptySettings :: Maybe PtySettings
     , stdin       :: stdin
     , stdout      :: stdout
@@ -101,7 +101,7 @@ data DirectTcpIpRequest
 
 data Address
     = Address
-    { address :: BS.ByteString
+    { address :: SBS.ShortByteString
     , port    :: Word32
     } deriving (Eq, Ord, Show)
 
@@ -449,7 +449,7 @@ forkSessionExecHandler stream channel sessState handle = do
 
         waitStderr :: STM (IO Bool)
         waitStderr = do
-            bs <- Q.dequeue (sessStderr sessState) (chanMaxPacketSizeRemote channel)
+            bs <- Q.dequeueShort (sessStderr sessState) (chanMaxPacketSizeRemote channel)
             pure $ do
                 sendMessage stream $ ChannelExtendedData (chanIdRemote channel) 1 bs
                 pure True

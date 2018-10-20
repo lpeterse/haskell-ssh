@@ -21,6 +21,7 @@ import           Control.Concurrent.Async
 import           Control.Monad.STM
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Short         as SBS
 import           System.Exit
 import qualified System.Socket                 as S
 import qualified System.Socket.Family.Inet6    as S
@@ -87,7 +88,7 @@ serveHttp idnt req = pure $ Just $ \stream-> do
     void $ send stream bs
     print bs
 
-runExec :: Server.Session identity -> BS.ByteString -> IO ExitCode
+runExec :: Server.Session identity -> SBS.ShortByteString -> IO ExitCode
 runExec (Server.Session identity pty env stdin stdout stderr) _command = withAsync receiver $ const $ do
     forM_ [1 .. 60000 ] $ \i -> do
         void $ send stdout abc

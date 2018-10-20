@@ -326,7 +326,7 @@ kexClientContinuation env cookie = clientKex0
             case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
                 (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
                     kexWithVerifiedSignature shk hash sig $ do
-                        sid <- trySetSessionId env (BA.convert hash)
+                        sid <- trySetSessionId env (SessionId $ SBS.toShort $ BA.convert hash)
                         setChaCha20Poly1305Context env $ kexKeys sec hash sid
                         transportSendMessage env KexNewKeys
             where
@@ -387,7 +387,7 @@ kexServerContinuation env cookie authAgent = serverKex0
                             sec  = Curve25519.dh cek sekSecret
                             hash = kexHash cv sv cki ski shk cek sek sec
                         sig <- maybe (throwIO exceptionKexNoSignature) pure =<< signHash authAgent shk hash
-                        sid <- trySetSessionId env (SessionId $ BA.convert hash)
+                        sid <- trySetSessionId env (SessionId $ SBS.toShort $ BA.convert hash)
                         setChaCha20Poly1305Context env $ kexKeys sec hash sid
                         transportSendMessage env (KexEcdhReply shk sek sig)
                         transportSendMessage env KexNewKeys
@@ -458,8 +458,8 @@ kexHash ::
     Hash.Digest Hash.SHA256
 kexHash (Version vc) (Version vs) ic is ks qc qs k
     = Hash.hash $ runPut $
-        putString vc <>
-        putString vs <>
+        putShortString vc <>
+        putShortString vs <>
         B.word32BE (len ic) <>
         put       ic <>
         B.word32BE (len is) <>
@@ -475,7 +475,7 @@ kexKeys :: Curve25519.DhSecret -> Hash.Digest Hash.SHA256 -> SessionId -> KeyStr
 kexKeys secret hash (SessionId sess) = KeyStreams $ \i -> BA.convert <$> k1 i : f [k1 i]
     where
         k1 i = Hash.hashFinalize $
-            flip Hash.hashUpdate sess $
+            flip Hash.hashUpdate (SBS.fromShort sess) $
             Hash.hashUpdate st i :: Hash.Digest Hash.SHA256
         f ks = kx : f (ks ++ [kx])
             where

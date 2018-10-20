@@ -82,6 +82,9 @@ putString ba = B.word32BE (fromIntegral $ BA.length ba) <> putBytes ba
 putShortString :: B.Builder b => SBS.ShortByteString -> b
 putShortString bs = B.word32BE (fromIntegral $ SBS.length bs) <> B.shortByteString bs
 
+getShortString :: Get SBS.ShortByteString
+getShortString = SBS.toShort <$> getString
+
 getString :: BA.ByteArray ba => Get ba
 getString = getWord32 >>= getBytes
 

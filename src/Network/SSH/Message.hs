@@ -103,7 +103,6 @@ import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import qualified Data.ByteString.Short    as SBS
 import           Data.Foldable
-import qualified Data.List                as L
 import           Data.Typeable
 import           Data.Word
 import           System.Exit
@@ -150,8 +149,8 @@ data Message
 data Disconnected
     = Disconnected
     { disconnectedReason      :: DisconnectReason
-    , disconnectedDescription :: BS.ByteString
-    , disconnectedLanguageTag :: BS.ByteString
+    , disconnectedDescription :: SBS.ShortByteString
+    , disconnectedLanguageTag :: SBS.ShortByteString
     }
     deriving (Eq, Show, Typeable)
 
@@ -166,8 +165,8 @@ data Unimplemented
 data Debug
     = Debug
     { debugAlwaysDisplay :: Bool
-    , debugMessage       :: BS.ByteString
-    , debugLanguageTag   :: BS.ByteString
+    , debugMessage       :: SBS.ShortByteString
+    , debugLanguageTag   :: SBS.ShortByteString
     }
     deriving (Eq, Show)
 
@@ -226,7 +225,7 @@ data UserAuthSuccess
     deriving (Eq, Show)
 
 data UserAuthBanner
-    = UserAuthBanner BS.ByteString BS.ByteString
+    = UserAuthBanner SBS.ShortByteString SBS.ShortByteString
     deriving (Eq, Show)
 
 data UserAuthPublicKeyOk
@@ -240,9 +239,9 @@ data ChannelOpen
 data ChannelOpenType
     = ChannelOpenSession
     | ChannelOpenDirectTcpIp
-    { coDestinationAddress :: BS.ByteString
+    { coDestinationAddress :: SBS.ShortByteString
     , coDestinationPort    :: Word32
-    , coSourceAddress      :: BS.ByteString
+    , coSourceAddress      :: SBS.ShortByteString
     , coSourcePort         :: Word32
     }
     | ChannelOpenOther ChannelType
@@ -253,7 +252,7 @@ data ChannelOpenConfirmation
     deriving (Eq, Show)
 
 data ChannelOpenFailure
-    = ChannelOpenFailure ChannelId ChannelOpenFailureReason BS.ByteString BS.ByteString
+    = ChannelOpenFailure ChannelId ChannelOpenFailureReason SBS.ShortByteString SBS.ShortByteString
     deriving (Eq, Show)
 
 data ChannelOpenFailureReason
@@ -273,7 +272,7 @@ data ChannelData
     deriving (Eq, Show)
 
 data ChannelExtendedData
-    = ChannelExtendedData ChannelId Word32 BS.ByteString
+    = ChannelExtendedData ChannelId Word32 SBS.ShortByteString
     deriving (Eq, Show)
 
 data ChannelEof
@@ -287,15 +286,15 @@ data ChannelClose
 data ChannelRequest
     = ChannelRequest
     { crChannel       :: ChannelId
-    , crType          :: BS.ByteString
+    , crType          :: SBS.ShortByteString
     , crWantReply     :: Bool
     , crData          :: BS.ByteString
     } deriving (Eq, Show)
 
 data ChannelRequestEnv
     = ChannelRequestEnv
-    { crVariableName  :: BS.ByteString
-    , crVariableValue :: BS.ByteString
+    { crVariableName  :: SBS.ShortByteString
+    , crVariableValue :: SBS.ShortByteString
     } deriving (Eq, Show)
 
 data ChannelRequestPty
@@ -317,12 +316,12 @@ data ChannelRequestShell
 
 data ChannelRequestExec
     = ChannelRequestExec
-    { crCommand       :: BS.ByteString
+    { crCommand       :: SBS.ShortByteString
     } deriving (Eq, Show)
 
 data ChannelRequestSignal
     = ChannelRequestSignal
-    { crSignal        :: BS.ByteString
+    { crSignal        :: SBS.ShortByteString
     } deriving (Eq, Show)
 
 data ChannelRequestExitStatus
@@ -332,10 +331,10 @@ data ChannelRequestExitStatus
 
 data ChannelRequestExitSignal
     = ChannelRequestExitSignal
-    { crSignalName    :: BS.ByteString
+    { crSignalName    :: SBS.ShortByteString
     , crCodeDumped    :: Bool
-    , crErrorMessage  :: BS.ByteString
-    , crLanguageTag   :: BS.ByteString
+    , crErrorMessage  :: SBS.ShortByteString
+    , crLanguageTag   :: SBS.ShortByteString
     } deriving (Eq, Show)
 
 data ChannelSuccess
@@ -351,7 +350,7 @@ data AuthMethod
     | AuthHostBased
     | AuthPassword  Password
     | AuthPublicKey Algorithm PublicKey (Maybe Signature)
-    | AuthOther BS.ByteString
+    | AuthOther     SBS.ShortByteString
     deriving (Eq, Show)
 
 data Signature
@@ -362,43 +361,44 @@ data Signature
 
 data PtySettings
     = PtySettings
-    { ptyEnv          :: BS.ByteString
+    { ptyEnv          :: SBS.ShortByteString
     , ptyWidthCols    :: Word32
     , ptyHeightRows   :: Word32
     , ptyWidthPixels  :: Word32
     , ptyHeightPixels :: Word32
-    , ptyModes        :: BS.ByteString
+    , ptyModes        :: SBS.ShortByteString
     } deriving (Eq, Show)
 
-newtype Cookie            = Cookie            BS.ByteString deriving (Eq, Ord, Show)
-
-newCookie :: MonadRandom m => m Cookie
-newCookie  = Cookie <$> getRandomBytes 16
-
-nilCookie :: Cookie
-nilCookie  = Cookie  $  BS.replicate 16 0
 
 type ChannelWindowSize = Word32
 type ChannelMaxPacketSize = Word32
 
-newtype Version           = Version           BS.ByteString
-    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
-newtype Algorithm         = Algorithm         BS.ByteString
-    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
-newtype Password          = Password          BS.ByteString
-    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
-newtype SessionId         = SessionId         BS.ByteString
-    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
-newtype UserName          = UserName          BS.ByteString
-    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype Cookie            = Cookie            SBS.ShortByteString
+    deriving (Eq, Ord, Show)
+newtype Version           = Version           SBS.ShortByteString
+    deriving (Eq, Ord, Show)
+newtype Algorithm         = Algorithm         SBS.ShortByteString
+    deriving (Eq, Ord, Show)
+newtype Password          = Password          SBS.ShortByteString
+    deriving (Eq, Ord, Show)
+newtype SessionId         = SessionId         SBS.ShortByteString
+    deriving (Eq, Ord, Show)
+newtype UserName          = UserName          SBS.ShortByteString
+    deriving (Eq, Ord, Show)
 newtype AuthMethodName    = AuthMethodName    SBS.ShortByteString
     deriving (Eq, Ord, Show)
-newtype ServiceName       = ServiceName       BS.ByteString
-    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
-newtype ChannelType       = ChannelType       BS.ByteString
-    deriving (Eq, Ord, Show, Semigroup, Monoid, BA.ByteArrayAccess, BA.ByteArray)
+newtype ServiceName       = ServiceName       SBS.ShortByteString
+    deriving (Eq, Ord, Show)
+newtype ChannelType       = ChannelType       SBS.ShortByteString
+    deriving (Eq, Ord, Show)
 newtype ChannelId         = ChannelId         Word32
     deriving (Eq, Ord, Show)
+
+newCookie :: MonadRandom m => m Cookie
+newCookie  = Cookie . SBS.toShort <$> getRandomBytes 16
+
+nilCookie :: Cookie
+nilCookie  = Cookie $ SBS.toShort $ BS.replicate 16 0
 
 -------------------------------------------------------------------------------
 -- Encoding instances
@@ -465,11 +465,11 @@ instance Encoding Disconnected where
     put (Disconnected r d l) =
         putWord8 1 <>
         put r <>
-        putString d <>
-        putString l
+        putShortString d <>
+        putShortString l
     get = do
         expectWord8 1
-        Disconnected <$> get <*> getString <*> getString
+        Disconnected <$> get <*> getShortString <*> getShortString
 
 instance Encoding DisconnectReason where
     put r = B.word32BE $ case r of
@@ -516,8 +516,8 @@ instance Encoding Unimplemented where
     get = expectWord8 3 >> Unimplemented <$> getWord32
 
 instance Encoding Debug where
-    put (Debug ad msg lang) = putWord8 4 <> putBool ad <> putString msg <> putString lang
-    get = expectWord8 4 >> Debug <$> getBool <*> getString <*> getString
+    put (Debug ad msg lang) = putWord8 4 <> putBool ad <> putShortString msg <> putShortString lang
+    get = expectWord8 4 >> Debug <$> getBool <*> getShortString <*> getShortString
 
 instance Encoding ServiceRequest where
     put (ServiceRequest name) = putWord8 5 <> put name
@@ -582,8 +582,8 @@ instance Encoding UserAuthSuccess where
     get = expectWord8 52 >> pure UserAuthSuccess
 
 instance Encoding UserAuthBanner where
-    put (UserAuthBanner x y) = putWord8 53 <> putString x <> putString y
-    get = expectWord8 53 >> UserAuthBanner <$> getString <*> getString
+    put (UserAuthBanner x y) = putWord8 53 <> putShortString x <> putShortString y
+    get = expectWord8 53 >> UserAuthBanner <$> getShortString <*> getShortString
 
 instance Encoding UserAuthPublicKeyOk where
     put (UserAuthPublicKeyOk alg pk) = putWord8 60 <> put alg <> put pk
@@ -602,9 +602,9 @@ instance Encoding ChannelOpen where
         case ct of
             ChannelOpenSession {} -> mempty
             ChannelOpenDirectTcpIp da dp sa sp ->
-                putString da <>
+                putShortString da <>
                 B.word32BE dp <>
-                putString sa <>
+                putShortString sa <>
                 B.word32BE sp
             ChannelOpenOther {} -> mempty
     get = do
@@ -618,9 +618,9 @@ instance Encoding ChannelOpen where
                 pure ChannelOpenSession
             ChannelType "direct-tcpip" ->
                 ChannelOpenDirectTcpIp
-                    <$> getString
+                    <$> getShortString
                     <*> getWord32
-                    <*> getString
+                    <*> getShortString
                     <*> getWord32
             other ->
                 pure $ ChannelOpenOther other
@@ -645,11 +645,11 @@ instance Encoding ChannelOpenFailure where
         putWord8 92 <>
         put cid <>
         put reason <>
-        putString descr <>
-        putString lang
+        putShortString descr <>
+        putShortString lang
     get = do
         expectWord8 92
-        ChannelOpenFailure <$> get <*> get <*> getString <*> getString
+        ChannelOpenFailure <$> get <*> get <*> getShortString <*> getShortString
 
 instance Encoding ChannelOpenFailureReason where
     put r = B.word32BE $ case r of
@@ -671,11 +671,11 @@ instance Encoding ChannelWindowAdjust where
 
 instance Encoding ChannelData where
     put (ChannelData cid ba) = putWord8 94 <> put cid <> putShortString ba
-    get = expectWord8 94 >> ChannelData <$> get <*> (SBS.toShort <$> getString)
+    get = expectWord8 94 >> ChannelData <$> get <*> getShortString
 
 instance Encoding ChannelExtendedData where
-    put (ChannelExtendedData cid x ba) = putWord8 95 <> put cid <> B.word32BE x <> putString ba
-    get = expectWord8 95 >> ChannelExtendedData <$> get <*> getWord32 <*> getString
+    put (ChannelExtendedData cid x ba) = putWord8 95 <> put cid <> B.word32BE x <> putShortString ba
+    get = expectWord8 95 >> ChannelExtendedData <$> get <*> getWord32 <*> getShortString
 
 instance Encoding ChannelEof where
     put (ChannelEof cid) = putWord8 96 <> put cid
@@ -686,12 +686,12 @@ instance Encoding ChannelClose where
     get = expectWord8 97 >> ChannelClose <$> get
 
 instance Encoding ChannelRequest where
-    put (ChannelRequest cid typ reply dat) = putWord8 98 <> put cid <> putString typ <> putBool reply <> putByteString dat
-    get = expectWord8 98 >> ChannelRequest <$> get <*> getString <*> getBool <*> getRemainingByteString
+    put (ChannelRequest cid typ reply dat) = putWord8 98 <> put cid <> putShortString typ <> putBool reply <> putByteString dat
+    get = expectWord8 98 >> ChannelRequest <$> get <*> getShortString <*> getBool <*> getRemainingByteString
 
 instance Encoding ChannelRequestEnv where
-    put (ChannelRequestEnv name value) = putString name <> putString value
-    get = ChannelRequestEnv <$> getString <*> getString
+    put (ChannelRequestEnv name value) = putShortString name <> putShortString value
+    get = ChannelRequestEnv <$> getShortString <*> getShortString
 
 instance Encoding ChannelRequestPty where
     put (ChannelRequestPty settings) = put settings
@@ -706,20 +706,20 @@ instance Encoding ChannelRequestShell where
     get   = pure ChannelRequestShell
 
 instance Encoding ChannelRequestExec where
-    put (ChannelRequestExec command) = putString command
-    get = ChannelRequestExec <$> getString
+    put (ChannelRequestExec command) = putShortString command
+    get = ChannelRequestExec <$> getShortString
 
 instance Encoding ChannelRequestSignal where
-    put (ChannelRequestSignal signame) = putString signame
-    get = ChannelRequestSignal <$> getString
+    put (ChannelRequestSignal signame) = putShortString signame
+    get = ChannelRequestSignal <$> getShortString
 
 instance Encoding ChannelRequestExitStatus where
     put (ChannelRequestExitStatus code) = putExitCode code
     get = ChannelRequestExitStatus <$> getExitCode
 
 instance Encoding ChannelRequestExitSignal where
-    put (ChannelRequestExitSignal signame core msg lang) = putString signame <> putBool core <> putString msg <> putString lang
-    get = ChannelRequestExitSignal <$> getString <*> getBool <*> getString <*> getString
+    put (ChannelRequestExitSignal signame core msg lang) = putShortString signame <> putBool core <> putShortString msg <> putShortString lang
+    get = ChannelRequestExitSignal <$> getShortString <*> getBool <*> getShortString <*> getShortString
 
 instance Encoding ChannelSuccess where
     put (ChannelSuccess cid) = putWord8 99 <> put cid
@@ -730,36 +730,36 @@ instance Encoding ChannelFailure where
     get = expectWord8 100 >> (ChannelFailure <$> get)
 
 instance Encoding Cookie where
-    put (Cookie s) = putBytes s
-    get = Cookie <$> getBytes 16
+    put (Cookie s) = B.shortByteString s
+    get = Cookie . SBS.toShort <$> getBytes 16
 
 instance Encoding Algorithm where
-    put (Algorithm s) = putString s
-    get = Algorithm <$> getString
+    put (Algorithm s) = putShortString s
+    get = Algorithm <$> getShortString
 
 instance Encoding ChannelId where
     put (ChannelId x) = B.word32BE x
     get = ChannelId <$> getWord32
 
 instance Encoding ChannelType where
-    put (ChannelType x) = putString x
-    get = ChannelType <$> getString
+    put (ChannelType x) = putShortString x
+    get = ChannelType <$> getShortString
 
 instance Encoding SessionId where
-    put (SessionId x) = putString x
-    get = SessionId <$> getString
+    put (SessionId x) = putShortString x
+    get = SessionId <$> getShortString
 
 instance Encoding ServiceName where
-    put (ServiceName x) = putString x
-    get = ServiceName <$> getString
+    put (ServiceName x) = putShortString x
+    get = ServiceName <$> getShortString
 
 instance Encoding UserName where
-    put (UserName x) = putString x
-    get = UserName <$> getString
+    put (UserName x) = putShortString x
+    get = UserName <$> getShortString
 
 instance Encoding Version where
     put (Version x) =
-        putBytes x <>
+        B.shortByteString x <>
         putWord8 0x0d <>
         putWord8 0x0a
     get = do
@@ -769,11 +769,11 @@ instance Encoding Version where
         magic :: [Word8]
         magic  = [0x53,0x53,0x48,0x2d,0x32,0x2e,0x30,0x2d]
         untilCRLF !i !xs
-            | i >= (246 :: Int) = fail ""
+            | i >= (246 :: Int) = fail mempty
             | otherwise = getWord8 >>= \case
                 0x0d -> getWord8 >>= \case
-                    0x0a -> pure (Version $ BS.pack $ reverse xs)
-                    _ -> fail ""
+                    0x0a -> pure (Version $ SBS.toShort $ BS.pack $ reverse xs)
+                    _ -> fail mempty
                 x -> untilCRLF (i+1) (x:xs)
 
 instance Encoding AuthMethod where
@@ -783,23 +783,23 @@ instance Encoding AuthMethod where
         AuthHostBased ->
             putString ("hostbased" :: BS.ByteString)
         AuthPassword (Password pw) ->
-            putString ("password" :: BS.ByteString) <> putBool False <> putString pw
+            putString ("password" :: BS.ByteString) <> putBool False <> putShortString pw
         AuthPublicKey (Algorithm algo) pk msig ->
             putString ("publickey" :: BS.ByteString) <> case msig of
-                Nothing -> putBool False <> putString algo <> put pk
-                Just sig -> putBool True <> putString algo <> put pk <> put sig
+                Nothing  -> putBool False <> putShortString algo <> put pk
+                Just sig -> putBool True <> putShortString algo <> put pk <> put sig
         AuthOther other ->
-            putString other
-    get = getString >>= \case
+            putShortString other
+    get = getShortString >>= \case
         "none" ->
             pure AuthNone
         "hostbased" ->
             pure AuthHostBased
         "password" ->
-            void getBool >> AuthPassword  <$> (Password <$> getString)
+            void getBool >> AuthPassword  <$> (Password <$> getShortString)
         "publickey" -> do
             signed <- getBool
-            algo   <- Algorithm <$> getString
+            algo   <- Algorithm <$> getShortString
             key    <- get
             msig   <- if signed then Just <$> get else pure Nothing
             pure (AuthPublicKey algo key msig)
@@ -834,9 +834,9 @@ instance Encoding Signature where
 
 instance Encoding PtySettings where
     put (PtySettings env wc hc wp hp modes) =
-        putString env <> B.word32BE wc <> B.word32BE hc <> B.word32BE wp <> B.word32BE hp <> putString modes
+        putShortString env <> B.word32BE wc <> B.word32BE hc <> B.word32BE wp <> B.word32BE hp <> putShortString modes
     get =
-        PtySettings <$> getString <*> getWord32 <*> getWord32 <*> getWord32 <*> getWord32 <*> getString
+        PtySettings <$> getShortString <*> getWord32 <*> getWord32 <*> getWord32 <*> getWord32 <*> getShortString
 
 -------------------------------------------------------------------------------
 -- Util functions
