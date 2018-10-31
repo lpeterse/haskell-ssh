@@ -5,6 +5,7 @@ license:             MIT
 author:              Lars Petersen
 maintainer:          info@lars-petersen.net
 copyright:           2017 Lars Petersen
+category:            Network
 
 extra-source-files:
 - README.md
@@ -62,7 +63,7 @@ executables:
     - -rtsopts
     dependencies:
     - hssh
-    - socket
+    - socket >= 0.8.2.0
     when:
       - condition: flag(demo)
         then:
