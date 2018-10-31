@@ -73,8 +73,8 @@ main = do
                 void $ forkIO $ (serveStream `finally` S.close stream)
                 atomically $ check =<< readTVar ownershipTransferred
 
-serveHttp :: (Show identity) => Server.DirectTcpIpRequest identity -> IO (Maybe Server.DirectTcpIpHandler)
-serveHttp req = pure $ Just $ Server.DirectTcpIpHandler $ \stream-> do
+serveHttp :: identity -> Server.DirectTcpIpRequest -> IO (Maybe Server.DirectTcpIpHandler)
+serveHttp idnt req = pure $ Just $ Server.DirectTcpIpHandler $ \stream-> do
     bs <- receive stream 4096
     void $ send stream "HTTP/1.1 200 OK\n"
     void $ send stream "Content-Type: text/plain\n\n"
@@ -83,8 +83,8 @@ serveHttp req = pure $ Just $ Server.DirectTcpIpHandler $ \stream-> do
     void $ send stream bs
     print bs
 
-handleSessionRequest :: Server.SessionRequest identity -> IO (Maybe Server.SessionHandler)
-handleSessionRequest req = pure $ Just $ Server.SessionHandler $ \env pty command stdin stdout stderr -> do
+handleSessionRequest :: identity -> Server.SessionRequest -> IO (Maybe Server.SessionHandler)
+handleSessionRequest idnt req = pure $ Just $ Server.SessionHandler $ \env pty command stdin stdout stderr -> do
     forM_ [1 ..  ] $ \i -> do
         void $ send stdout abc
         threadDelay 1000

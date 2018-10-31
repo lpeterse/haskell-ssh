@@ -81,7 +81,7 @@ test01  = testCase "open one session channel (with handler)" $ do
     let config = def {
             channelMaxQueueSize = lws,
             channelMaxPacketSize = lps,
-            onSessionRequest = const $ pure $ Just undefined
+            onSessionRequest = \_ _ -> pure $ Just undefined
         }
     withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
@@ -102,7 +102,7 @@ test02  = testCase "open two session channels (with handler)" $ do
     let config = def {
             channelMaxQueueSize = lws,
             channelMaxPacketSize = lps,
-            onSessionRequest = const $ pure $ Just undefined
+            onSessionRequest = \_ _ -> pure $ Just undefined
         }
     withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
@@ -130,7 +130,7 @@ test03  = testCase "open two session channels (exceed limit)" $ do
             channelMaxCount = 1,
             channelMaxQueueSize = lws,
             channelMaxPacketSize = lps,
-            onSessionRequest = const $ pure $ Just undefined
+            onSessionRequest = \_ _ -> pure $ Just undefined
         }
     withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
@@ -156,7 +156,7 @@ test04  = testCase "open two session channels (close first, reuse first)" $ do
     let config = def {
             channelMaxQueueSize = lws,
             channelMaxPacketSize = lps,
-            onSessionRequest = const $ pure $ Just undefined
+            onSessionRequest = \_ _ -> pure $ Just undefined
         }
     withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
@@ -240,7 +240,7 @@ test07  = testCase "close channel (don't reuse unless acknowledged)" $ do
         res13 = ChannelClose rid0
         req2  = ChannelOpen rid1 rws rps ChannelOpenSession
         res2  = ChannelOpenConfirmation rid1 lid1 lws lps
-        handler _ = pure $ Just $ SessionHandler $ \env pty cmd stdin stdout stderr ->
+        handler _ _ = pure $ Just $ SessionHandler $ \env pty cmd stdin stdout stderr ->
             pure ExitSuccess
 
 test08 :: TestTree
@@ -276,7 +276,7 @@ test08  = testCase "close channel (reuse when acknowledged)" $ do
         req2  = ChannelClose lid0
         req3  = ChannelOpen rid1 rws rps ChannelOpenSession
         res3  = ChannelOpenConfirmation rid1 lid0 lws lps
-        handler _ = pure $ Just $ SessionHandler $ \env pty cmd stdin stdout stderr ->
+        handler _ _ = pure $ Just $ SessionHandler $ \env pty cmd stdin stdout stderr ->
             pure ExitSuccess
 
 testRequest01 :: TestTree
@@ -285,7 +285,7 @@ testRequest01 = testCase "reject unknown / unimplemented requests" $ do
     let config = def {
             channelMaxQueueSize = lws,
             channelMaxPacketSize = lps,
-            onSessionRequest = const $ pure $ Just undefined
+            onSessionRequest = \_ _ -> pure $ Just undefined
         }
     withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
@@ -330,7 +330,7 @@ testRequestSession01 = testCase "env request" $ do
         res20 = ChannelSuccess rid
         res21 = ChannelEof rid
         res22 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
-        h _ = pure $ Just $ SessionHandler $ \env pty cmd stdin stdout stderr -> pure $
+        h _ _ = pure $ Just $ SessionHandler $ \env pty cmd stdin stdout stderr -> pure $
             if env == Environment [("LC_ALL","en_US.UTF-8")] 
                 then ExitSuccess
                 else ExitFailure 1
@@ -363,15 +363,15 @@ testRequestSession02 = testCase "pty request" $ do
         res20 = ChannelSuccess rid
         res21 = ChannelEof rid
         res22 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
-        pty = PtySettings
-            { ptyEnv          = "xterm"
-            , ptyWidthCols    = 80
-            , ptyHeightRows   = 23
-            , ptyWidthPixels  = 1024
-            , ptyHeightPixels = 768
-            , ptyModes        = "fsldkjfsdjflskjdf"
-            }
-        h _ = pure $ Just $ SessionHandler $ \_ mpty _ _ _ _ -> pure $
+        pty   = PtySettings
+                { ptyEnv          = "xterm"
+                , ptyWidthCols    = 80
+                , ptyHeightRows   = 23
+                , ptyWidthPixels  = 1024
+                , ptyHeightPixels = 768
+                , ptyModes        = "fsldkjfsdjflskjdf"
+                }
+        h _ _ = pure $ Just $ SessionHandler $ \_ mpty _ _ _ _ -> pure $
             if mpty == Just pty 
                 then ExitSuccess
                 else ExitFailure 1
@@ -406,7 +406,7 @@ testRequestSessionShell01 = testCase "handler exits with 0" $ do
         res11 = ChannelEof rid
         res12 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
         res13 = ChannelClose rid
-        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing _ _ _ ->
+        handler _ _ = pure $ Just $ SessionHandler $ \_ _ Nothing _ _ _ ->
             pure ExitSuccess
 
 testRequestSessionShell02 :: TestTree
@@ -439,7 +439,7 @@ testRequestSessionShell02 = testCase "handler exits with 1" $ do
         res11 = ChannelEof rid
         res12 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\SOH"
         res13 = ChannelClose rid
-        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing _ _ _ ->
+        handler _ _ = pure $ Just $ SessionHandler $ \_ _ Nothing _ _ _ ->
             pure (ExitFailure 1)
 
 testRequestSessionShell03 :: TestTree
@@ -475,7 +475,7 @@ testRequestSessionShell03 = testCase "handler exits with 0 after writing to stdo
         res12 = ChannelEof rid
         res13 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
         res14 = ChannelClose rid
-        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing _ stdout _ -> do
+        handler _ _ = pure $ Just $ SessionHandler $ \_ _ Nothing _ stdout _ -> do
             void $ send stdout ping
             pure ExitSuccess
 
@@ -512,7 +512,7 @@ testRequestSessionShell04 = testCase "handler exits with 0 after writing to stde
         res12 = ChannelEof rid
         res13 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
         res14 = ChannelClose rid
-        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing _ _ stderr -> do
+        handler _ _ = pure $ Just $ SessionHandler $ \_ _ Nothing _ _ stderr -> do
             void $ send stderr ping
             pure ExitSuccess
 
@@ -551,7 +551,7 @@ testRequestSessionShell05 = testCase "handler exits with 0 after echoing stdin t
         res22 = ChannelEof rid
         res23 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
         res24 = ChannelClose rid
-        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing stdin stdout _ -> do
+        handler _ _ = pure $ Just $ SessionHandler $ \_ _ Nothing stdin stdout _ -> do
             void (send stdout =<< receive stdin 128)
             pure ExitSuccess
 
@@ -585,7 +585,7 @@ testRequestSessionShell06 = testCase "handler throws exception" $ do
         res12 = ChannelEof rid
         res13 = ChannelRequest rid "exit-signal" False "\NUL\NUL\NUL\ETXILL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL"
         res14 = ChannelClose rid
-        handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+        handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
             error "nasty handler"
             pure ExitSuccess
 
@@ -594,7 +594,7 @@ testRequestSessionShell07 = testCase "handler running while closed by client" $ 
     (serverStream,clientStream) <- newDummyTransportPair
     mvar0 <- newEmptyMVar
     mvar1 <- newEmptyMVar
-    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
             putMVar mvar0 ()
             threadDelay (1000*1000) `onException` putMVar mvar1 () 
             pure ExitSuccess
@@ -629,7 +629,7 @@ testRequestSessionShell07 = testCase "handler running while closed by client" $ 
 testSessionData01 :: TestTree
 testSessionData01 = testCase "honor remote max packet size" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ stdout _ -> do
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ stdout _ -> do
             sendAll stdout msg
             pure ExitSuccess
     let config = def {
@@ -668,7 +668,7 @@ testSessionData02 = testCase "throw exception if local maxPacketSize is exeeded"
     (serverStream,clientStream) <- newDummyTransportPair
     mvar0 <- newEmptyMVar
     mvar1 <- newEmptyMVar
-    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ stdin _ _ -> do
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ stdin _ _ -> do
             void $ takeMVar mvar0
             putMVar mvar1 =<< receive stdin 1
             void $ takeMVar mvar0
@@ -707,7 +707,7 @@ testSessionData03 :: TestTree
 testSessionData03 = testCase "throw exception if remote sends data after eof" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     mvar0 <- newEmptyMVar
-    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
             void $ takeMVar mvar0
             pure ExitSuccess
     let config = def {
@@ -746,7 +746,7 @@ testSessionFlowControl01 = testCase "adjust inbound window when < 50% and capaci
     (serverStream,clientStream) <- newDummyTransportPair
     mvar0 <- newEmptyMVar
     mvar1 <- newEmptyMVar
-    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ stdin _ _ -> do
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ stdin _ _ -> do
             void $ takeMVar mvar0
             putMVar mvar1 =<< receive stdin 1
             void $ takeMVar mvar0
@@ -790,7 +790,7 @@ testSessionFlowControl02 :: TestTree
 testSessionFlowControl02 = testCase "throw exception on inbound window size underrun" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     mvar0 <- newEmptyMVar
-    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
             void $ takeMVar mvar0
             pure ExitSuccess
     let config = def {
@@ -826,7 +826,7 @@ testSessionFlowControl02 = testCase "throw exception on inbound window size unde
 testSessionFlowControl03 :: TestTree
 testSessionFlowControl03 = testCase "honor outbound window size and adjustment" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ stdout _ -> do
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ stdout _ -> do
             sendAll stdout msg
             pure ExitSuccess
     let config = def {
@@ -868,7 +868,7 @@ testSessionFlowControl04 :: TestTree
 testSessionFlowControl04 = testCase "remote adjusts window size to maximum" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     mvar0 <- newEmptyMVar
-    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
             readMVar mvar0
             pure ExitSuccess
     let config = def {
@@ -904,7 +904,7 @@ testSessionFlowControl05 :: TestTree
 testSessionFlowControl05 = testCase "throw exception if remote adjusts window size to (maximum + 1)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     mvar0 <- newEmptyMVar
-    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
             readMVar mvar0
             pure ExitSuccess
     let config = def {

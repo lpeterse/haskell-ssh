@@ -28,7 +28,6 @@ import           Control.Concurrent.STM.TMVar
 import           Control.Monad                (join, when, forever, unless)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import           Control.Exception            (bracket, bracketOnError)
-import qualified Data.ByteArray               as BA
 import qualified Data.ByteString              as BS
 import qualified Data.ByteString.Short        as SBS
 import           Data.Default
@@ -55,8 +54,8 @@ newtype DirectTcpIpHandler =
 
 data ConnectionConfig identity
     = ConnectionConfig
-    { onSessionRequest      :: SessionRequest identity -> IO (Maybe SessionHandler)
-    , onDirectTcpIpRequest  :: DirectTcpIpRequest identity -> IO (Maybe DirectTcpIpHandler)
+    { onSessionRequest      :: identity -> SessionRequest -> IO (Maybe SessionHandler)
+    , onDirectTcpIpRequest  :: identity -> DirectTcpIpRequest -> IO (Maybe DirectTcpIpHandler)
     , channelMaxCount       :: Word16
     , channelMaxQueueSize   :: Word32
     , channelMaxPacketSize  :: Word32
@@ -86,8 +85,9 @@ data SessionState
     , sessStderr      :: Q.TStreamingQueue
     }
 
-data SessionRequest identity
-    = SessionRequest identity
+data SessionRequest
+    = SessionRequest
+    deriving (Eq, Ord, Show)
 
 newtype SessionHandler =
     SessionHandler (forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr)
@@ -102,10 +102,9 @@ data DirectTcpIpState
     , dtiStreamOut    :: Q.TStreamingQueue
     }
 
-data DirectTcpIpRequest identity
+data DirectTcpIpRequest
     = DirectTcpIpRequest
-    { dtiIdentiy    :: identity
-    , destination   :: Address
+    { destination   :: Address
     , origin        :: Address
     } deriving (Eq, Ord, Show)
 
@@ -149,8 +148,8 @@ instance Encoding ConnectionMsg where
 
 instance Default (ConnectionConfig identity) where
     def = ConnectionConfig
-        { onSessionRequest              = const $ pure Nothing
-        , onDirectTcpIpRequest          = const $ pure Nothing
+        { onSessionRequest              = \_ _ -> pure Nothing
+        , onDirectTcpIpRequest          = \_ _ -> pure Nothing
         , channelMaxCount               = 256
         , channelMaxQueueSize           = 32 * 1024
         , channelMaxPacketSize          = 32 * 1024
@@ -186,7 +185,7 @@ connectionChannelOpen :: forall stream identity. MessageStream stream =>
 connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindowSize remotePacketSize channelType) =
     case channelType of
         ChannelOpenSession ->
-            onSessionRequest (connConfig connection) (SessionRequest (connIdentity connection)) >>= \case
+            onSessionRequest (connConfig connection) (connIdentity connection) SessionRequest >>= \case
                 Nothing ->
                     sendMessage stream $ openFailure ChannelOpenAdministrativelyProhibited
                 Just handler -> do
@@ -209,8 +208,8 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
                         Left failure           -> sendMessage stream failure
                         Right (_,confirmation) -> sendMessage stream confirmation
         ChannelOpenDirectTcpIp da dp oa op -> do
-            let req = DirectTcpIpRequest (connIdentity connection) (Address da dp) (Address oa op)
-            onDirectTcpIpRequest (connConfig connection) req >>= \case
+            let req = DirectTcpIpRequest (Address da dp) (Address oa op)
+            onDirectTcpIpRequest (connConfig connection) (connIdentity connection) req >>= \case
                 Nothing ->
                     sendMessage stream $ openFailure ChannelOpenAdministrativelyProhibited
                 Just (DirectTcpIpHandler handler) -> do

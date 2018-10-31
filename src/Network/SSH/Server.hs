@@ -16,9 +16,9 @@ module Network.SSH.Server (
     -- *** Environment
     , Environment (..)
     -- *** PtySettings
-    , PtySettings ()
+    , PtySettings (..)
     -- *** Command
-    , Command ()
+    , Command (..)
     -- ** Direct TCP/IP
     -- *** Request
     , DirectTcpIpRequest (..)
