@@ -371,10 +371,9 @@ testRequestSession02 = testCase "pty request" $ do
                 , ptyHeightPixels = 768
                 , ptyModes        = "fsldkjfsdjflskjdf"
                 }
-        h _ _ = pure $ Just $ SessionHandler $ \_ mpty _ _ _ _ -> pure $
-            if mpty == Just pty 
-                then ExitSuccess
-                else ExitFailure 1
+        h _ _ = pure $ Just $ SessionHandler $ \_ mpty _ _ _ _ -> pure $ case mpty of
+            Just (TermInfo pty') | pty == pty' -> ExitSuccess
+            _                                  -> ExitFailure 1
 
 testRequestSessionShell01 :: TestTree
 testRequestSessionShell01 = testCase "handler exits with 0" $ do

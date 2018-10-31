@@ -9,22 +9,19 @@ module Network.SSH.Server (
     -- * Connection Layer
     , ConnectionConfig (..)
     -- ** Session
-    -- *** Request
+    -- *** Request & Handler
     , SessionRequest (..)
-    -- *** Handler
     , SessionHandler (..)
     -- *** Environment
     , Environment (..)
-    -- *** PtySettings
-    , PtySettings (..)
+    -- *** TermInfo
+    , TermInfo ()
     -- *** Command
     , Command (..)
     -- ** Direct TCP/IP
-    -- *** Request
+    -- *** Request & Handler
     , DirectTcpIpRequest (..)
-    -- *** Handler
     , DirectTcpIpHandler (..)
-    , Address (..)
     ) where
 
 import           Data.Default

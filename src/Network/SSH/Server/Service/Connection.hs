@@ -1,19 +1,19 @@
-{-# LANGUAGE FlexibleInstances         #-}
-{-# LANGUAGE LambdaCase                #-}
-{-# LANGUAGE MultiWayIf                #-}
-{-# LANGUAGE OverloadedStrings         #-}
-{-# LANGUAGE ScopedTypeVariables       #-}
-{-# LANGUAGE TupleSections             #-}
-{-# LANGUAGE ExistentialQuantification #-}
-{-# LANGUAGE RankNTypes                #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE MultiWayIf                 #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE TupleSections              #-}
+{-# LANGUAGE ExistentialQuantification  #-}
+{-# LANGUAGE RankNTypes                 #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Network.SSH.Server.Service.Connection
     ( Connection ()
     , ConnectionConfig (..)
-    , Address (..)
     , SessionRequest (..)
     , SessionHandler (..)
     , Environment (..)
-    , PtySettings (..)
+    , TermInfo (..)
     , Command (..)
     , DirectTcpIpRequest (..)
     , DirectTcpIpHandler (..)
@@ -33,6 +33,7 @@ import qualified Data.ByteString.Short        as SBS
 import           Data.Default
 import qualified Data.Map.Strict              as M
 import           Data.Word
+import           Data.String
 import           System.Exit
 
 import           Network.SSH.Encoding
@@ -42,23 +43,132 @@ import           Network.SSH.Message
 import qualified Network.SSH.Stream as S
 import qualified Network.SSH.TStreamingQueue as Q
 
+data ConnectionConfig identity
+    = ConnectionConfig
+    { onSessionRequest      :: identity -> SessionRequest -> IO (Maybe SessionHandler)
+      -- ^ This callback will be executed for every session request.
+      --
+      --   Return a `SessionHandler` or `Nothing` to reject the request (default).
+    , onDirectTcpIpRequest  :: identity -> DirectTcpIpRequest -> IO (Maybe DirectTcpIpHandler)
+      -- ^ This callback will be executed for every direct-tcpip request.
+      --
+      --   Return a `DirectTcpIpHandler` or `Nothing` to reject the request (default).
+    , channelMaxCount       :: Word16
+      -- ^ The maximum number of channels that may be active simultaneously (default: 256).
+      --
+      --   Any requests that would exceed the limit will be rejected.
+      --   Setting the limit to high values might expose the server to denial
+      --   of service issues!
+    , channelMaxQueueSize   :: Word32
+      -- ^ The maximum size of the internal buffers in bytes (also
+      --   limits the maximum window size, default: 32 kB)
+      --
+      --   Increasing this value might help with performance issues
+      --   (if connection delay is in a bad ration with the available bandwidth the window
+      --   resizing might cause unncessary throttling).
+    , channelMaxPacketSize  :: Word32
+      -- ^ The maximum size of inbound channel data payload (default: 32 kB)
+      --
+      --   Values that are larger than `channelMaxQueueSize` or the
+      --   maximum message size (35000 bytes) will be automatically adjusted
+      --   to the maximum possible value.
+    }
+
+instance Default (ConnectionConfig identity) where
+    def = ConnectionConfig
+        { onSessionRequest              = \_ _ -> pure Nothing
+        , onDirectTcpIpRequest          = \_ _ -> pure Nothing
+        , channelMaxCount               = 256
+        , channelMaxQueueSize           = 32 * 1024
+        , channelMaxPacketSize          = 32 * 1024
+        }
+
+-- | Information associated with the session request.
+--
+--   Might be exteded in the future.
+data SessionRequest
+    = SessionRequest
+    deriving (Eq, Ord, Show)
+
+-- | The session handler contains the application logic that serves a client's
+--   shell or exec request.
+--
+--   * The `Command` parameter will be present if this is an exec request and absent
+--     for shell requests.
+--   * The `TermInfo` parameter will be present if the client requested a pty.
+--   * The `Environment` parameter contains the set of all env requests
+--     the client issued before the actual shell or exec request.
+--   * @stdin@, @stdout@ and @stderr@ are streams. The former can only be read
+--     from while the latter can only be written to.
+--     After the handler has gracefully terminated, the implementation assures
+--     that all bytes will be sent before sending an eof and actually closing the
+--     channel.
+--     has gracefully terminated. The client will then receive an eof and close.
+--   * A @SIGILL@ exit signal will be sent if the handler terminates with an exception.
+--     Otherwise the client will receive the returned exit code.
+--
+-- @
+-- handler :: SessionHandler
+-- handler = SessionHandler $ \env mterm mcmd stdin stdout stderr -> case mcmd of
+--     Just "echo" -> do
+--         bs <- `receive` stdin
+--         `send` stdout bs
+--         pure `ExitSuccess`
+--     Nothing ->
+--         pure (`ExitFailure` 1)
+-- @
+newtype SessionHandler =
+    SessionHandler (forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr)
+        => Environment -> Maybe TermInfo -> Maybe Command -> stdin -> stdout -> stderr -> IO ExitCode)
+
+-- | The `Environment` is list of key-value pairs.
+--
+--   > Environment [ ("LC_ALL", "en_US.UTF-8") ]
+newtype Environment = Environment [(BS.ByteString, BS.ByteString)]
+    deriving (Eq, Ord, Show)
+
+-- | The `TermInfo` describes the client's terminal settings if it requested a pty.
+--
+--   NOTE: This will follow in a future release. You may access the constructor
+--   through the `Network.SSH.Internal` module, but should not rely on it yet.
+data TermInfo = TermInfo PtySettings
+
+-- | The `Command` is what the client wants to execute when making an exec request
+--   (shell requests don't have a command).
+newtype Command = Command BS.ByteString
+    deriving (Eq, Ord, Show, IsString)
+
+-- | When the client makes a `DirectTcpIpRequest` it requests a TCP port forwarding.
+data DirectTcpIpRequest
+    = DirectTcpIpRequest
+    { dstAddress   :: BS.ByteString
+    -- ^ The destination address.
+    , dstPort      :: Word32
+    -- ^ The destination port.
+    , srcAddress   :: BS.ByteString
+    -- ^ The source address (usually the IP the client will bind the local listening socket to).
+    , srcPort      :: Word32
+    -- ^ The source port (usually the port the client will bind the local listening socket).
+    } deriving (Eq, Ord, Show)
+
+-- | The `DirectTcpIpHandler` contains the application logic
+--   that handles port forwarding requests.
+--
+--   There is of course no need to actually do a real forwarding - this
+--   mechanism might also be used to give access to process internal services
+--   like integrated web servers etc.
+--
+--   * When the handler exits gracefully, the implementation assures that
+--     all bytes will be sent to the client before terminating the stream
+--     with an eof and actually closing the channel.
+newtype DirectTcpIpHandler =
+    DirectTcpIpHandler (forall stream. S.DuplexStream stream => stream -> IO ())
+
 data Connection identity
     = Connection
     { connConfig       :: ConnectionConfig identity
     , connIdentity     :: identity
     , connChannels     :: TVar (M.Map ChannelId Channel)
-    }
-
-newtype DirectTcpIpHandler =
-    DirectTcpIpHandler (forall stream. S.DuplexStream stream => stream -> IO ())
-
-data ConnectionConfig identity
-    = ConnectionConfig
-    { onSessionRequest      :: identity -> SessionRequest -> IO (Maybe SessionHandler)
-    , onDirectTcpIpRequest  :: identity -> DirectTcpIpRequest -> IO (Maybe DirectTcpIpHandler)
-    , channelMaxCount       :: Word16
-    , channelMaxQueueSize   :: Word32
-    , channelMaxPacketSize  :: Word32
     }
 
 data Channel
@@ -85,34 +195,11 @@ data SessionState
     , sessStderr      :: Q.TStreamingQueue
     }
 
-data SessionRequest
-    = SessionRequest
-    deriving (Eq, Ord, Show)
-
-newtype SessionHandler =
-    SessionHandler (forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr)
-        => Environment -> Maybe PtySettings -> Maybe Command -> stdin -> stdout -> stderr -> IO ExitCode)
-
-newtype Environment = Environment [(BS.ByteString, BS.ByteString)]
-    deriving (Eq, Show)
-
 data DirectTcpIpState
     = DirectTcpIpState
     { dtiStreamIn     :: Q.TStreamingQueue
     , dtiStreamOut    :: Q.TStreamingQueue
     }
-
-data DirectTcpIpRequest
-    = DirectTcpIpRequest
-    { destination   :: Address
-    , origin        :: Address
-    } deriving (Eq, Ord, Show)
-
-data Address
-    = Address
-    { address :: SBS.ShortByteString
-    , port    :: Word32
-    } deriving (Eq, Ord, Show)
 
 instance S.InputStream DirectTcpIpState where
     peek x = S.peek (dtiStreamIn x)
@@ -145,15 +232,6 @@ instance Encoding ConnectionMsg where
       <|> ConnectionChannelData <$> get
       <|> ConnectionChannelRequest <$> get
       <|> ConnectionChannelWindowAdjust <$> get
-
-instance Default (ConnectionConfig identity) where
-    def = ConnectionConfig
-        { onSessionRequest              = \_ _ -> pure Nothing
-        , onDirectTcpIpRequest          = \_ _ -> pure Nothing
-        , channelMaxCount               = 256
-        , channelMaxQueueSize           = 32 * 1024
-        , channelMaxPacketSize          = 32 * 1024
-        }
 
 serveConnection :: forall stream identity. MessageStream stream =>
     ConnectionConfig identity -> stream -> identity -> IO ()
@@ -208,7 +286,7 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
                         Left failure           -> sendMessage stream failure
                         Right (_,confirmation) -> sendMessage stream confirmation
         ChannelOpenDirectTcpIp da dp oa op -> do
-            let req = DirectTcpIpRequest (Address da dp) (Address oa op)
+            let req = DirectTcpIpRequest (SBS.fromShort da) dp (SBS.fromShort oa) op
             onDirectTcpIpRequest (connConfig connection) (connIdentity connection) req >>= \case
                 Nothing ->
                     sendMessage stream $ openFailure ChannelOpenAdministrativelyProhibited
@@ -359,7 +437,7 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
                 let SessionHandler handler = sessHandler sessionState
                 pure $ do
                     forkSessionHandler stream channel stdin stdout stderr $
-                        handler env pty Nothing stdin stdout stderr
+                        handler env (TermInfo <$> pty) Nothing stdin stdout stderr
                     success channel
             "exec" -> interpret $ \(ChannelRequestExec command) -> do
                 env    <- readTVar (sessEnvironment sessionState)
@@ -370,7 +448,7 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
                 let SessionHandler handler = sessHandler sessionState
                 pure $ do
                     forkSessionHandler stream channel stdin stdout stderr $
-                        handler env pty (Just command) stdin stdout stderr
+                        handler env (TermInfo <$> pty) (Just (Command $ SBS.fromShort command)) stdin stdout stderr
                     success channel
             -- "signal" ->
             -- "exit-status" ->

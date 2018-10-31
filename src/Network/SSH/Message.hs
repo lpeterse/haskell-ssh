@@ -81,7 +81,6 @@ module Network.SSH.Message
   , ChannelWindowSize
   , Cookie (), newCookie, nilCookie
   , Password (..)
-  , Command (..)
   , PtySettings (..)
   , PublicKey (..)
   , SessionId (..)
@@ -102,7 +101,6 @@ import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import qualified Data.ByteString.Short    as SBS
 import           Data.Foldable
-import           Data.String
 import           Data.Typeable
 import           Data.Word
 import           System.Exit
@@ -317,7 +315,7 @@ data ChannelRequestShell
 
 data ChannelRequestExec
     = ChannelRequestExec
-    { crCommand       :: Command
+    { crCommand       :: SBS.ShortByteString
     } deriving (Eq, Show)
 
 data ChannelRequestSignal
@@ -406,9 +404,6 @@ newtype ChannelType       = ChannelType       SBS.ShortByteString
 
 newtype ChannelId         = ChannelId         Word32
     deriving (Eq, Ord, Show)
-
-newtype Command           = Command           BS.ByteString
-    deriving (Eq, Ord, Show, BA.ByteArrayAccess, IsString)
 
 newCookie :: MonadRandom m => m Cookie
 newCookie  = Cookie . SBS.toShort <$> getRandomBytes 16
@@ -722,8 +717,8 @@ instance Encoding ChannelRequestShell where
     get   = pure ChannelRequestShell
 
 instance Encoding ChannelRequestExec where
-    put (ChannelRequestExec (Command c)) = putString c
-    get = ChannelRequestExec <$> (Command <$> getString)
+    put (ChannelRequestExec c) = putShortString c
+    get = ChannelRequestExec <$> getShortString
 
 instance Encoding ChannelRequestSignal where
     put (ChannelRequestSignal signame) = putShortString signame
