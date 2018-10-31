@@ -1,16 +1,46 @@
 # hssh
 
+## Introduction
+
+This library is a pure-Haskell implementation of the SSH2 protocol.
+
+## Features
+
+By now, only the server part has been implemented. It can be used
+to embed SSH servers into Haskell applications.
+
+Transport layer:
+
+- `ssh-ed25519` host keys.
+- Key exchange using the `curve25519-sha256@libssh.org` algorithm.
+- Encryption using the  `chacha20-poly1305@openssh.com` algorithm.
+- Rekeying fully supported and compatible with OpenSSH.
+
+Authentication layer:
+
+- User authentication with `ssh-ed25519` public keys.
+
+Connection layer:
+
+- Connection multiplexing.
+- Serving session requests (shell and exec) with user-supplied handlers.
+- Serving direct-tcpip requests with user-supplied handlers.
+
+Misc:
+
+- SSH private key file import (not encrypted yet).
+
 ## Dependencies
 
-    - async
-    - base
-    - bytestring
-    - cereal
-    - containers
-    - cryptonite
-    - memory
-    - stm
-    - data-default
+- async
+- base
+- bytestring
+- cereal
+- containers
+- cryptonite
+- memory
+- stm
+- data-default
 
 ## Example server application
 
