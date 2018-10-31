@@ -59,8 +59,10 @@ import           Network.SSH.Transport
 --     keyPair <- `Network.SSH.newKeyPair`
 --     `serve` conf keyPair sock
 --     where
---         conf = `def` { userAuthConfig   = `def` { `onAuthRequest`  = handleAuthRequest }
---                    , connectionConfig = `def` { `onShellRequest` = handleShellRequest }
+--         conf = `def` { userAuthConfig   = `def` { `onAuthRequest`         = handleAuthRequest }
+--                    , connectionConfig = `def` { `onSessionRequest`      = handleSessionRequest
+--                                             , `onDirectTcpIpRequest`  = handleDirectTcpIpRequest
+--                                             }
 --                    }
 --
 -- handleAuthRequest :: `Network.SSH.UserName` -> `Network.SSH.ServiceName` -> `Network.SSH.PublicKey` -> IO (Maybe `Network.SSH.UserName`)
@@ -68,22 +70,22 @@ import           Network.SSH.Transport
 --   "simon" -> pure (Just user)
 --   _       -> pure Nothing
 --
--- handleDirectTcpIpRequest :: `DuplexStream` stream => `Network.SSH.UserName` -> `DirectTcpIpRequest` -> IO (Maybe (stream -> IO ()))
--- handleDirectTcpIpRequest user req
---     | port (destination req) == 80 = pure $ Just $ \stream -> do
+-- handleSessionRequest :: identity -> `SessionRequest` -> IO (Maybe `SessionHandler`)
+-- handleSessionRequest _ _ = pure $ Just $ SessionHandler $ \env mterm mcmd stdin stdout stderr -> do
+--     `sendAll` stdout "Hello, world!\\n"
+--     pure `System.Exit.ExitSuccess`
+--
+-- handleDirectTcpIpRequest :: identity -> `DirectTcpIpRequest` -> IO (Maybe DirectTcpIpHandler)
+-- handleDirectTcpIpRequest _ req =
+--     | port (dstPort req) == 80 = pure $ Just $ DirectTcpIpHandler $ \stream -> do
 --           bs <- `receive` stream 4096
---           `send` stream "HTTP/1.1 200 OK\\n"
---           send stream "Content-Type: text/plain\\n\\n"
---           send stream "Hello, world!\\n"
---           send stream "\\n"
---           send stream bs
+--           `sendAll` stream "HTTP/1.1 200 OK\\n"
+--           sendAll stream "Content-Type: text/plain\\n\\n"
+--           sendAll stream "Hello, world!\\n"
+--           sendAll stream "\\n"
+--           sendAll stream bs
 --           pure ()
 --     | otherwise = pure Nothing
---
--- handleShellRequest :: `OutputStream` stdout => `Session` `Network.SSH.UserName` -> IO `System.Exit.ExitCode`
--- handleShellRequest (Session user pty env stdin stdout stderr) = do
---     send stdout "Hello, world!\\n"
---     pure `System.Exit.ExitSuccess`
 -- @
 serve :: (DuplexStream stream, AuthAgent agent) => Config identity -> agent -> stream -> IO Disconnect
 serve config agent stream = run >>= \case

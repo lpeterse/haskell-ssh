@@ -9,8 +9,12 @@ module Network.SSH
     , decodePrivateKeyFile
       -- * Input / Output
     , DuplexStream
+    -- ** receive, receiveAll
     , InputStream (..)
+    , receiveAll
+      -- ** send, sendAll
     , OutputStream (..)
+    , sendAll
       -- * Transport
     , TransportConfig (..)
       -- * Misc

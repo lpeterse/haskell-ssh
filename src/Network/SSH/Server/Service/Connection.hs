@@ -109,10 +109,10 @@ data SessionRequest
 --
 -- @
 -- handler :: SessionHandler
--- handler = SessionHandler $ \env mterm mcmd stdin stdout stderr -> case mcmd of
+-- handler = SessionHandler $ \\env mterm mcmd stdin stdout stderr -> case mcmd of
 --     Just "echo" -> do
---         bs <- `receive` stdin
---         `send` stdout bs
+--         bs <- `receive` stdin 1024
+--         `sendAll` stdout bs
 --         pure `ExitSuccess`
 --     Nothing ->
 --         pure (`ExitFailure` 1)

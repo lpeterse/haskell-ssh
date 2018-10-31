@@ -1,5 +1,8 @@
 module Network.SSH.Stream where
 
+import           Control.Exception    ( throwIO )
+import           Control.Monad        ( when )
+import           Foreign.Ptr
 import qualified Data.ByteString   as BS
 import qualified Data.ByteArray    as BA
 
@@ -55,3 +58,37 @@ class InputStream stream where
         bs <- receive stream n
         BA.copyByteArrayToPtr bs ptr
         pure (BS.length bs)
+
+-- | Try to send the complete `BS.ByteString`.
+--
+--   * Blocks until either the `BS.ByteString` has been sent
+--     or throws an exception when the connection got terminated
+--     while sending it.
+sendAll :: OutputStream stream => stream -> BS.ByteString -> IO ()
+sendAll stream bs
+    | BS.null bs = pure ()
+    | otherwise  = BA.withByteArray bs $ sendAll' (BS.length bs)
+    where
+        sendAll' remaining ptr
+            | remaining <= 0 = pure ()
+            | otherwise = do
+                sent <- sendUnsafe stream (BA.MemView ptr remaining)
+                when (sent <= 0) (throwIO $ userError "sendAll: connection lost")
+                sendAll' (remaining - sent) (plusPtr ptr sent)
+
+-- | Try to receive a `BS.ByteString` of the designated length in bytes.
+--
+--   * Blocks until either the complete `BS.ByteString` has been received
+--     or throws an exception when the connection got terminated
+--     before enough bytes arrived.
+receiveAll :: InputStream stream => stream -> Int -> IO BS.ByteString
+receiveAll stream n
+    | n <= 0    = pure mempty
+    | otherwise = BA.alloc n $ receiveAll' n
+    where
+        receiveAll' remaining ptr
+            | remaining <= 0 = pure ()
+            | otherwise = do
+                received <- receiveUnsafe stream (BA.MemView ptr remaining)
+                when (received <= 0) (throwIO $ userError "receiveAll: connection lost")
+                receiveAll' (remaining - received) (plusPtr ptr received)

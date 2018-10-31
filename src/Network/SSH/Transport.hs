@@ -513,15 +513,5 @@ receiveVersion stream = do
         e0 = throwIO exceptionConnectionLost
         e1 = throwIO exceptionProtocolVersionNotSupported
 
-sendAll :: (OutputStream stream) => stream -> BS.ByteString -> IO ()
-sendAll stream bs = sendAll' 0
-    where
-        sendAll' offset
-            | offset >= BS.length bs = pure ()
-            | otherwise = do
-                sent <- send stream (BS.drop offset bs)
-                when (sent <= 0) (throwIO exceptionConnectionLost)
-                sendAll' (offset + sent)
-
 getEpochSeconds :: IO Word64
 getEpochSeconds = (`div` 1000000000) <$> getMonotonicTimeNSec
