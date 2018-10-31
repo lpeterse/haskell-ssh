@@ -106,6 +106,10 @@ exceptionWindowSizeUnderrun :: Disconnect
 exceptionWindowSizeUnderrun =
     Disconnect Local DisconnectProtocolError "window size underrun"
 
+exceptionPacketSizeExceeded :: Disconnect
+exceptionPacketSizeExceeded =
+    Disconnect Local DisconnectProtocolError "packet size exceeded"
+
 exceptionDataAfterEof :: Disconnect
 exceptionDataAfterEof =
     Disconnect Local DisconnectProtocolError "data after eof"

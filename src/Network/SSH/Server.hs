@@ -14,7 +14,7 @@ module Network.SSH.Server (
     -- *** Handler
     , SessionHandler (..)
     -- *** Environment
-    , Environment ()
+    , Environment (..)
     -- *** PtySettings
     , PtySettings ()
     -- *** Command

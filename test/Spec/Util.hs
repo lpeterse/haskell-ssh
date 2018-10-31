@@ -40,10 +40,11 @@ instance InputStream DummySocket where
 close :: DummySocket -> IO ()
 close (DummySocket q _) = atomically $ terminate q
 
-sendAll :: DummySocket -> BS.ByteString -> IO ()
-sendAll (DummySocket q _) bs = do
-    i <- send q bs
-    when (i /= BS.length bs) (error "couldn't send all")
+sendAll :: OutputStream stream => stream -> BS.ByteString -> IO ()
+sendAll stream bs = do
+    i <- send stream bs
+    when (i == 0) (throwIO exceptionConnectionLost)
+    when (i < BS.length bs) $ sendAll stream (BS.drop i bs)
 
 newtype DummyTransport = DummyTransport (TChan BS.ByteString, TChan BS.ByteString)
 

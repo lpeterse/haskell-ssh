@@ -1,10 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Spec.Server.Service.Connection ( tests ) where
-    
+
+import           Control.Concurrent      ( threadDelay )
 import           Control.Concurrent.Async
+import           Control.Concurrent.MVar
+import           Control.Exception       ( onException )
+import           Control.Monad           ( void )
 import           System.Exit
 import           Data.Default
-import qualified Data.Map.Strict as M
+import qualified Data.ByteString       as BS
+import qualified Data.ByteString.Short as SBS
 
 import           Network.SSH.Internal
 
@@ -15,7 +20,8 @@ import           Spec.Util
 
 tests :: TestTree
 tests = testGroup "Network.SSH.Server.Service.Connection"
-    [ test01
+    [ test00
+    , test01
     , test02
     , test03
     , test04
@@ -28,14 +34,55 @@ tests = testGroup "Network.SSH.Server.Service.Connection"
         , testGroup "session channel requests"
             [ testRequestSession01
             , testRequestSession02
+            , testGroup "shell requests"
+                [ testRequestSessionShell01
+                , testRequestSessionShell02
+                , testRequestSessionShell03
+                , testRequestSessionShell04
+                , testRequestSessionShell05
+                , testRequestSessionShell06
+                , testRequestSessionShell07
+                ]
+            , testGroup "channel data"
+                [ testSessionData01
+                , testSessionData02
+                , testSessionData03
+                ]
+            , testGroup "flow control"
+                [ testSessionFlowControl01
+                , testSessionFlowControl02
+                , testSessionFlowControl03
+                , testSessionFlowControl04
+                , testSessionFlowControl05
+                ]
             ]
         ]
     ]
 
-test01 :: TestTree
-test01  = testCase "open one session channel" $ do
+test00 :: TestTree
+test00  = testCase "open one session channel (no handler, expect rejection)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+    where
+        rid  = ChannelId 1
+        lws  = 256 * 1024
+        lps  = 32 * 1024
+        rws  = 123
+        rps  = 456
+        req0 = ChannelOpen rid rws rps ChannelOpenSession
+        res0 = ChannelOpenFailure rid ChannelOpenAdministrativelyProhibited mempty mempty
+
+test01 :: TestTree
+test01  = testCase "open one session channel (with handler)" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = const $ pure $ Just undefined
+        }
     withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
@@ -50,9 +97,13 @@ test01  = testCase "open one session channel" $ do
         res0 = ChannelOpenConfirmation rid lid lws lps
 
 test02 :: TestTree
-test02  = testCase "open two session channels" $ do
+test02  = testCase "open two session channels (with handler)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = const $ pure $ Just undefined
+        }
     withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
@@ -75,7 +126,12 @@ test02  = testCase "open two session channels" $ do
 test03 :: TestTree
 test03  = testCase "open two session channels (exceed limit)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = def { channelMaxCount = 1, channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    let config = def {
+            channelMaxCount = 1,
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = const $ pure $ Just undefined
+        }
     withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
@@ -97,7 +153,11 @@ test03  = testCase "open two session channels (exceed limit)" $ do
 test04 :: TestTree
 test04  = testCase "open two session channels (close first, reuse first)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = const $ pure $ Just undefined
+        }
     withAsync (serveConnection config serverStream ()) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
@@ -151,7 +211,7 @@ test06  = testCase "close non-existing channel id" $ do
 test07 :: TestTree
 test07  = testCase "close channel (don't reuse unless acknowledged)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onSessionRequest = handler }
     withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
@@ -180,12 +240,13 @@ test07  = testCase "close channel (don't reuse unless acknowledged)" $ do
         res13 = ChannelClose rid0
         req2  = ChannelOpen rid1 rws rps ChannelOpenSession
         res2  = ChannelOpenConfirmation rid1 lid1 lws lps
-        handler = const $ pure ExitSuccess
+        handler _ = pure $ Just $ SessionHandler $ \env pty cmd stdin stdout stderr ->
+            pure ExitSuccess
 
 test08 :: TestTree
 test08  = testCase "close channel (reuse when acknowledged)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just handler }
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onSessionRequest = handler }
     withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
@@ -215,12 +276,17 @@ test08  = testCase "close channel (reuse when acknowledged)" $ do
         req2  = ChannelClose lid0
         req3  = ChannelOpen rid1 rws rps ChannelOpenSession
         res3  = ChannelOpenConfirmation rid1 lid0 lws lps
-        handler = const $ pure ExitSuccess
+        handler _ = pure $ Just $ SessionHandler $ \env pty cmd stdin stdout stderr ->
+            pure ExitSuccess
 
 testRequest01 :: TestTree
 testRequest01 = testCase "reject unknown / unimplemented requests" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps }
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = const $ pure $ Just undefined
+        }
     withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
@@ -241,7 +307,7 @@ testRequest01 = testCase "reject unknown / unimplemented requests" $ do
 testRequestSession01 :: TestTree
 testRequestSession01 = testCase "env request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onSessionRequest = h }
     withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
@@ -264,14 +330,15 @@ testRequestSession01 = testCase "env request" $ do
         res20 = ChannelSuccess rid
         res21 = ChannelEof rid
         res22 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
-        h s
-            | environment s == M.singleton "LC_ALL" "en_US.UTF-8" = pure ExitSuccess
-            | otherwise                                           = pure (ExitFailure 1)
+        h _ = pure $ Just $ SessionHandler $ \env pty cmd stdin stdout stderr -> pure $
+            if env == Environment [("LC_ALL","en_US.UTF-8")] 
+                then ExitSuccess
+                else ExitFailure 1
 
 testRequestSession02 :: TestTree
 testRequestSession02 = testCase "pty request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onShellRequest = Just h }
+    let config = def { channelMaxQueueSize = lws, channelMaxPacketSize = lps, onSessionRequest = h }
     withAsync (serveConnection config serverStream ()) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
@@ -296,9 +363,6 @@ testRequestSession02 = testCase "pty request" $ do
         res20 = ChannelSuccess rid
         res21 = ChannelEof rid
         res22 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
-        h s
-            | ptySettings s == Just pty = pure ExitSuccess
-            | otherwise                 = pure (ExitFailure 1)
         pty = PtySettings
             { ptyEnv          = "xterm"
             , ptyWidthCols    = 80
@@ -307,473 +371,567 @@ testRequestSession02 = testCase "pty request" $ do
             , ptyHeightPixels = 768
             , ptyModes        = "fsldkjfsdjflskjdf"
             }
+        h _ = pure $ Just $ SessionHandler $ \_ mpty _ _ _ _ -> pure $
+            if mpty == Just pty 
+                then ExitSuccess
+                else ExitFailure 1
 
-{-
-
-connectionChannelRequestShell01 :: TestTree
-connectionChannelRequestShell01 = testCase "without handler" $ withTimeout $ do
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Nothing, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
+testRequestSessionShell01 :: TestTree
+testRequestSessionShell01 = testCase "handler exits with 0" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res10" res10
+        receiveMessage clientStream >>= assertEqual "res11" res11
+        receiveMessage clientStream >>= assertEqual "res12" res12
+        receiveMessage clientStream >>= assertEqual "res13" res13
     where
         lid  = ChannelId 0
-        rid  = ChannelId 23
-        lws  = 100
-        lps  = 200
+        rid  = ChannelId 1
+        lws  = 256 * 1024
+        lps  = 32 * 1024
         rws  = 123
         rps  = 456
-        opn  = ChannelOpen (ChannelType "session") rid rws rps
-        req  = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Left (ChannelFailure rid))
-
-connectionChannelRequestShell02 :: TestTree
-connectionChannelRequestShell02 = testCase "with handler exit(0)" $ withTimeout $ do
-    msgs <- newTChanIO
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } idnt sender) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-        assertEqual "msg2" msg2 =<< receiver
-        assertEqual "msg3" msg3 =<< receiver
-        assertEqual "msg4" msg4 =<< receiver
-    where
-        lid  = ChannelId 0
-        rid  = ChannelId 23
-        lws  = 100
-        lps  = 200
-        rws  = 123
-        rps  = 456
-        opn  = ChannelOpen (ChannelType "session") rid rws rps
-        req  = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = MsgChannelEof (ChannelEof rid)
-        msg3 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
-        msg4 = MsgChannelClose (ChannelClose rid)
-        idnt = "identity"
-        handler (Session i _ pty _ _ _) 
-            | i == idnt && pty == Nothing = pure ExitSuccess
-            | otherwise                   = pure (ExitFailure 1)
-
-connectionChannelRequestShell03 :: TestTree
-connectionChannelRequestShell03 = testCase "with handler exit(0) after writing to stdout" $ withTimeout $ do
-    msgs <- newTChanIO
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () sender) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-        assertEqual "msg2" msg2 =<< receiver
-        assertEqual "msg3" msg3 =<< receiver
-        assertEqual "msg4" msg4 =<< receiver
-        assertEqual "msg5" msg5 =<< receiver
-    where
-        echo = "PING PING PING PING"
-        lid = ChannelId 0
-        rid = ChannelId 23
-        rws = 123
-        rps = 456
-        lws = 300
-        lps = 400
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = MsgChannelData (ChannelData rid "ABCDEF")
-        msg3 = MsgChannelEof (ChannelEof rid)
-        msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
-        msg5 = MsgChannelClose (ChannelClose rid)
-        handler (Session _ _ _ _ stdout _) = do
-            sendAll stdout "ABCDEF"
+        req0 = ChannelOpen rid rws rps ChannelOpenSession
+        res0 = ChannelOpenConfirmation rid lid lws lps
+        req1 = ChannelRequest lid "shell" True mempty
+        res10 = ChannelSuccess rid
+        res11 = ChannelEof rid
+        res12 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
+        res13 = ChannelClose rid
+        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing _ _ _ ->
             pure ExitSuccess
 
-connectionChannelRequestShell04 :: TestTree
-connectionChannelRequestShell04 = testCase "with handler exit(1) after echoing stdin to stdout" $ withTimeout $ do
-    msgs <- newTChanIO
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () sender) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-        connectionChannelData conn (ChannelData lid echo)
-        assertEqual "msg2" msg2 =<< receiver
-        assertEqual "msg3" msg3 =<< receiver
-        assertEqual "msg4" msg4 =<< receiver
-        assertEqual "msg5" msg5 =<< receiver
+testRequestSessionShell02 :: TestTree
+testRequestSessionShell02 = testCase "handler exits with 1" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res10" res10
+        receiveMessage clientStream >>= assertEqual "res11" res11
+        receiveMessage clientStream >>= assertEqual "res12" res12
+        receiveMessage clientStream >>= assertEqual "res13" res13
     where
-        echo = "PING PING PING PING"
-        lid = ChannelId 0
-        rid = ChannelId 23
-        rws = 123
-        rps = 456
-        lws = 300
-        lps = 400
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = MsgChannelData (ChannelData rid echo)
-        msg3 = MsgChannelEof (ChannelEof rid)
-        msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\SOH")
-        msg5 = MsgChannelClose (ChannelClose rid)
-        handler (Session _ _ _ stdin stdout _) = do
-            receive stdin 1024 >>= sendAll stdout
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        lws  = 256 * 1024
+        lps  = 32 * 1024
+        rws  = 123
+        rps  = 456
+        req0 = ChannelOpen rid rws rps ChannelOpenSession
+        res0 = ChannelOpenConfirmation rid lid lws lps
+        req1 = ChannelRequest lid "shell" True mempty
+        res10 = ChannelSuccess rid
+        res11 = ChannelEof rid
+        res12 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\SOH"
+        res13 = ChannelClose rid
+        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing _ _ _ ->
             pure (ExitFailure 1)
 
-connectionChannelRequestShell05 :: TestTree
-connectionChannelRequestShell05 = testCase "with handler exit(1) after echoing stdin to stderr" $ withTimeout $ do
-    msgs <- newTChanIO
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () sender) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-        connectionChannelData conn (ChannelData lid echo)
-        assertEqual "msg2" msg2 =<< receiver
-        assertEqual "msg3" msg3 =<< receiver
-        assertEqual "msg4" msg4 =<< receiver
-        assertEqual "msg5" msg5 =<< receiver
+testRequestSessionShell03 :: TestTree
+testRequestSessionShell03 = testCase "handler exits with 0 after writing to stdout" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res10" res10
+        receiveMessage clientStream >>= assertEqual "res11" res11
+        receiveMessage clientStream >>= assertEqual "res12" res12
+        receiveMessage clientStream >>= assertEqual "res13" res13
+        receiveMessage clientStream >>= assertEqual "res14" res14
     where
-        echo = "PING PING PING PING"
-        lid = ChannelId 0
-        rid = ChannelId 23
-        rws = 123
-        rps = 456
-        lws = 300
-        lps = 400
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = MsgChannelExtendedData (ChannelExtendedData rid 1 echo)
-        msg3 = MsgChannelEof (ChannelEof rid)
-        msg4 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\SOH")
-        msg5 = MsgChannelClose (ChannelClose rid)
-        handler (Session _ _ _ stdin _ stderr) = do
-            receive stdin 1024 >>= sendAll stderr >> pure ()
-            pure (ExitFailure 1)
-
-connectionChannelRequestShell06 :: TestTree
-connectionChannelRequestShell06 = testCase "with handler throwing exception" $ withTimeout $ do
-    msgs <- newTChanIO
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () sender) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<<  connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<<  connectionChannelRequest conn req
-        assertEqual "msg2" msg2 =<< receiver
-        assertEqual "msg3" msg3 =<< receiver
-        assertEqual "msg4" msg4 =<< receiver
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        rws = 123
-        rps = 456
-        lws = 300
-        lps = 400
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = MsgChannelEof (ChannelEof rid)
-        msg3 = MsgChannelRequest (ChannelRequest rid "exit-signal" False "\NUL\NUL\NUL\ETXILL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL")
-        msg4 = MsgChannelClose (ChannelClose rid)
-        handler _ = error "nasty handler"
-
-connectionChannelRequestShell07 :: TestTree
-connectionChannelRequestShell07 = testCase "with handler running while close by client" $ withTimeout $ do
-    msgs <- newTChanIO
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () sender) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-        assertEqual "msg2" msg2 =<< connectionChannelClose conn cls
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        rws = 123
-        rps = 456
-        lws = 300
-        lps = 400
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        cls = ChannelClose lid
-        req = ChannelRequest lid "shell" True mempty
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = Just (ChannelClose rid)
-        handler _ = threadDelay 10000000 >> pure ExitSuccess
-
-connectionChannelRequestShell08 :: TestTree
-connectionChannelRequestShell08 = testCase "with handler and inbound flow control" $ withTimeout $ do
-    msgs <- newTChanIO
-    tmvar0 <- newEmptyTMVarIO
-    tmvar1 <- newEmptyTMVarIO
-    tmvar2 <- newEmptyTMVarIO
-    let handler (Session _ _ _ stdin _ _) = do
-            atomically $ takeTMVar tmvar0
-            atomically . putTMVar tmvar1 =<< receive stdin 1
-            atomically $ takeTMVar tmvar0
-            atomically . putTMVar tmvar1 =<< receive stdin 1
-            void $ atomically $ takeTMVar tmvar2
+        ping  = "PING PING PING PING"
+        lid   = ChannelId 0
+        rid   = ChannelId 1
+        lws   = 256 * 1024
+        lps   = 32 * 1024
+        rws   = 123
+        rps   = 456
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res10 = ChannelSuccess rid
+        res11 = ChannelData rid (SBS.toShort ping)
+        res12 = ChannelEof rid
+        res13 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
+        res14 = ChannelClose rid
+        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing _ stdout _ -> do
+            void $ send stdout ping
             pure ExitSuccess
-    let send msg = atomically $ writeTChan msgs msg
-    let receiver = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () send) connectionClose $ \conn -> do
-        assertEqual "msg00" msg00 =<< connectionChannelOpen conn opn
-        assertEqual "msg01" msg01 =<< connectionChannelRequest conn req
-        connectionChannelData conn (ChannelData lid "ABC")
-        atomically $ putTMVar tmvar0 ()
-        assertEqual "byte0" "A" =<< atomically (takeTMVar tmvar1)
-        atomically $ putTMVar tmvar0 ()
-        assertEqual "byte1" "B" =<< atomically (takeTMVar tmvar1)
-        assertEqual "msg02" msg02 =<< receiver
-        connectionChannelData conn (ChannelData lid "DE")
-        assertThrows "exp00" exp00 $ connectionChannelData conn (ChannelData lid "F")
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        rws = 4
-        rps = 1
-        lws = 3
-        lps = 1
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "shell" True mempty
-        msg00 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg01 = Just (Right (ChannelSuccess rid))
-        msg02 = MsgChannelWindowAdjust (ChannelWindowAdjust rid 2)
-        exp00 = Disconnect DisconnectProtocolError "window size underrun" mempty
 
-connectionChannelRequestShell09 :: TestTree
-connectionChannelRequestShell09 = testCase "with handler and outbound flow control" $ withTimeout $ do
-    msgs <- newTChanIO
-    tmvar0 <- newEmptyTMVarIO
-    tmvar1 <- newEmptyTMVarIO
-    tmvar2 <- newEmptyTMVarIO
-    let handler (Session _ _ _ _ stdout _) = do
-            i <- send stdout "1234567890"
-            atomically $ putTMVar tmvar0 i
-            j <- send stdout "ABCD"
-            atomically $ putTMVar tmvar1 j
+testRequestSessionShell04 :: TestTree
+testRequestSessionShell04 = testCase "handler exits with 0 after writing to stderr" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res10" res10
+        receiveMessage clientStream >>= assertEqual "res11" res11
+        receiveMessage clientStream >>= assertEqual "res12" res12
+        receiveMessage clientStream >>= assertEqual "res13" res13
+        receiveMessage clientStream >>= assertEqual "res14" res14
+    where
+        ping  = "PING PING PING PING"
+        lid   = ChannelId 0
+        rid   = ChannelId 1
+        lws   = 256 * 1024
+        lps   = 32 * 1024
+        rws   = 123
+        rps   = 456
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res10 = ChannelSuccess rid
+        res11 = ChannelExtendedData rid 1 (SBS.toShort ping)
+        res12 = ChannelEof rid
+        res13 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
+        res14 = ChannelClose rid
+        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing _ _ stderr -> do
+            void $ send stderr ping
             pure ExitSuccess
-    let send msg = atomically $ writeTChan msgs msg
-    let receiver = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onShellRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () send) connectionClose $ \conn -> do
-        assertEqual "msg00" msg00 =<< connectionChannelOpen conn opn
-        assertEqual "msg01" msg01 =<< connectionChannelRequest conn req
-        assertEqual "bytes1" (fromIntegral rws) =<< atomically (readTMVar tmvar0)
-        assertEqual "msg02" msg02 =<< receiver
-        assertEqual "msg03" msg03 =<< receiver
-        assertEqual "msg04" msg04 =<< receiver
-        assertEqual "msg05" msg05 =<< receiver
-        connectionChannelWindowAdjust conn (ChannelWindowAdjust lid 3)
-        assertEqual "bytes2" 3 =<< atomically (readTMVar tmvar1)
-        assertEqual "msg06" msg06 =<< receiver
-        assertEqual "msg07" msg07 =<< receiver
-        assertEqual "msg08" msg08 =<< receiver
-        assertEqual "msg09" msg09 =<< receiver
-        assertEqual "msg10" msg10 =<< receiver
-        assertEqual "msg11" msg11 =<< receiver
+
+testRequestSessionShell05 :: TestTree
+testRequestSessionShell05 = testCase "handler exits with 0 after echoing stdin to stdout" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        sendMessage clientStream req2
+        receiveMessage clientStream >>= assertEqual "res21" res21
+        receiveMessage clientStream >>= assertEqual "res22" res22
+        receiveMessage clientStream >>= assertEqual "res23" res23
+        receiveMessage clientStream >>= assertEqual "res24" res24
     where
-        ct  = ChannelType "session"
+        ping  = "PING PING PING PING"
+        lid   = ChannelId 0
+        rid   = ChannelId 1
+        lws   = 256 * 1024
+        lps   = 32 * 1024
+        rws   = 123
+        rps   = 456
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res1  = ChannelSuccess rid
+        req2  = ChannelData lid (SBS.toShort ping)
+        res21 = ChannelData rid (SBS.toShort ping)
+        res22 = ChannelEof rid
+        res23 = ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL"
+        res24 = ChannelClose rid
+        handler = const $ pure $ Just $ SessionHandler $ \_ _ Nothing stdin stdout _ -> do
+            void (send stdout =<< receive stdin 128)
+            pure ExitSuccess
+
+testRequestSessionShell06 :: TestTree
+testRequestSessionShell06 = testCase "handler throws exception" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res11" res11
+        receiveMessage clientStream >>= assertEqual "res12" res12
+        receiveMessage clientStream >>= assertEqual "res13" res13
+        receiveMessage clientStream >>= assertEqual "res14" res14
+    where
+        lid   = ChannelId 0
+        rid   = ChannelId 1
+        lws   = 256 * 1024
+        lps   = 32 * 1024
+        rws   = 123
+        rps   = 456
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res11 = ChannelSuccess rid
+        res12 = ChannelEof rid
+        res13 = ChannelRequest rid "exit-signal" False "\NUL\NUL\NUL\ETXILL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL"
+        res14 = ChannelClose rid
+        handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+            error "nasty handler"
+            pure ExitSuccess
+
+testRequestSessionShell07 :: TestTree
+testRequestSessionShell07 = testCase "handler running while closed by client" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mvar0 <- newEmptyMVar
+    mvar1 <- newEmptyMVar
+    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+            putMVar mvar0 ()
+            threadDelay (1000*1000) `onException` putMVar mvar1 () 
+            pure ExitSuccess
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        readMVar mvar0 -- wait for handler thread start
+        sendMessage clientStream req2
+        readMVar mvar1 -- wait for handler thread termination by exception
+        receiveMessage clientStream >>= assertEqual "res2" res2
+    where
+        lid   = ChannelId 0
+        rid   = ChannelId 1
+        lws   = 256 * 1024
+        lps   = 32 * 1024
+        rws   = 123
+        rps   = 456
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res1  = ChannelSuccess rid
+        req2  = ChannelClose lid
+        res2  = ChannelClose rid
+
+testSessionData01 :: TestTree
+testSessionData01 = testCase "honor remote max packet size" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ stdout _ -> do
+            sendAll stdout msg
+            pure ExitSuccess
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res11" res11
+        receiveMessage clientStream >>= assertEqual "res12" res12
+        receiveMessage clientStream >>= assertEqual "res13" res13
+        receiveMessage clientStream >>= assertEqual "res14" res14
+        receiveMessage clientStream >>= assertEqual "res15" res15
+    where
+        msg   = "ABC"
+        lid   = ChannelId 0
+        rid   = ChannelId 23
+        rws   = fromIntegral (BS.length msg)
+        rps   = 1
+        lws   = fromIntegral (BS.length msg)
+        lps   = fromIntegral (BS.length msg)
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res11 = ChannelSuccess rid
+        res12 = ChannelData rid "A"
+        res13 = ChannelData rid "B"
+        res14 = ChannelData rid "C"
+        res15 = ChannelEof rid
+
+testSessionData02 :: TestTree
+testSessionData02 = testCase "throw exception if local maxPacketSize is exeeded" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mvar0 <- newEmptyMVar
+    mvar1 <- newEmptyMVar
+    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ stdin _ _ -> do
+            void $ takeMVar mvar0
+            putMVar mvar1 =<< receive stdin 1
+            void $ takeMVar mvar0
+            pure ExitSuccess
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        -- Payload exceeds local maxPacketSize (lps).
+        sendMessage clientStream req2
+        assertThrows "exp2" exp2 $ wait thread
+        -- Unblock handler.
+        putMVar mvar0 ()
+    where
+        msg   = "ABC"
+        lid   = ChannelId 0
+        rid   = ChannelId 23
+        rws   = 0
+        rps   = 0
+        lws   = fromIntegral (SBS.length msg)
+        lps   = fromIntegral (SBS.length msg) - 1
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res1  = ChannelSuccess rid
+        req2  = ChannelData lid msg
+        exp2  = exceptionPacketSizeExceeded
+
+testSessionData03 :: TestTree
+testSessionData03 = testCase "throw exception if remote sends data after eof" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mvar0 <- newEmptyMVar
+    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+            void $ takeMVar mvar0
+            pure ExitSuccess
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        sendMessage clientStream req2
+        sendMessage clientStream req3
+        assertThrows "exp3" exp3 $ wait thread
+        -- Unblock handler.
+        putMVar mvar0 ()
+    where
+        msg   = "ABC"
+        lid   = ChannelId 0
+        rid   = ChannelId 23
+        rws   = 0
+        rps   = 0
+        lws   = fromIntegral (SBS.length msg)
+        lps   = fromIntegral (SBS.length msg)
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res1  = ChannelSuccess rid
+        req2  = ChannelEof lid
+        req3  = ChannelData lid msg
+        exp3  = exceptionDataAfterEof
+
+testSessionFlowControl01 :: TestTree
+testSessionFlowControl01 = testCase "adjust inbound window when < 50% and capacity available" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mvar0 <- newEmptyMVar
+    mvar1 <- newEmptyMVar
+    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ stdin _ _ -> do
+            void $ takeMVar mvar0
+            putMVar mvar1 =<< receive stdin 1
+            void $ takeMVar mvar0
+            pure ExitSuccess
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        -- Initial window (lws) is 5.
+        -- Send 3 bytes ("ABC"). Remaining window is then < 50%.
+        sendMessage clientStream req2
+        -- Window adjust not yet possible due to lack of free capacity.
+        -- Handler shall consume 1 byte to increase capacity to > 50%.
+        putMVar mvar0 ()
+        assertEqual "first byte" "A" =<< takeMVar mvar1
+        -- Now expecting window adjust..
+        receiveMessage clientStream >>= assertEqual "res2" res2
+        -- Let handler finish.
+        putMVar mvar0 ()
+    where
+        lid   = ChannelId 0
+        rid   = ChannelId 23
+        rws   = 0
+        rps   = 0
+        lws   = 5
+        lps   = 5
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res1  = ChannelSuccess rid
+        req2  = ChannelData lid "ABC"
+        res2  = ChannelWindowAdjust rid 3
+
+testSessionFlowControl02 :: TestTree
+testSessionFlowControl02 = testCase "throw exception on inbound window size underrun" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mvar0 <- newEmptyMVar
+    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+            void $ takeMVar mvar0
+            pure ExitSuccess
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        sendMessage clientStream req2
+        sendMessage clientStream req3
+        assertThrows "exp3" exp3 $ wait thread
+        -- Unblock handler.
+        putMVar mvar0 ()
+    where
         lid = ChannelId 0
         rid = ChannelId 23
-        rws = 4
-        rps = 1
-        lws = 5
+        rws = 0
+        rps = 0
+        lws = 1
         lps = 1
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        req = ChannelRequest lid "shell" True mempty
-        msg00 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg01 = Just (Right (ChannelSuccess rid))
-        msg02 = MsgChannelData (ChannelData rid "1")
-        msg03 = MsgChannelData (ChannelData rid "2")
-        msg04 = MsgChannelData (ChannelData rid "3")
-        msg05 = MsgChannelData (ChannelData rid "4")
-        msg06 = MsgChannelData (ChannelData rid "A")
-        msg07 = MsgChannelData (ChannelData rid "B")
-        msg08 = MsgChannelData (ChannelData rid "C")
-        msg09 = MsgChannelEof (ChannelEof rid)
-        msg10 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
-        msg11 = MsgChannelClose (ChannelClose rid)
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res1  = ChannelSuccess rid
+        req2  = ChannelData lid "A"
+        req3  = ChannelData lid "B"
+        exp3  = exceptionWindowSizeUnderrun
 
-connectionChannelRequestExec01 :: TestTree
-connectionChannelRequestExec01 = testCase "without handler" $ withTimeout $ do
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onExecRequest = Nothing, channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
+testSessionFlowControl03 :: TestTree
+testSessionFlowControl03 = testCase "honor outbound window size and adjustment" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ stdout _ -> do
+            sendAll stdout msg
+            pure ExitSuccess
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res11" res11
+        receiveMessage clientStream >>= assertEqual "res12" res12
+        sendMessage clientStream req2
+        receiveMessage clientStream >>= assertEqual "res2" res2
+        sendMessage clientStream req3
+        receiveMessage clientStream >>= assertEqual "res31" res31
+        receiveMessage clientStream >>= assertEqual "res32" res32
     where
-        lid  = ChannelId 0
-        rid  = ChannelId 23
-        lws  = 100
-        lps  = 200
-        rws  = 123
-        rps  = 456
-        opn  = ChannelOpen (ChannelType "session") rid rws rps
-        req  = ChannelRequest lid "exec" True "\NUL\NUL\NUL\NUL"
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Left (ChannelFailure rid))
+        msg   = "ABCDEF"
+        lid   = ChannelId 0
+        rid   = ChannelId 23
+        rws   = 3
+        rps   = fromIntegral (BS.length msg)
+        lws   = fromIntegral (BS.length msg)
+        lps   = fromIntegral (BS.length msg)
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res11 = ChannelSuccess rid
+        res12 = ChannelData rid "ABC"
+        req2  = ChannelWindowAdjust lid 2
+        res2  = ChannelData rid "DE"
+        req3  = ChannelWindowAdjust lid 1
+        res31 = ChannelData rid "F"
+        res32 = ChannelEof rid
 
-connectionChannelRequestExec02 :: TestTree
-connectionChannelRequestExec02 = testCase "with handler exit(0)" $ withTimeout $ do
-    msgs <- newTChanIO
-    let sender msg = atomically $ writeTChan msgs msg
-    let receiver   = atomically $ readTChan msgs
-    conf <- newDefaultConfig
-    bracket (connectionOpen conf { onExecRequest = Just handler, channelMaxQueueSize = lws, channelMaxPacketSize = lps } idnt sender) connectionClose $ \conn -> do
-        assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-        assertEqual "msg1" msg1 =<< connectionChannelRequest conn req
-        assertEqual "msg2" msg2 =<< receiver
-        assertEqual "msg3" msg3 =<< receiver
-        assertEqual "msg4" msg4 =<< receiver
+testSessionFlowControl04 :: TestTree
+testSessionFlowControl04 = testCase "remote adjusts window size to maximum" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mvar0 <- newEmptyMVar
+    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+            readMVar mvar0
+            pure ExitSuccess
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \_ -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        sendMessage clientStream req2
+        sendMessage clientStream req3
+        putMVar mvar0 ()
+        receiveMessage clientStream >>= assertEqual "res3" res3
     where
-        lid  = ChannelId 0
-        rid  = ChannelId 23
-        lws  = 100
-        lps  = 200
-        rws  = 123
-        rps  = 456
-        opn  = ChannelOpen (ChannelType "session") rid rws rps
-        req  = ChannelRequest lid "exec" True "\NUL\NUL\NUL\NUL"
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        msg1 = Just (Right (ChannelSuccess rid))
-        msg2 = MsgChannelEof (ChannelEof rid)
-        msg3 = MsgChannelRequest (ChannelRequest rid "exit-status" False "\NUL\NUL\NUL\NUL")
-        msg4 = MsgChannelClose (ChannelClose rid)
-        idnt = "identity" :: String
-        handler (Session i _ _ _ _ _) command
-            | i == idnt && command == mempty = pure ExitSuccess
-            | otherwise = pure (ExitFailure 1)
+        lid   = ChannelId 0
+        rid   = ChannelId 23
+        rws   = 0
+        rps   = 1
+        lws   = 1
+        lps   = 1
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res1  = ChannelSuccess rid
+        req2  = ChannelWindowAdjust lid maxBound
+        req3  = ChannelData lid "ABC"
+        res3  = ChannelEof rid
 
-connectionChannelData01 :: TestTree
-connectionChannelData01 = testCase "channel data" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    connectionChannelData conn (ChannelData lid "ABCDEF")
+testSessionFlowControl05 :: TestTree
+testSessionFlowControl05 = testCase "throw exception if remote adjusts window size to (maximum + 1)" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mvar0 <- newEmptyMVar
+    let handler = const $ pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
+            readMVar mvar0
+            pure ExitSuccess
+    let config = def {
+            channelMaxQueueSize = lws,
+            channelMaxPacketSize = lps,
+            onSessionRequest = handler
+        }
+    withAsync (serveConnection config serverStream ()) $ \thread -> do
+        sendMessage clientStream req0
+        receiveMessage clientStream >>= assertEqual "res0" res0
+        sendMessage clientStream req1
+        receiveMessage clientStream >>= assertEqual "res1" res1
+        sendMessage clientStream req2
+        sendMessage clientStream req3
+        putMVar mvar0 ()
+        assertThrows "exp3" exp3 $ wait thread
     where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-
-connectionChannelData02 :: TestTree
-connectionChannelData02 = testCase "channel data after eof" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    connectionChannelEof conn (ChannelEof lid)
-    assertThrows "exp0" exp0 $ connectionChannelData conn (ChannelData lid "ABCDEF")
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        exp0 = Disconnect DisconnectProtocolError "data after eof" mempty
-
-connectionChannelData03 :: TestTree
-connectionChannelData03 = testCase "window size" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    connectionChannelData conn (ChannelData lid "ABC")
-    connectionChannelData conn (ChannelData lid "DEF")
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 6
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-
-connectionChannelData04 :: TestTree
-connectionChannelData04 = testCase "window exhaustion #1" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    assertThrows "exp0" exp0 $ connectionChannelData conn (ChannelData lid "ABCDEF")
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 5
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        exp0 = Disconnect DisconnectProtocolError "window size underrun" mempty
-
-connectionChannelData05 :: TestTree
-connectionChannelData05 = testCase "window exhaustion #2" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    connectionChannelData conn (ChannelData lid "ABC")
-    assertThrows "exp0" exp0 $ connectionChannelData conn (ChannelData lid "DEF")
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 5
-        lps = 200
-        rws = 123
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        exp0 = Disconnect DisconnectProtocolError "window size underrun" mempty
-
-connectionChannelWindowAdjust01 :: TestTree
-connectionChannelWindowAdjust01 = testCase "window adjustion up to maximum" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    connectionChannelWindowAdjust conn (ChannelWindowAdjust lid 128)
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = maxBound - 128
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-
-connectionChannelWindowAdjust02 :: TestTree
-connectionChannelWindowAdjust02 = testCase "window adjustion beyond maximum shoud throw" $ do
-    conf <- newDefaultConfig
-    conn <- connectionOpen conf { channelMaxQueueSize = lws, channelMaxPacketSize = lps } () undefined
-    assertEqual "msg0" msg0 =<< connectionChannelOpen conn opn
-    assertThrows "exp0" exp0 $ connectionChannelWindowAdjust conn (ChannelWindowAdjust lid 129)
-    where
-        lid = ChannelId 0
-        rid = ChannelId 23
-        lws = 100
-        lps = 200
-        rws = maxBound - 128
-        rps = 456
-        opn = ChannelOpen (ChannelType "session") rid rws rps
-        msg0 = Right (ChannelOpenConfirmation rid lid lws lps)
-        exp0 = Disconnect DisconnectProtocolError "window size overflow" mempty
-
--}
+        lid   = ChannelId 0
+        rid   = ChannelId 23
+        rws   = 1
+        rps   = 1
+        lws   = 1
+        lps   = 1
+        req0  = ChannelOpen rid rws rps ChannelOpenSession
+        res0  = ChannelOpenConfirmation rid lid lws lps
+        req1  = ChannelRequest lid "shell" True mempty
+        res1  = ChannelSuccess rid
+        req2  = ChannelWindowAdjust lid maxBound
+        req3  = ChannelData lid "ABC"
+        exp3  = exceptionWindowSizeOverflow

@@ -12,11 +12,11 @@ import qualified Spec.TStreamingQueue
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH"
     [ Spec.Algorithms.tests
-    ,  Spec.Key.tests
-    ,  Spec.Message.tests
-    ,  Spec.Server.tests
-    ,  Spec.Server.Service.Connection.tests
-    ,  Spec.Server.Service.UserAuth.tests
+    , Spec.Key.tests
+    , Spec.Message.tests
+    , Spec.Server.tests
+    , Spec.Server.Service.Connection.tests
+    , Spec.Server.Service.UserAuth.tests
     , Spec.Transport.tests
-    ,  Spec.TStreamingQueue.tests
+    , Spec.TStreamingQueue.tests
     ]

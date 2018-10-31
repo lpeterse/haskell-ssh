@@ -82,6 +82,13 @@ instance Arbitrary SBS.ShortByteString where
         , "1234567890"
         ]
 
+instance Arbitrary Command where
+    arbitrary = elements
+        [ Command ""
+        , Command "foobar --xyz fasel"
+        , Command "ls"
+        ]
+
 instance Arbitrary Message where
     arbitrary = oneof
         [ MsgDisconnect              <$> arbitrary

@@ -10,7 +10,6 @@ module Network.SSH.Server.Service.Connection
     ( Connection ()
     , ConnectionConfig (..)
     , Address (..)
-    , Session (..)
     , SessionRequest (..)
     , SessionHandler (..)
     , Environment (..)
@@ -30,6 +29,7 @@ import           Control.Monad                (join, when, forever, unless)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
 import           Control.Exception            (bracket, bracketOnError)
 import qualified Data.ByteArray               as BA
+import qualified Data.ByteString              as BS
 import qualified Data.ByteString.Short        as SBS
 import           Data.Default
 import qualified Data.Map.Strict              as M
@@ -79,7 +79,7 @@ data ChannelApplication
 data SessionState
     = SessionState
     { sessHandler     :: SessionHandler
-    , sessEnvironment :: TVar (M.Map SBS.ShortByteString SBS.ShortByteString)
+    , sessEnvironment :: TVar Environment
     , sessPtySettings :: TVar (Maybe PtySettings)
     , sessStdin       :: Q.TStreamingQueue
     , sessStdout      :: Q.TStreamingQueue
@@ -93,17 +93,8 @@ newtype SessionHandler =
     SessionHandler (forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr)
         => Environment -> Maybe PtySettings -> Maybe Command -> stdin -> stdout -> stderr -> IO ExitCode)
 
-newtype Environment = Environment (M.Map SBS.ShortByteString SBS.ShortByteString)
-
-data Session identity
-    = forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr) => Session
-    { identity    :: identity
-    , environment :: M.Map SBS.ShortByteString SBS.ShortByteString
-    , ptySettings :: Maybe PtySettings
-    , stdin       :: stdin
-    , stdout      :: stdout
-    , stderr      :: stderr
-    }
+newtype Environment = Environment [(BS.ByteString, BS.ByteString)]
+    deriving (Eq, Show)
 
 data DirectTcpIpState
     = DirectTcpIpState
@@ -199,7 +190,7 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
                 Nothing ->
                     sendMessage stream $ openFailure ChannelOpenAdministrativelyProhibited
                 Just handler -> do
-                    env      <- newTVarIO mempty
+                    env      <- newTVarIO (Environment [])
                     pty      <- newTVarIO Nothing
                     wsLocal  <- newTVarIO maxQueueSize
                     wsRemote <- newTVarIO remoteWindowSize
@@ -270,6 +261,11 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
                         maxQueueSize
                         maxPacketSize
 
+        -- The maxQueueSize must at least be one (even if 0 in the config)
+        -- and must not exceed the range of Int (might happen on 32bit systems
+        -- as Int's guaranteed upper bound is only 2^29 -1).
+        -- The value is adjusted silently as this won't be a problem
+        -- for real use cases and is just the safest thing to do.
         maxQueueSize :: Word32
         maxQueueSize = max 1 $ fromIntegral $ min maxBoundIntWord32
             (channelMaxQueueSize $ connConfig connection)
@@ -316,16 +312,22 @@ connectionChannelClose connection stream (ChannelClose localChannelId) = do
 
 connectionChannelData ::
     Connection identity -> ChannelData -> IO ()
-connectionChannelData connection (ChannelData localChannelId payload) = atomically $ do
+connectionChannelData connection (ChannelData localChannelId packet) = atomically $ do
+    when (packetSize > maxPacketSize) (throwSTM exceptionPacketSizeExceeded)
     channel <- getChannelSTM connection localChannelId
     let queue = case chanApplication channel of
             ChannelApplicationSession     st -> sessStdin   st
             ChannelApplicationDirectTcpIp st -> dtiStreamIn st
-    i <- Q.enqueue queue (SBS.fromShort payload) <|> throwSTM exceptionWindowSizeUnderrun
+    i <- Q.enqueue queue (SBS.fromShort packet) <|> throwSTM exceptionWindowSizeUnderrun
     when (i == 0) (throwSTM exceptionDataAfterEof)
-    when (i /= payloadLen) (throwSTM exceptionWindowSizeUnderrun)
+    when (i /= packetSize) (throwSTM exceptionWindowSizeUnderrun)
     where
-        payloadLen = fromIntegral $ SBS.length payload
+        packetSize :: Word32
+        packetSize = fromIntegral $ SBS.length packet
+
+        maxPacketSize :: Word32
+        maxPacketSize = max 1 $ fromIntegral $ min maxBoundIntWord32
+            (channelMaxPacketSize $ connConfig connection)
 
 connectionChannelWindowAdjust ::
     Connection identity -> ChannelWindowAdjust -> IO ()
@@ -343,14 +345,14 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
     case chanApplication channel of
         ChannelApplicationSession sessionState -> case typ of
             "env" -> interpret $ \(ChannelRequestEnv name value) -> do
-                env <- readTVar (sessEnvironment sessionState)
-                writeTVar (sessEnvironment sessionState) $! M.insert name value env
+                Environment env <- readTVar (sessEnvironment sessionState)
+                writeTVar (sessEnvironment sessionState) $! Environment $ (SBS.fromShort name, SBS.fromShort value):env
                 pure $ success channel
             "pty-req" -> interpret $ \(ChannelRequestPty settings) -> do
                 writeTVar (sessPtySettings sessionState) (Just settings)
                 pure $ success channel
             "shell" -> interpret $ \ChannelRequestShell -> do
-                env    <- Environment <$> readTVar (sessEnvironment sessionState)
+                env    <- readTVar (sessEnvironment sessionState)
                 pty    <- readTVar (sessPtySettings sessionState)
                 stdin  <- pure (sessStdin  sessionState)
                 stdout <- pure (sessStdout sessionState)
@@ -361,7 +363,7 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
                         handler env pty Nothing stdin stdout stderr
                     success channel
             "exec" -> interpret $ \(ChannelRequestExec command) -> do
-                env    <- Environment <$> readTVar (sessEnvironment sessionState)
+                env    <- readTVar (sessEnvironment sessionState)
                 pty    <- readTVar (sessPtySettings sessionState)
                 stdin  <- pure (sessStdin  sessionState)
                 stdout <- pure (sessStdout sessionState)
@@ -425,7 +427,7 @@ forkDirectTcpIpHandler stream channel st handle = do
                 sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increaseBy
                 pure True
 
-forkSessionHandler :: forall stream stdin stdout stderr. MessageStream stream =>
+forkSessionHandler :: forall stream. MessageStream stream =>
     stream -> Channel -> Q.TStreamingQueue -> Q.TStreamingQueue -> Q.TStreamingQueue -> IO ExitCode -> IO ()
 forkSessionHandler stream channel stdin stdout stderr run = do
     registerThread channel run supervise
