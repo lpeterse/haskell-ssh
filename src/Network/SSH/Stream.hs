@@ -27,6 +27,7 @@ class OutputStream stream where
     sendUnsafe stream view = do
         bs <- BA.copy view (const $ pure ())
         send stream bs
+    {-# MINIMAL send #-}
 
 -- | An `InputStream` is something that bytes can be read from.
 class InputStream stream where
@@ -58,6 +59,7 @@ class InputStream stream where
         bs <- receive stream n
         BA.copyByteArrayToPtr bs ptr
         pure (BS.length bs)
+    {-# MINIMAL peek, receive #-}
 
 -- | Try to send the complete `BS.ByteString`.
 --

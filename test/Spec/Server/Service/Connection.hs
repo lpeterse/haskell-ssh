@@ -866,9 +866,8 @@ testSessionFlowControl03 = testCase "honor outbound window size and adjustment" 
 testSessionFlowControl04 :: TestTree
 testSessionFlowControl04 = testCase "remote adjusts window size to maximum" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    mvar0 <- newEmptyMVar
-    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ _ _ -> do
-            readMVar mvar0
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ stdin stdout _ -> do
+            sendAll stdout =<< receiveAll stdin (SBS.length msg)
             pure ExitSuccess
     let config = def {
             channelMaxQueueSize = lws,
@@ -882,22 +881,24 @@ testSessionFlowControl04 = testCase "remote adjusts window size to maximum" $ do
         receiveMessage clientStream >>= assertEqual "res1" res1
         sendMessage clientStream req2
         sendMessage clientStream req3
-        putMVar mvar0 ()
-        receiveMessage clientStream >>= assertEqual "res3" res3
+        receiveMessage clientStream >>= assertEqual "res31" res31
+        receiveMessage clientStream >>= assertEqual "res32" res32
     where
+        msg   = "ABC"
         lid   = ChannelId 0
         rid   = ChannelId 23
         rws   = 0
-        rps   = 1
-        lws   = 1
-        lps   = 1
+        rps   = fromIntegral (SBS.length msg)
+        lws   = fromIntegral (SBS.length msg)
+        lps   = fromIntegral (SBS.length msg)
         req0  = ChannelOpen rid rws rps ChannelOpenSession
         res0  = ChannelOpenConfirmation rid lid lws lps
         req1  = ChannelRequest lid "shell" True mempty
         res1  = ChannelSuccess rid
-        req2  = ChannelWindowAdjust lid maxBound
-        req3  = ChannelData lid "ABC"
-        res3  = ChannelEof rid
+        req2  = ChannelData lid msg
+        req3  = ChannelWindowAdjust lid maxBound
+        res31 = ChannelData rid msg
+        res32 = ChannelEof rid
 
 testSessionFlowControl05 :: TestTree
 testSessionFlowControl05 = testCase "throw exception if remote adjusts window size to (maximum + 1)" $ do

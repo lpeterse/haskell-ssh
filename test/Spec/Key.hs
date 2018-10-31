@@ -20,10 +20,12 @@ testDecodePrivatePrivateKeyFile :: TestTree
 testDecodePrivatePrivateKeyFile = testGroup "decodePrivateKeyFile"
     [ testCase "none, none, ed25519" $
         testPrivateKeyFileParser unencryptedEd25519PrivateKeyFile
-    , testCase "bcrypt, aes256-cbc, ed25519" $
-        testPrivateKeyFileParser bcryptAes256CbcEd25519PrivateKeyFile
-    , testCase "bcrypt, aes256-ctr, ed25519" $
-        testPrivateKeyFileParser bcryptAes256CtrEd25519PrivateKeyFile
+    -- Re-enable these tests if cryptonite includes the necessary
+    -- changes to support encrypted key files.
+    -- , testCase "bcrypt, aes256-cbc, ed25519" $
+    --    testPrivateKeyFileParser bcryptAes256CbcEd25519PrivateKeyFile
+    -- , testCase "bcrypt, aes256-ctr, ed25519" $
+    --    testPrivateKeyFileParser bcryptAes256CtrEd25519PrivateKeyFile
     ]
 
 testPrivateKeyFileParser :: (BS.ByteString, BS.ByteString, [(KeyPair, BS.ByteString)]) -> Assertion

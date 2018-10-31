@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase                  #-}
 {-# LANGUAGE MultiWayIf                  #-}
 {-# LANGUAGE OverloadedStrings           #-}
 {-# LANGUAGE TypeFamilies                #-}
@@ -16,11 +15,10 @@ import           Control.Monad.Fail     (MonadFail)
 import qualified Crypto.Cipher.AES      as Cipher
 import qualified Crypto.Cipher.Types    as Cipher
 import           Crypto.Error
-import qualified Crypto.KDF.BCryptPBKDF as BCryptPBKDF
+-- import qualified Crypto.KDF.BCryptPBKDF as BCryptPBKDF
 import qualified Crypto.PubKey.Ed25519  as Ed25519
 import qualified Crypto.PubKey.RSA      as RSA
 import           Data.Bits
-import           Data.ByteArray
 import qualified Data.ByteArray         as BA
 import qualified Data.ByteArray.Parse   as BP
 import qualified Data.ByteString        as BS
@@ -63,7 +61,7 @@ decodePrivateKeyFile passphrase = f . BP.parse (parsePrivateKeyFile passphrase) 
 parsePrivateKeyFile ::
     ( BA.ByteArrayAccess passphrase, BA.ByteArray comment )
     => passphrase -> BP.Parser BS.ByteString [(KeyPair, comment)]
-parsePrivateKeyFile passphrase = do
+parsePrivateKeyFile _passphrase = do
     BP.bytes "-----BEGIN OPENSSH PRIVATE KEY-----"
     void $ many space
     bs <- parseBase64
@@ -154,6 +152,9 @@ parsePrivateKeyFile passphrase = do
         deriveKey <- case kdfAlgo of
             "none" ->
                 pure $ \_-> CryptoFailed CryptoError_KeySizeInvalid
+{-
+            -- This is currently not included in cryptonite.
+            -- Re-enable if my PR has been merged.
             "bcrypt" -> do
                 salt   <- getString
                 rounds <- fromIntegral <$> getWord32be
@@ -161,7 +162,8 @@ parsePrivateKeyFile passphrase = do
                     Cipher.KeySizeFixed len ->
                       CryptoPassed $ BCryptPBKDF.generate (BCryptPBKDF.Parameters rounds len) (BA.convert passphrase :: BA.Bytes) salt
                     _ -> undefined -- impossible
-            _ -> fail $ "Unsupported key derivation function " ++ show (convert kdfAlgo :: BA.Bytes)
+-}
+            _ -> fail $ "Unsupported key derivation function " ++ show (BA.convert kdfAlgo :: BA.Bytes)
 
         numberOfKeys <- fromIntegral <$> getWord32be
         _publicKeysRaw <- getString -- not used
@@ -222,7 +224,7 @@ parsePrivateKeyFile passphrase = do
                           <*> Ed25519.secretKey secretKeyRaw
                     case key of
                         CryptoPassed a -> pure a
-                        CryptoFailed _ -> fail $ "Invalid " ++ show (convert algo :: BA.Bytes) ++ " key"
-                _ -> fail $ "Unsupported algorithm " ++ show (convert algo :: BA.Bytes)
+                        CryptoFailed _ -> fail $ "Invalid " ++ show (BA.convert algo :: BA.Bytes) ++ " key"
+                _ -> fail $ "Unsupported algorithm " ++ show (BA.convert algo :: BA.Bytes)
             comment <- BA.convert <$> getString
             pure (key, comment)

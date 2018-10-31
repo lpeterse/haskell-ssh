@@ -1,5 +1,8 @@
 .PHONY: test hpc
 
+install:
+	stack install --flag hssh:demo
+
 test:
 	stack test --ta "-t 3 -j1" --coverage
 

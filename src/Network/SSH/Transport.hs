@@ -496,7 +496,7 @@ kexWithVerifiedSignature key hash sig action = case (key, sig) of
 
 sendVersion :: (OutputStream stream) => stream -> IO Version
 sendVersion stream = do
-    void $ sendAll stream $ runPut $ put version
+    sendAll stream $ runPut $ put version
     pure version
 
 -- The maximum length of the version string is 255 chars including CR+LF.
