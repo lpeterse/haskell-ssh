@@ -171,7 +171,7 @@ withTransport config magent stream runWith = withFinalExceptionHandler $ do
             Disconnect _ DisconnectConnectionLost _ -> pure (Left e)
             Disconnect Local r (DisconnectMessage m) ->
                 withAsync (threadDelay (1000*1000)) $ \thread1 ->
-                withAsync (transportSendMessage env $ Disconnected r m mempty) $ \thread2 -> do
+                withAsync (transportSendMessage env $ Disconnected r (SBS.toShort m) mempty) $ \thread2 -> do
                     atomically $ void (waitCatchSTM thread1) <|> void (waitCatchSTM thread2)
                     pure (Left e)
             _ -> pure (Left e)
@@ -215,7 +215,7 @@ transportReceiveRawMessageMaybe env =
         interpreter plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5 <|> f i6
             where
                 f i = i <$> runGet plainText
-                i0 (Disconnected r m _) = throwIO $ Disconnect Remote r (DisconnectMessage m)
+                i0 (Disconnected r m _) = throwIO $ Disconnect Remote r (DisconnectMessage $ SBS.fromShort m)
                 i1 Debug             {} = pure ()
                 i2 Ignore            {} = pure ()
                 i3 Unimplemented     {} = pure ()

@@ -59,14 +59,13 @@ executables:
     source-dirs:         app
     ghc-options:
     - -O2
-#    - -threaded
     - -rtsopts
     dependencies:
     - hssh
     - socket
-    # when:
-    #   - condition: flag(demo)
-    #     then:
-    #       buildable: true
-    #     else:
-    #       buildable: false
+    when:
+      - condition: flag(demo)
+        then:
+          buildable: true
+        else:
+          buildable: false

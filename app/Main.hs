@@ -17,11 +17,9 @@ import           Control.Monad                  ( forM_
                                                 , void
                                                 , forever
                                                 )
-import           Control.Concurrent.Async
 import           Control.Monad.STM
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
-import qualified Data.ByteString.Short         as SBS
 import           System.Exit
 import qualified System.Socket                 as S
 import qualified System.Socket.Family.Inet6    as S
@@ -76,17 +74,17 @@ main = do
 serveHttp :: identity -> Server.DirectTcpIpRequest -> IO (Maybe Server.DirectTcpIpHandler)
 serveHttp idnt req = pure $ Just $ Server.DirectTcpIpHandler $ \stream-> do
     bs <- receive stream 4096
-    void $ send stream "HTTP/1.1 200 OK\n"
-    void $ send stream "Content-Type: text/plain\n\n"
-    void $ send stream $! BS.pack $ fmap (fromIntegral . fromEnum) $ show req
-    void $ send stream "\n\n"
-    void $ send stream bs
+    sendAll stream "HTTP/1.1 200 OK\n"
+    sendAll stream "Content-Type: text/plain\n\n"
+    sendAll stream $! BS.pack $ fmap (fromIntegral . fromEnum) $ show req
+    sendAll stream "\n\n"
+    sendAll stream bs
     print bs
 
 handleSessionRequest :: identity -> Server.SessionRequest -> IO (Maybe Server.SessionHandler)
 handleSessionRequest idnt req = pure $ Just $ Server.SessionHandler $ \env pty command stdin stdout stderr -> do
     forM_ [1 ..  ] $ \i -> do
-        void $ send stdout abc
+        sendAll stdout abc
         threadDelay 1000
     pure (ExitFailure 23)
 

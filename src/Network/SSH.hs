@@ -18,6 +18,11 @@ module Network.SSH
       -- * Transport
     , TransportConfig (..)
       -- * Misc
+      -- ** Disconnect
+    , Disconnect (..)
+    , DisconnectParty (..)
+    , DisconnectReason (..)
+    , DisconnectMessage (..)
       -- ** Name
     , Name ()
     , UserName
@@ -36,6 +41,7 @@ module Network.SSH
 
 import Network.SSH.Algorithms
 import Network.SSH.AuthAgent
+import Network.SSH.Exception
 import Network.SSH.Key
 import Network.SSH.Message
 import Network.SSH.Name
