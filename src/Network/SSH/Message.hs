@@ -4,7 +4,6 @@
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE ExistentialQuantification  #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Network.SSH.Message
   ( -- * Message
     Message (..)
@@ -88,10 +87,22 @@ module Network.SSH.Message
   , Version (..)
   , ServiceName
   , UserName
+  , getPublicKey
+  , putPublicKey
+  , getSignature
+  , putSignature
+  , getRsaPublicKey
+  , putRsaPublicKey
+  , getCurve25519PublicKey
+  , putCurve25519PublicKey
+  , getEd25519PublicKey
+  , putEd25519PublicKey
+  , getEd25519Signature
+  , putEd25519Signature
   ) where
 
 import           Control.Applicative
-import           Control.Monad            (void)
+import           Control.Monad            (void, when)
 import           Crypto.Error
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
@@ -568,12 +579,12 @@ instance Encoding KexNewKeys where
     get   = expectWord8 21 >> pure KexNewKeys
 
 instance Encoding KexEcdhInit where
-    put (KexEcdhInit key) = putWord8 30 <> put key
-    get = expectWord8 30 >> KexEcdhInit <$> get
+    put (KexEcdhInit key) = putWord8 30 <> putCurve25519PublicKey key
+    get = expectWord8 30 >> KexEcdhInit <$> getCurve25519PublicKey
 
 instance Encoding KexEcdhReply where
-    put (KexEcdhReply hkey ekey sig) = putWord8 31 <> put hkey <> put ekey <> put sig
-    get = expectWord8 31 >> KexEcdhReply <$> get <*> get <*> get
+    put (KexEcdhReply hkey ekey sig) = putWord8 31 <> putPublicKey hkey <> putCurve25519PublicKey ekey <> putSignature sig
+    get = expectWord8 31 >> KexEcdhReply <$> getPublicKey <*> getCurve25519PublicKey <*> getSignature
 
 instance Encoding UserAuthRequest where
     put (UserAuthRequest un sn am) = putWord8 50 <> putName un <> putName sn <> put am
@@ -597,8 +608,8 @@ instance Encoding UserAuthBanner where
     get = expectWord8 53 >> UserAuthBanner <$> getShortString <*> getShortString
 
 instance Encoding UserAuthPublicKeyOk where
-    put (UserAuthPublicKeyOk pk) = putWord8 60 <> putName (name pk) <> put pk
-    get = expectWord8 60 >> getName >> UserAuthPublicKeyOk <$> get
+    put (UserAuthPublicKeyOk pk) = putWord8 60 <> putName (name pk) <> putPublicKey pk
+    get = expectWord8 60 >> getName >> UserAuthPublicKeyOk <$> getPublicKey
 
 instance Encoding ChannelOpen where
     put (ChannelOpen rc rw rp ct) =
@@ -782,8 +793,8 @@ instance Encoding AuthMethod where
         AuthPassword (Password pw) ->
             putBool False <> putShortString pw
         AuthPublicKey pk msig -> case msig of
-            Nothing  -> putBool False <> putName (name pk) <> put pk
-            Just sig -> putBool True <> putName (name pk) <> put pk <> put sig
+            Nothing  -> putBool False <> putName (name pk) <> putPublicKey pk
+            Just sig -> putBool True <> putName (name pk) <> putPublicKey pk <> putSignature sig
         AuthOther {} -> mempty
     get = getName >>= \case
         Name "none" ->
@@ -795,34 +806,38 @@ instance Encoding AuthMethod where
         Name "publickey" -> do
             signed <- getBool
             void getShortString -- is redundant, ignore!
-            key    <- get
-            msig   <- if signed then Just <$> get else pure Nothing
+            key    <- getPublicKey
+            msig   <- if signed then Just <$> getSignature else pure Nothing
             pure (AuthPublicKey key msig)
         other -> pure (AuthOther other)
 
-instance Encoding PublicKey where
-    put k = B.word32BE (len k - 4) <> putName (name k) <> case k of
-        PublicKeyEd25519 key -> put key
-        PublicKeyRSA     key -> putRsaPublicKey key
-        PublicKeyOther    {} -> mempty
-        where
-            len = fromIntegral . B.length . put -- FIXME
-    get = getFramed $ getName >>= \case
-        Name "ssh-ed25519" -> PublicKeyEd25519 <$> get
-        Name "ssh-rsa"     -> PublicKeyRSA <$> getRsaPublicKey
-        other              -> PublicKeyOther <$> pure other
+putPublicKey :: B.Builder b => PublicKey -> b
+putPublicKey k = B.word32BE (fromIntegral $ B.length $ f ()) <> (f ())
+    where
+        f () = putName (name k) <> case k of
+            PublicKeyEd25519 key -> putEd25519PublicKey key
+            PublicKeyRSA     key -> putRsaPublicKey key
+            PublicKeyOther    {} -> mempty
 
-instance Encoding Signature where
-    put s = B.word32BE (len s - 4) <> putName (name s) <> case s of
-        SignatureEd25519 sig -> put       sig
-        SignatureRSA     sig -> putString sig -- FIXME
-        SignatureOther    {} -> mempty
-        where
-            len = fromIntegral . B.length . put -- FIXME
-    get = getFramed $ getName >>= \case
-        Name "ssh-ed25519" -> SignatureEd25519 <$> get
-        Name "ssh-rsa"     -> SignatureRSA <$> getString --FIXME
-        other              -> SignatureOther <$> pure other
+getPublicKey :: Get PublicKey
+getPublicKey = getFramed $ getName >>= \case
+    Name "ssh-ed25519" -> PublicKeyEd25519 <$> getEd25519PublicKey
+    Name "ssh-rsa"     -> PublicKeyRSA <$> getRsaPublicKey
+    other              -> PublicKeyOther <$> pure other
+
+putSignature :: B.Builder b => Signature -> b 
+putSignature s = B.word32BE (fromIntegral $ B.length $ f ()) <> (f ())
+    where
+        f () = putName (name s) <> case s of
+            SignatureEd25519 sig -> putEd25519Signature sig
+            SignatureRSA     sig -> putString sig
+            SignatureOther    {} -> mempty
+
+getSignature :: Get Signature
+getSignature = getFramed $ getName >>= \case
+    Name "ssh-ed25519" -> SignatureEd25519 <$> getEd25519Signature
+    Name "ssh-rsa"     -> SignatureRSA <$> getString
+    other              -> SignatureOther <$> pure other
 
 instance Encoding PtySettings where
     put (PtySettings env wc hc wp hp modes) =
@@ -848,48 +863,55 @@ getNameList = do
     s <- getString :: Get BS.ByteString
     pure $ Name . SBS.toShort <$> BS.split 0x2c s
 
-instance Encoding Curve25519.PublicKey where
-    put = putString
-    get = getString >>= \s-> case Curve25519.publicKey (s :: BA.Bytes) of
-        CryptoPassed k -> pure k
-        CryptoFailed _ -> fail ""
+putCurve25519PublicKey :: B.Builder b => Curve25519.PublicKey -> b
+putCurve25519PublicKey = putString
 
-instance Encoding Ed25519.PublicKey where
-    put = putString
-    get = getString >>= \s-> case Ed25519.publicKey (s :: BA.Bytes) of
-        CryptoPassed k -> pure k
-        CryptoFailed _ -> fail ""
+getCurve25519PublicKey :: Get Curve25519.PublicKey
+getCurve25519PublicKey = getString >>= \s-> case Curve25519.publicKey (s :: BA.Bytes) of
+    CryptoPassed k -> pure k
+    CryptoFailed _ -> fail mempty
 
-instance Encoding Ed25519.Signature where
-    put = putString
-    get = getString >>= \s-> case Ed25519.signature (s :: BA.Bytes) of
-        CryptoPassed k -> pure k
-        CryptoFailed _ -> fail ""
+putEd25519PublicKey :: B.Builder b => Ed25519.PublicKey -> b
+putEd25519PublicKey = putString
+
+getEd25519PublicKey :: Get Ed25519.PublicKey
+getEd25519PublicKey = getString >>= \s-> case Ed25519.publicKey (s :: BA.Bytes) of
+    CryptoPassed k -> pure k
+    CryptoFailed _ -> fail mempty
+
+putEd25519Signature :: B.Builder b => Ed25519.Signature -> b
+putEd25519Signature = putString
+
+getEd25519Signature :: Get Ed25519.Signature
+getEd25519Signature = getString >>= \s-> case Ed25519.signature (s :: BA.Bytes) of
+    CryptoPassed k -> pure k
+    CryptoFailed _ -> fail mempty
 
 putRsaPublicKey :: B.Builder b => RSA.PublicKey -> b
 putRsaPublicKey (RSA.PublicKey _ n e) =
-    putInteger n <>
-    putInteger e
+    putInteger e <>
+    putInteger n
     where
         putInteger x = putString bs
             where
                 bs      = BA.pack $ g $ f x [] :: BS.ByteString
                 f 0 acc = acc
                 f i acc = let (q,r) = quotRem i 256
-                        in  f q (fromIntegral r : acc)
+                          in  f q (fromIntegral r : acc)
                 g []        = []
                 g yys@(y:_) | y > 128   = 0:yys
                             | otherwise = yys
 
 getRsaPublicKey :: Get RSA.PublicKey
 getRsaPublicKey = do
-    (n,_) <- getIntegerAndSize
-    (e,s) <- getIntegerAndSize
+    (e,_) <- getIntegerAndSize
+    (n,s) <- getIntegerAndSize
+    when (s > 8192 `div` 8) (fail "key size not supported")
     pure $ RSA.PublicKey s n e
     where
         -- Observing the encoded length is far cheaper than calculating the
         -- log2 of the resulting integer.
         getIntegerAndSize :: Get (Integer, Int)
         getIntegerAndSize = do
-            ws <- dropWhile (== 0) . (BA.unpack :: BS.ByteString -> [Word8]) <$> getString -- eventually remove leading 0 byte
-            pure (foldl' (\acc w8-> acc * 256 + fromIntegral w8) 0 ws, length ws * 8)
+            ws <- dropWhile (== 0) . (BA.unpack :: BS.ByteString -> [Word8]) <$> getString -- remove leading 0 bytes
+            pure (foldl' (\acc w8-> acc * 256 + fromIntegral w8) 0 ws, length ws)

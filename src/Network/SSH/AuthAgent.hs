@@ -22,13 +22,13 @@ class AuthAgent agent where
     --
     --   The signature may be denied in case the key is no longer available.
     --   This method shall not throw exceptions, but rather return `Nothing` if possible.
-    getSignature :: BA.ByteArrayAccess hash => agent -> PublicKey -> hash -> IO (Maybe Signature)
+    sign :: BA.ByteArrayAccess hash => agent -> PublicKey -> hash -> IO (Maybe Signature)
 
 instance AuthAgent KeyPair where
     getPublicKeys kp = case kp of
         KeyPairEd25519 pk _ -> pure [PublicKeyEd25519 pk]
 
-    getSignature kp pk0 hash = case kp of
+    sign kp pk0 hash = case kp of
         KeyPairEd25519 pk sk
             | pk0 == PublicKeyEd25519 pk -> pure $ Just $ SignatureEd25519 $ Ed25519.sign sk pk hash
             | otherwise                  -> pure Nothing

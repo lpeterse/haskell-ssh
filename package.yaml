@@ -53,20 +53,14 @@ tests:
     - tasty
     - tasty-hunit
     - tasty-quickcheck
+    - QuickCheck
 
 executables:
   hssh-demo:
     main:                Main.hs
     source-dirs:         app
     ghc-options:
-    - -O2
     - -rtsopts
     dependencies:
     - hssh
     - socket >= 0.8.2.0
-    when:
-      - condition: flag(demo)
-        then:
-          buildable: true
-        else:
-          buildable: false

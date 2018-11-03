@@ -386,7 +386,7 @@ kexServerContinuation env cookie authAgent = serverKex0
                             sek  = Curve25519.toPublic sekSecret
                             sec  = Curve25519.dh cek sekSecret
                             hash = kexHash cv sv cki ski shk cek sek sec
-                        sig <- maybe (throwIO exceptionKexNoSignature) pure =<< getSignature authAgent shk hash
+                        sig <- maybe (throwIO exceptionKexNoSignature) pure =<< sign authAgent shk hash
                         sid <- trySetSessionId env (SessionId $ SBS.toShort $ BA.convert hash)
                         setChaCha20Poly1305Context env $ kexKeys sec hash sid
                         transportSendMessage env (KexEcdhReply shk sek sig)
@@ -458,16 +458,16 @@ kexHash ::
     Hash.Digest Hash.SHA256
 kexHash (Version vc) (Version vs) ic is ks qc qs k
     = Hash.hash $ runPut $
-        putShortString vc <>
-        putShortString vs <>
-        B.word32BE (len ic) <>
-        put       ic <>
-        B.word32BE (len is) <>
-        put       is <>
-        put       ks <>
-        put       qc <>
-        put       qs <>
-        putAsMPInt k
+        putShortString         vc <>
+        putShortString         vs <>
+        B.word32BE       (len ic) <>
+        put                    ic <>
+        B.word32BE       (len is) <>
+        put                    is <>
+        putPublicKey           ks <>
+        putCurve25519PublicKey qc <>
+        putCurve25519PublicKey qs <>
+        putAsMPInt             k
     where
         len = fromIntegral . B.length . put
 

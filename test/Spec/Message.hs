@@ -3,22 +3,35 @@
 {-# LANGUAGE StandaloneDeriving         #-}
 module Spec.Message ( tests ) where
 
+import           Control.Monad            ( replicateM )
 import           Crypto.Error
 import qualified Crypto.PubKey.Curve25519 as Curve25519
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
+import           Crypto.Random.Types      ( MonadRandom (..) )
+import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import qualified Data.ByteString.Short    as SBS
+import qualified Data.Serialize.Get       as G
+import           Data.Word
 import           System.Exit
 
 import           Test.Tasty
 import           Test.Tasty.QuickCheck    as QC
+import           Test.QuickCheck          ( arbitraryBoundedEnum )
+import           Test.QuickCheck.Gen      ( Gen (..), chooseAny, vectorOf )
 
 import           Network.SSH.Internal
 
 tests :: TestTree
 tests = testGroup "Network.SSH.Message"
     [ testParserIdentity
+    , testParserIdentityPublicKey
+    , testParserIdentitySignature
+    , testParserIdentityRsaPublicKey
+    , testParserIdentityEd25519PublicKey
+    , testParserIdentityEd25519Signature
+    , testParserIdentityCurve25519PublicKey
     ]
 
 testParserIdentity :: TestTree
@@ -60,13 +73,53 @@ testParserIdentity = testGroup "put . get == id"
     , QC.testProperty ":: ChannelSuccess"             (parserIdentity :: ChannelSuccess             -> Property)
     , QC.testProperty ":: ChannelFailure"             (parserIdentity :: ChannelFailure             -> Property)
     , QC.testProperty ":: Version"                    (parserIdentity :: Version                    -> Property)
-    , QC.testProperty ":: PublicKey"                  (parserIdentity :: PublicKey                  -> Property)
-    , QC.testProperty ":: Signature"                  (parserIdentity :: Signature                  -> Property)
     , QC.testProperty ":: Message"                    (parserIdentity :: Message                    -> Property)
     ]
     where
         parserIdentity :: (Encoding a, Eq a, Show a) => a -> Property
         parserIdentity x = Just x === runGet (runPut $ put x)
+
+testParserIdentityPublicKey :: TestTree
+testParserIdentityPublicKey =
+    QC.testProperty "putPublicKey . getPublicKey == id" parserIdentity
+    where
+        parserIdentity :: PublicKey -> Property
+        parserIdentity x = Right x === G.runGet getPublicKey (runPut $ putPublicKey x)
+
+testParserIdentitySignature :: TestTree
+testParserIdentitySignature =
+    QC.testProperty "putSignature . getSignature == id" parserIdentity
+    where
+        parserIdentity :: Signature -> Property
+        parserIdentity x = Right x === G.runGet getSignature (runPut $ putSignature x)
+
+testParserIdentityRsaPublicKey :: TestTree
+testParserIdentityRsaPublicKey =
+    QC.testProperty "putRsaPublicKey . getRsaPublicKey == id" parserIdentity
+    where
+        parserIdentity :: RSA.PublicKey -> Property
+        parserIdentity x = Right x === G.runGet getRsaPublicKey (runPut $ putRsaPublicKey x)
+
+testParserIdentityCurve25519PublicKey :: TestTree
+testParserIdentityCurve25519PublicKey =
+    QC.testProperty "putCurve25519PublicKey . getCurve25519PublicKey == id" parserIdentity
+    where
+        parserIdentity :: Curve25519.PublicKey -> Property
+        parserIdentity x = Right x === G.runGet getCurve25519PublicKey (runPut $ putCurve25519PublicKey x)
+
+testParserIdentityEd25519PublicKey :: TestTree
+testParserIdentityEd25519PublicKey =
+    QC.testProperty "putEd25519PublicKey . getEd25519PublicKey == id" parserIdentity
+    where
+        parserIdentity :: Ed25519.PublicKey -> Property
+        parserIdentity x = Right x === G.runGet getEd25519PublicKey (runPut $ putEd25519PublicKey x)
+
+testParserIdentityEd25519Signature :: TestTree
+testParserIdentityEd25519Signature =
+    QC.testProperty "putEd25519Signature . getEd25519Signature == id" parserIdentity
+    where
+        parserIdentity :: Ed25519.Signature -> Property
+        parserIdentity x = Right x === G.runGet getEd25519Signature (runPut $ putEd25519Signature x)
 
 instance Arbitrary BS.ByteString where
     arbitrary = elements
@@ -306,14 +359,13 @@ instance Arbitrary Name where
 instance Arbitrary PublicKey where
     arbitrary = oneof
         [ PublicKeyEd25519           <$> x1
-        , PublicKeyRSA               <$> x2
+        , PublicKeyRSA               <$> arbitrary
         , PublicKeyOther             <$> x3
         ]
         where
             x1 = pure $ case Ed25519.publicKey ("$\149\229m\164\ETB\GSA\ESC\185ThTc8\212\219\158\249\CAN\202\245\133\140a\bZQ\v\234\247x" :: BS.ByteString) of
               CryptoPassed pk -> pk
               CryptoFailed _  -> undefined
-            x2 = pure $ RSA.PublicKey 24 65537 2834792
             x3 = pure "PUBLIC_KEY_OTHER"
 
 instance Arbitrary Signature where
@@ -328,7 +380,20 @@ instance Arbitrary Signature where
               CryptoFailed _   -> undefined
             x2 = pure "SIGNATURE_RSA"
 
+instance Arbitrary RSA.PublicKey where
+    arbitrary = fst <$> (elements [1024 `div` 8] >>= \bytes -> elements [3, 0x10001] >>= RSA.generate bytes)
+
 instance Arbitrary Curve25519.PublicKey where
-    arbitrary = pure $ case Curve25519.publicKey ("\179g~\181\170\169\154\205\211\ft\162\&0@0dO\FS\DLEA\166@[r\150t~W\221cOF" :: BS.ByteString) of
-        CryptoPassed pk -> pk
-        CryptoFailed _  -> undefined
+    arbitrary = Curve25519.toPublic <$> Curve25519.generateSecretKey
+
+instance Arbitrary Ed25519.PublicKey where
+    arbitrary = Ed25519.toPublic <$> Ed25519.generateSecretKey
+
+instance Arbitrary Ed25519.Signature where
+    arbitrary = do
+        s <- Ed25519.generateSecretKey
+        let p = Ed25519.toPublic s
+        pure (Ed25519.sign s p (mempty :: BS.ByteString))
+
+instance MonadRandom Gen where
+    getRandomBytes n = BA.pack <$> vectorOf n arbitraryBoundedEnum

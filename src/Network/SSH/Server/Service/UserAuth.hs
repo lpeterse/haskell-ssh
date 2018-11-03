@@ -6,7 +6,9 @@ module Network.SSH.Server.Service.UserAuth where
 import           Control.Exception            ( throwIO )
 import           Control.Concurrent           ( threadDelay )
 import qualified Control.Concurrent.Async     as Async
+import qualified Crypto.Hash.Algorithms       as Hash
 import qualified Crypto.PubKey.Ed25519        as Ed25519
+import qualified Crypto.PubKey.RSA.PKCS15     as RSA.PKCS15
 import qualified Data.ByteString              as BS
 import           Data.Default
 import           Data.Word
@@ -96,7 +98,7 @@ withAuthentication config transport session serviceHandler = do
                 case method of
                     AuthPublicKey pk msig -> case msig of
                         Just sig
-                            | verifyAuthSignature session user service pk sig -> do
+                            | signatureValid session user service pk sig -> do
                                 onAuthRequest config user service pk >>= \case
                                     Just idnt -> pure (service, idnt)
                                     Nothing -> do
@@ -112,21 +114,20 @@ withAuthentication config transport session serviceHandler = do
                         sendSupportedAuthMethods
                         authenticate (limit - 1)
 
-verifyAuthSignature :: SessionId -> UserName -> ServiceName -> PublicKey -> Signature -> Bool
-verifyAuthSignature sessionIdentifier userName serviceName publicKey signature =
+signatureValid :: SessionId -> UserName -> ServiceName -> PublicKey -> Signature -> Bool
+signatureValid sessionIdentifier userName serviceName publicKey signature =
     case (publicKey,signature) of
         (PublicKeyEd25519 k, SignatureEd25519 s) -> Ed25519.verify k signedData s
-        -- TODO: Implement RSA
-        -- (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
+        (PublicKeyRSA     k, SignatureRSA     s) -> RSA.PKCS15.verify (Just Hash.SHA1) k signedData s
         _                                        -> False
     where
         signedData :: BS.ByteString
         signedData = runPut $
             put           sessionIdentifier <>
-            putWord8      50 <>
+            putWord8      50 <> -- SSH_MSG_USERAUTH_REQUEST
             putName       userName <>
             putName       serviceName <>
             putName       (Name "publickey") <>
-            putWord8      1 <>
+            putWord8      1 <>  -- TRUE
             putName       (name publicKey) <>
-            put           publicKey
+            putPublicKey  publicKey
