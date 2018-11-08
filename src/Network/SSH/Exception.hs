@@ -89,6 +89,10 @@ exceptionServiceNotAvailable :: Disconnect
 exceptionServiceNotAvailable =
     Disconnect Local DisconnectServiceNotAvailable mempty
 
+exceptionNoMoreAuthMethodsAvailable :: Disconnect
+exceptionNoMoreAuthMethodsAvailable =
+    Disconnect Local DisconnectNoMoreAuthMethodsAvailable mempty
+
 exceptionInvalidChannelId :: Disconnect
 exceptionInvalidChannelId =
     Disconnect Local DisconnectProtocolError "invalid channel id"

@@ -56,9 +56,17 @@ tests:
     - QuickCheck
 
 executables:
-  hssh-demo:
+  hssh-server:
     main:                Main.hs
-    source-dirs:         app
+    source-dirs:         app/hssh-server
+    ghc-options:
+    - -rtsopts
+    dependencies:
+    - hssh
+    - socket >= 0.8.2.0
+  hssh-client:
+    main:                Main.hs
+    source-dirs:         app/hssh-client
     ghc-options:
     - -rtsopts
     dependencies:
