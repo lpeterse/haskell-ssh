@@ -6,15 +6,23 @@
 module Network.SSH.Client where
 
 import           Control.Applicative
-import           Control.Exception                     ( throwIO )
-import           Control.Concurrent.Async              ( Async (..), async )
+import           Control.Concurrent.Async              ( Async (..), async, withAsync )
+import           Control.Concurrent.STM.TVar
+import           Control.Concurrent.STM.TMVar
+import           Control.Exception                     ( Exception, throwIO )
+import           Control.Monad
+import           Control.Monad.STM
 import           Data.Default
-import qualified Data.ByteString                       as BS
 import           Data.Function                         ( fix )
 import           Data.List                             ( intersect )
+import           Data.Map.Strict                       as M
 import           System.Exit
+import           Data.Word
+import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Short                 as SBS
 
 import           Network.SSH.AuthAgent
+import           Network.SSH.Constants
 import           Network.SSH.Exception
 import           Network.SSH.Encoding
 import           Network.SSH.Message
@@ -22,6 +30,7 @@ import           Network.SSH.Key
 import           Network.SSH.Name
 import           Network.SSH.Stream
 import           Network.SSH.Transport
+import qualified Network.SSH.TStreamingQueue           as Q
 
 data Config
     = Config
@@ -49,11 +58,31 @@ instance Default UserAuthConfig where
 data Connection
     = Connection
     { connectionTransport :: Transport
-    , connectionChannels  :: TVar (M.Map ChannelId Channel)
+    , connectionChannels  :: TVar (M.Map ChannelId ChannelState)
     }
 
+data ChannelState
+    = ChannelOpening (Either ChannelOpenFailure ChannelOpenConfirmation -> STM ())
+    | ChannelRunning Channel
+    | ChannelClosing
+
 data Channel
-    = Channel
+    = Channel 
+    { chanIdLocal             :: ChannelId
+    , chanIdRemote            :: ChannelId
+    , chanMaxPacketSizeRemote :: Word32
+    , chanWindowSizeRemote    :: TVar Word32
+    , chanApplication         :: ChannelApplication
+    }
+
+data ChannelApplication
+    = ChannelApplicationSession ChannelSession
+
+data ChannelSession
+    = ChannelSession
+    { sessStdout      :: Q.TStreamingQueue
+    , sessStderr      :: Q.TStreamingQueue
+    }
 
 newtype Command = Command BS.ByteString
 
@@ -76,12 +105,37 @@ withConnection :: forall stream. (DuplexStream stream)
 withConnection config stream handler = mergeDisconnects $
     withTransport (transportConfig config) (Nothing :: Maybe KeyPair) stream $ \transport sessionId -> do
         requestServiceWithAuthentication (userAuthConfig config) transport sessionId (Name "ssh-connection")
-        Disconnect Local DisconnectByApplication <$> handler (Connection transport)
+        c <- atomically $ Connection
+            <$> pure transport
+            <*> newTVar mempty
+        withAsync (dispatchIncoming transport c) $ \thread ->
+            Disconnect Local DisconnectByApplication <$> handler c
     where
         mergeDisconnects :: IO (Either Disconnect Disconnect) -> IO Disconnect
         mergeDisconnects = fmap $ \case
             Left  d -> d
             Right d -> d
+
+        dispatchIncoming :: Transport -> Connection -> IO ()
+        dispatchIncoming t c = forever $ do
+            receiveMessage t >>= \case
+                C1 x -> print x
+                C2 x@(ChannelOpenConfirmation lid _ _ _) -> atomically $ do
+                    getChannelStateSTM c lid >>= \case
+                        ChannelOpening f -> f (Right x)
+                        _                -> throwSTM exceptionInvalidChannelState
+                C3 x@(ChannelOpenFailure lid _ _ _) -> atomically $ do
+                    getChannelStateSTM c lid >>= \case
+                        ChannelOpening f -> f (Left x)
+                        _                -> throwSTM exceptionInvalidChannelState
+                C4  x -> print x
+                C5  x -> print x
+                C6  x -> print x
+                C7  x -> print x
+                C8  x -> print x
+                C9  x -> print x
+                C96 x -> print x
+                C97 x -> print x
 
 requestServiceWithAuthentication ::
     UserAuthConfig -> Transport -> SessionId -> ServiceName -> IO ()
@@ -148,35 +202,110 @@ newtype Environment = Environment ()
 newtype SessionHandler = SessionHandler (forall stdin stdout stderr. (OutputStream stdin, InputStream stdout, InputStream stderr)
     => stdin -> stdout -> stderr -> IO ExitCode)
 
-data ChannelOpenResponse
-    = OpenConfirmation ChannelOpenConfirmation
-    | OpenFailure      ChannelOpenFailure
-
-instance Encoding ChannelOpenResponse where
-    put (OpenConfirmation x) = put x
-    put (OpenFailure      x) = put x
-    get   = OpenConfirmation <$> get
-        <|> OpenFailure      <$> get
-
 asyncSession :: Connection -> IO (Async ExitCode)
 asyncSession c = do
-    atomically $ do
-        cid <- getFreeChannelIdSTM
-
-    let li = ChannelId 0
+    r <- newEmptyTMVarIO
+    lid <- atomically $ openChannelSTM c $ \case
+        Left x@ChannelOpenFailure {} -> do
+            putTMVar r (Left x)
+        Right (ChannelOpenConfirmation lid rid rws rps) -> do
+            tlws <- newTVar 10000
+            trws <- newTVar rws
+            sstdout <- Q.newTStreamingQueue maxQueueSize tlws
+            sstderr <- Q.newTStreamingQueue maxQueueSize tlws
+            let session = ChannelSession
+                    { sessStdout              = sstdout
+                    , sessStderr              = sstderr
+                    }
+            let channel = Channel
+                    { chanIdLocal             = lid
+                    , chanIdRemote            = rid
+                    , chanMaxPacketSizeRemote = rps
+                    , chanWindowSizeRemote    = trws
+                    , chanApplication         = ChannelApplicationSession session
+                    }
+            setChannelStateSTM c lid $ ChannelRunning channel
+            putTMVar r (Right channel)
+    sendMessage t $ ChannelOpen lid lw lp ChannelOpenSession
+    atomically (readTMVar r) >>= \case
+        Left (ChannelOpenFailure _ reason descr _) -> throwIO
+            $ ChannelOpenFailed reason
+            $ ChannelOpenFailureDescription $ SBS.fromShort descr
+        Right ch -> do
+            sendMessage t $ ChannelRequest
+                { crChannel   = chanIdRemote ch
+                , crType      = "exec"
+                , crWantReply = True
+                , crData      = runPut (put $ ChannelRequestExec "ls")
+                }
+    async $ pure ExitSuccess
+    where
+        t = connectionTransport c
         lw = 200
         lp = 100
-    sendMessage (connectionTransport c) $ ChannelOpen li lw lp ChannelOpenSession
-    receiveMessage (connectionTransport c) >>= \case
-        OpenConfirmation (ChannelOpenConfirmation lid rid rw rp) ->
-            pure undefined
-        OpenFailure {} ->
-            pure undefined
-    async $ pure ExitSuccess
+
+        -- The maxQueueSize must at least be one (even if 0 in the config)
+        -- and must not exceed the range of Int (might happen on 32bit systems
+        -- as Int's guaranteed upper bound is only 2^29 -1).
+        -- The value is adjusted silently as this won't be a problem
+        -- for real use cases and is just the safest thing to do.
+        maxQueueSize :: Word32
+        maxQueueSize = max 1 $ fromIntegral $ min maxBoundIntWord32
+            1000 -- (channelMaxQueueSize $ connConfig connection) FIXME
+
+        maxPacketSize :: Word32
+        maxPacketSize = max 1 $ fromIntegral $ min maxBoundIntWord32
+            1000 -- (channelMaxPacketSize $ connConfig connection) FIXME
 
 getFreeChannelIdSTM :: Connection -> STM ChannelId
-getFreeChannelIdSTM = pure (ChannelId 0) -- FIXME
+getFreeChannelIdSTM c = pure (ChannelId 0) -- FIXME
 
-insertChannelSTM :: Connection -> ChannelId -> Channel -> STM ()
-insertChannelSTM = do
-    
+openChannelSTM :: Connection -> (Either ChannelOpenFailure ChannelOpenConfirmation -> STM ()) -> STM ChannelId
+openChannelSTM c handler = do
+    setChannelStateSTM c (ChannelId 0) (ChannelOpening handler)
+    pure (ChannelId 0)
+
+getChannelStateSTM :: Connection -> ChannelId -> STM ChannelState
+getChannelStateSTM c lid = do
+    channels <- readTVar (connectionChannels c)
+    maybe (throwSTM exceptionInvalidChannelId) pure (M.lookup lid channels)
+
+setChannelStateSTM :: Connection -> ChannelId -> ChannelState -> STM ()
+setChannelStateSTM c lid st = do
+    channels <- readTVar (connectionChannels c)
+    writeTVar (connectionChannels c) $! M.insert lid st channels
+
+data ConnectionMessage
+    = C1  GlobalRequest
+    | C2  ChannelOpenConfirmation
+    | C3  ChannelOpenFailure
+    | C4  ChannelWindowAdjust
+    | C5  ChannelRequest
+    | C6  ChannelSuccess
+    | C7  ChannelFailure
+    | C8  ChannelData
+    | C9  ChannelExtendedData
+    | C96 ChannelEof
+    | C97 ChannelClose
+
+instance Encoding ConnectionMessage where
+    get = C1  <$> get
+      <|> C2  <$> get
+      <|> C3  <$> get
+      <|> C4  <$> get
+      <|> C5  <$> get
+      <|> C6  <$> get
+      <|> C7  <$> get
+      <|> C8  <$> get
+      <|> C9  <$> get
+      <|> C96 <$> get
+      <|> C97 <$> get
+
+data ChannelException
+    = ChannelOpenFailed ChannelOpenFailureReason ChannelOpenFailureDescription
+    deriving (Eq, Show)
+
+instance Exception ChannelException where
+
+newtype ChannelOpenFailureDescription = ChannelOpenFailureDescription BS.ByteString
+    deriving (Eq, Ord, Show)

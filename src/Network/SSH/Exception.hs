@@ -97,6 +97,10 @@ exceptionInvalidChannelId :: Disconnect
 exceptionInvalidChannelId =
     Disconnect Local DisconnectProtocolError "invalid channel id"
 
+exceptionInvalidChannelState :: Disconnect
+exceptionInvalidChannelState =
+    Disconnect Local DisconnectProtocolError "invalid channel state"
+
 exceptionInvalidChannelRequest :: Disconnect
 exceptionInvalidChannelRequest =
     Disconnect Local DisconnectProtocolError "invalid channel request"
