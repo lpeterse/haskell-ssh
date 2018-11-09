@@ -39,6 +39,13 @@ module Network.SSH.Message
   , UserAuthBanner (..)
     -- ** UserAuthPublicKeyOk (60)
   , UserAuthPublicKeyOk (..)
+    -- ** GlobalRequest (80)
+  , GlobalRequest (..)
+  , GlobalRequestType (..)
+    -- ** RequestSuccess (81)
+  , RequestSuccess (..)
+    -- ** RequestFailure (82)
+  , RequestFailure (..)
     -- ** ChannelOpen (90)
   , ChannelOpen (..)
   , ChannelOpenType (..)
@@ -142,6 +149,9 @@ data Message
     | MsgUserAuthSuccess         UserAuthSuccess
     | MsgUserAuthBanner          UserAuthBanner
     | MsgUserAuthPublicKeyOk     UserAuthPublicKeyOk
+    | MsgGlobalRequest           GlobalRequest
+    | MsgRequestSuccess          RequestSuccess
+    | MsgRequestFailure          RequestFailure
     | MsgChannelOpen             ChannelOpen
     | MsgChannelOpenConfirmation ChannelOpenConfirmation
     | MsgChannelOpenFailure      ChannelOpenFailure
@@ -240,6 +250,27 @@ data UserAuthBanner
 
 data UserAuthPublicKeyOk
     = UserAuthPublicKeyOk PublicKey
+    deriving (Eq, Show)
+
+data GlobalRequest
+    = GlobalRequest
+    { grWantReply :: Bool
+    , grType      :: GlobalRequestType
+    } deriving (Eq, Show)
+
+data GlobalRequestType
+    = GlobalRequestOther Name
+    deriving (Eq, Show)
+
+instance HasName GlobalRequestType where
+    name (GlobalRequestOther n) = n
+
+data RequestSuccess
+    = RequestSuccess
+    deriving (Eq, Show)
+
+data RequestFailure
+    = RequestFailure
     deriving (Eq, Show)
 
 data ChannelOpen
@@ -443,6 +474,9 @@ instance Encoding Message where
         MsgUserAuthSuccess          x -> put x
         MsgUserAuthBanner           x -> put x
         MsgUserAuthPublicKeyOk      x -> put x
+        MsgGlobalRequest            x -> put x
+        MsgRequestSuccess           x -> put x
+        MsgRequestFailure           x -> put x
         MsgChannelOpen              x -> put x
         MsgChannelOpenConfirmation  x -> put x
         MsgChannelOpenFailure       x -> put x
@@ -471,6 +505,9 @@ instance Encoding Message where
         MsgUserAuthSuccess         <$> get <|>
         MsgUserAuthBanner          <$> get <|>
         MsgUserAuthPublicKeyOk     <$> get <|>
+        MsgGlobalRequest           <$> get <|>
+        MsgRequestSuccess          <$> get <|>
+        MsgRequestFailure          <$> get <|>
         MsgChannelOpen             <$> get <|>
         MsgChannelOpenConfirmation <$> get <|>
         MsgChannelOpenFailure      <$> get <|>
@@ -610,6 +647,22 @@ instance Encoding UserAuthBanner where
 instance Encoding UserAuthPublicKeyOk where
     put (UserAuthPublicKeyOk pk) = putWord8 60 <> putName (name pk) <> putPublicKey pk
     get = expectWord8 60 >> getName >> UserAuthPublicKeyOk <$> getPublicKey
+
+instance Encoding GlobalRequest where
+    put (GlobalRequest wantReply t) = putWord8 80 <> putName (name t) <> putBool wantReply
+    get = do 
+        expectWord8 80
+        n <- getName
+        wantReply <- getBool
+        pure (GlobalRequest wantReply $ GlobalRequestOther n)  
+
+instance Encoding RequestSuccess where
+    put _ = putWord8 81
+    get   = expectWord8 81 >> pure RequestSuccess
+
+instance Encoding RequestFailure where
+    put _ = putWord8 82
+    get   = expectWord8 82 >> pure RequestFailure
 
 instance Encoding ChannelOpen where
     put (ChannelOpen rc rw rp ct) =

@@ -7,7 +7,7 @@ module Network.SSH.Client where
 
 import           Control.Applicative
 import           Control.Exception                     ( throwIO )
-import           Control.Concurrent.Async              ( Async (..) )
+import           Control.Concurrent.Async              ( Async (..), async )
 import           Data.Default
 import qualified Data.ByteString                       as BS
 import           Data.Function                         ( fix )
@@ -47,7 +47,13 @@ instance Default UserAuthConfig where
         }
 
 data Connection
-    = Connection Config
+    = Connection
+    { connectionTransport :: Transport
+    , connectionChannels  :: TVar (M.Map ChannelId Channel)
+    }
+
+data Channel
+    = Channel
 
 newtype Command = Command BS.ByteString
 
@@ -70,7 +76,7 @@ withConnection :: forall stream. (DuplexStream stream)
 withConnection config stream handler = mergeDisconnects $
     withTransport (transportConfig config) (Nothing :: Maybe KeyPair) stream $ \transport sessionId -> do
         requestServiceWithAuthentication (userAuthConfig config) transport sessionId (Name "ssh-connection")
-        Disconnect Local DisconnectByApplication <$> handler undefined
+        Disconnect Local DisconnectByApplication <$> handler (Connection transport)
     where
         mergeDisconnects :: IO (Either Disconnect Disconnect) -> IO Disconnect
         mergeDisconnects = fmap $ \case
@@ -86,7 +92,7 @@ requestServiceWithAuthentication config@UserAuthConfig { getAgent = getAgent' } 
     where
         user           = userName config
         methodPassword = Name "password"
-        methodPubkey   = Name "pubkey"
+        methodPubkey   = Name "publickey"
 
         tryMethods []
             = throwIO exceptionNoMoreAuthMethodsAvailable
@@ -142,5 +148,35 @@ newtype Environment = Environment ()
 newtype SessionHandler = SessionHandler (forall stdin stdout stderr. (OutputStream stdin, InputStream stdout, InputStream stderr)
     => stdin -> stdout -> stderr -> IO ExitCode)
 
-asyncSession :: Connection -> Environment -> Maybe Command -> SessionHandler -> IO (Async ExitCode)
-asyncSession = undefined
+data ChannelOpenResponse
+    = OpenConfirmation ChannelOpenConfirmation
+    | OpenFailure      ChannelOpenFailure
+
+instance Encoding ChannelOpenResponse where
+    put (OpenConfirmation x) = put x
+    put (OpenFailure      x) = put x
+    get   = OpenConfirmation <$> get
+        <|> OpenFailure      <$> get
+
+asyncSession :: Connection -> IO (Async ExitCode)
+asyncSession c = do
+    atomically $ do
+        cid <- getFreeChannelIdSTM
+
+    let li = ChannelId 0
+        lw = 200
+        lp = 100
+    sendMessage (connectionTransport c) $ ChannelOpen li lw lp ChannelOpenSession
+    receiveMessage (connectionTransport c) >>= \case
+        OpenConfirmation (ChannelOpenConfirmation lid rid rw rp) ->
+            pure undefined
+        OpenFailure {} ->
+            pure undefined
+    async $ pure ExitSuccess
+
+getFreeChannelIdSTM :: Connection -> STM ChannelId
+getFreeChannelIdSTM = pure (ChannelId 0) -- FIXME
+
+insertChannelSTM :: Connection -> ChannelId -> Channel -> STM ()
+insertChannelSTM = do
+    

@@ -27,7 +27,7 @@ main = do
     bracket open close $ \stream -> do
         let config = def
                 { transportConfig = def { onReceive = print }
-                , userAuthConfig  = def { getAgent  = Just <$> getAgent }
+                , userAuthConfig  = def { getAgent  = Just <$> getAgent, userName = "lpetersen" }
                 }
         S.connect stream (S.socketAddress ai)
         handle config stream >>= print
@@ -51,6 +51,7 @@ main = do
         handle config stream = withConnection config stream $ \connection -> do
             print "connection established"
             threadDelay 1000000
+            asyncSession connection
             pure "foo"
 
 -------------------------------------------------------------------------------

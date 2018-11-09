@@ -52,6 +52,9 @@ testParserIdentity = testGroup "put . get == id"
     , QC.testProperty ":: UserAuthSuccess"            (parserIdentity :: UserAuthSuccess            -> Property)
     , QC.testProperty ":: UserAuthBanner"             (parserIdentity :: UserAuthBanner             -> Property)
     , QC.testProperty ":: UserAuthPublicKeyOk"        (parserIdentity :: UserAuthPublicKeyOk        -> Property)
+    , QC.testProperty ":: GlobalRequest"              (parserIdentity :: GlobalRequest              -> Property)
+    , QC.testProperty ":: RequestSuccess"             (parserIdentity :: RequestSuccess             -> Property)
+    , QC.testProperty ":: RequestFailure"             (parserIdentity :: RequestFailure             -> Property)
     , QC.testProperty ":: ChannelOpen"                (parserIdentity :: ChannelOpen                -> Property)
     , QC.testProperty ":: ChannelOpenConfirmation"    (parserIdentity :: ChannelOpenConfirmation    -> Property)
     , QC.testProperty ":: ChannelOpenFailure"         (parserIdentity :: ChannelOpenFailure         -> Property)
@@ -242,6 +245,18 @@ instance Arbitrary UserAuthBanner where
 
 instance Arbitrary UserAuthPublicKeyOk where
     arbitrary = UserAuthPublicKeyOk <$> arbitrary
+
+instance Arbitrary GlobalRequest where
+    arbitrary = GlobalRequest <$> arbitrary <*> arbitrary
+
+instance Arbitrary GlobalRequestType where
+    arbitrary = GlobalRequestOther <$> arbitrary
+
+instance Arbitrary RequestFailure where
+    arbitrary = pure RequestFailure
+
+instance Arbitrary RequestSuccess where
+    arbitrary = pure RequestSuccess
 
 instance Arbitrary ChannelOpen where
     arbitrary = ChannelOpen <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
