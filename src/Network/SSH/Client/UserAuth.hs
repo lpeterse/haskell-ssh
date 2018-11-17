@@ -10,20 +10,11 @@ module Network.SSH.Client.UserAuth
 where
 
 import           Control.Applicative
-import           Control.Concurrent.Async              ( Async (..), async, withAsync )
-import           Control.Concurrent.STM.TVar
-import           Control.Concurrent.STM.TMVar
-import           Control.Exception                     ( Exception, throwIO )
-import           Control.Monad
-import           Control.Monad.STM
+import           Control.Exception                     ( throwIO )
 import           Data.Default
 import           Data.Function                         ( fix )
 import           Data.List                             ( intersect )
-import           Data.Map.Strict                       as M
-import           System.Exit
-import           Data.Word
 import qualified Data.ByteString                       as BS
-import qualified Data.ByteString.Short                 as SBS
 
 import           Network.SSH.AuthAgent
 import           Network.SSH.Exception
@@ -80,8 +71,8 @@ requestServiceWithAuthentication config@UserAuthConfig { getAgent = getAgent' } 
                         $ UserAuthRequest user service
                         $ AuthPassword pw
                     fix $ \continue -> receiveMessage transport >>= \case
-                        A1 (UserAuthBanner {}) -> continue
-                        A2 (UserAuthSuccess {}) -> pure ()
+                        A1 UserAuthBanner  {} -> continue
+                        A2 UserAuthSuccess {} -> pure ()
                         -- Try the next method (if there is any in the intersection).
                         A3 (UserAuthFailure ms' _) -> tryMethods (ms `intersect` ms')
             -- Ignore method and try the next one.
@@ -96,8 +87,8 @@ requestServiceWithAuthentication config@UserAuthConfig { getAgent = getAgent' } 
                         $ UserAuthRequest user service
                         $ AuthPublicKey pk (Just signature)
                     fix $ \continue -> receiveMessage transport >>= \case
-                        A1 (UserAuthBanner {}) -> continue
-                        A2 (UserAuthSuccess {}) -> pure ()
+                        A1 UserAuthBanner  {} -> continue
+                        A2 UserAuthSuccess {} -> pure ()
                         A3 (UserAuthFailure ms' _)
                             -- Try the next pubkey. Eventually reduce the methods to try.
                             | methodPubkey `elem` ms' -> tryPubkeys (ms `intersect` ms') trySign pks
