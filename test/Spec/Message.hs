@@ -76,7 +76,6 @@ testParserIdentity = testGroup "put . get == id"
     , QC.testProperty ":: ChannelSuccess"             (parserIdentity :: ChannelSuccess             -> Property)
     , QC.testProperty ":: ChannelFailure"             (parserIdentity :: ChannelFailure             -> Property)
     , QC.testProperty ":: Version"                    (parserIdentity :: Version                    -> Property)
-    , QC.testProperty ":: Message"                    (parserIdentity :: Message                    -> Property)
     ]
     where
         parserIdentity :: (Encoding a, Decoding a, Eq a, Show a) => a -> Property
@@ -143,36 +142,6 @@ instance Arbitrary Command where
         [ Command ""
         , Command "foobar --xyz fasel"
         , Command "ls"
-        ]
-
-instance Arbitrary Message where
-    arbitrary = oneof
-        [ MsgDisconnect              <$> arbitrary
-        , MsgIgnore                  <$> arbitrary
-        , MsgUnimplemented           <$> arbitrary
-        , MsgDebug                   <$> arbitrary
-        , MsgServiceRequest          <$> arbitrary
-        , MsgServiceAccept           <$> arbitrary
-        , MsgKexInit                 <$> arbitrary
-        , MsgKexNewKeys              <$> arbitrary
-        , MsgKexEcdhInit             <$> arbitrary
-        , MsgKexEcdhReply            <$> arbitrary
-        , MsgUserAuthRequest         <$> arbitrary
-        , MsgUserAuthFailure         <$> arbitrary
-        , MsgUserAuthSuccess         <$> arbitrary
-        , MsgUserAuthBanner          <$> arbitrary
-        , MsgUserAuthPublicKeyOk     <$> arbitrary
-        , MsgChannelOpen             <$> arbitrary
-        , MsgChannelOpenConfirmation <$> arbitrary
-        , MsgChannelOpenFailure      <$> arbitrary
-        , MsgChannelData             <$> arbitrary
-        , MsgChannelExtendedData     <$> arbitrary
-        , MsgChannelEof              <$> arbitrary
-        , MsgChannelClose            <$> arbitrary
-        , MsgChannelRequest          <$> arbitrary
-        , MsgChannelSuccess          <$> arbitrary
-        , MsgChannelFailure          <$> arbitrary
-        , MsgUnknown                 <$> elements [ 128, 255 ]
         ]
 
 instance Arbitrary Disconnected where

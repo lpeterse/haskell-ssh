@@ -5,9 +5,8 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE ExistentialQuantification  #-}
 module Network.SSH.Message
-  ( -- * Message
-    Message (..)
-  , MessageStream (..)
+  ( -- * MessageStream
+    MessageStream (..)
     -- ** Disconnected (1)
   , Disconnected (..)
   , DisconnectReason (..)
@@ -108,7 +107,6 @@ module Network.SSH.Message
   , putEd25519Signature
   ) where
 
-import           Control.Applicative
 import           Control.Monad            (void, when)
 import           Crypto.Error
 import qualified Crypto.PubKey.Curve25519 as Curve25519
@@ -133,38 +131,6 @@ class MessageStream a where
     sendMessage :: forall msg. Encoding msg => a -> msg -> IO ()
     receiveMessage :: forall msg. Decoding msg => a -> IO msg
 
-data Message
-    = MsgDisconnect              Disconnected
-    | MsgIgnore                  Ignore
-    | MsgUnimplemented           Unimplemented
-    | MsgDebug                   Debug
-    | MsgServiceRequest          ServiceRequest
-    | MsgServiceAccept           ServiceAccept
-    | MsgKexInit                 KexInit
-    | MsgKexNewKeys              KexNewKeys
-    | MsgKexEcdhInit             KexEcdhInit
-    | MsgKexEcdhReply            KexEcdhReply
-    | MsgUserAuthRequest         UserAuthRequest
-    | MsgUserAuthFailure         UserAuthFailure
-    | MsgUserAuthSuccess         UserAuthSuccess
-    | MsgUserAuthBanner          UserAuthBanner
-    | MsgUserAuthPublicKeyOk     UserAuthPublicKeyOk
-    | MsgGlobalRequest           GlobalRequest
-    | MsgRequestSuccess          RequestSuccess
-    | MsgRequestFailure          RequestFailure
-    | MsgChannelOpen             ChannelOpen
-    | MsgChannelOpenConfirmation ChannelOpenConfirmation
-    | MsgChannelOpenFailure      ChannelOpenFailure
-    | MsgChannelWindowAdjust     ChannelWindowAdjust
-    | MsgChannelData             ChannelData
-    | MsgChannelExtendedData     ChannelExtendedData
-    | MsgChannelEof              ChannelEof
-    | MsgChannelClose            ChannelClose
-    | MsgChannelRequest          ChannelRequest
-    | MsgChannelSuccess          ChannelSuccess
-    | MsgChannelFailure          ChannelFailure
-    | MsgUnknown                 Word8
-    deriving (Eq, Show)
 
 data Disconnected
     = Disconnected
@@ -456,71 +422,6 @@ nilCookie  = Cookie $ SBS.toShort $ BS.replicate 16 0
 -------------------------------------------------------------------------------
 -- Encoding instances
 -------------------------------------------------------------------------------
-
-instance Encoding Message where
-    put = \case
-        MsgDisconnect               x -> put x
-        MsgIgnore                   x -> put x
-        MsgUnimplemented            x -> put x
-        MsgDebug                    x -> put x
-        MsgServiceRequest           x -> put x
-        MsgServiceAccept            x -> put x
-        MsgKexInit                  x -> put x
-        MsgKexNewKeys               x -> put x
-        MsgKexEcdhInit              x -> put x
-        MsgKexEcdhReply             x -> put x
-        MsgUserAuthRequest          x -> put x
-        MsgUserAuthFailure          x -> put x
-        MsgUserAuthSuccess          x -> put x
-        MsgUserAuthBanner           x -> put x
-        MsgUserAuthPublicKeyOk      x -> put x
-        MsgGlobalRequest            x -> put x
-        MsgRequestSuccess           x -> put x
-        MsgRequestFailure           x -> put x
-        MsgChannelOpen              x -> put x
-        MsgChannelOpenConfirmation  x -> put x
-        MsgChannelOpenFailure       x -> put x
-        MsgChannelWindowAdjust      x -> put x
-        MsgChannelData              x -> put x
-        MsgChannelExtendedData      x -> put x
-        MsgChannelEof               x -> put x
-        MsgChannelClose             x -> put x
-        MsgChannelRequest           x -> put x
-        MsgChannelSuccess           x -> put x
-        MsgChannelFailure           x -> put x
-        MsgUnknown                  x -> putWord8 x
-
-instance Decoding Message where
-    get =
-        MsgDisconnect              <$> get <|>
-        MsgIgnore                  <$> get <|>
-        MsgUnimplemented           <$> get <|>
-        MsgDebug                   <$> get <|>
-        MsgServiceRequest          <$> get <|>
-        MsgServiceAccept           <$> get <|>
-        MsgKexInit                 <$> get <|>
-        MsgKexNewKeys              <$> get <|>
-        MsgKexEcdhInit             <$> get <|>
-        MsgKexEcdhReply            <$> get <|>
-        MsgUserAuthRequest         <$> get <|>
-        MsgUserAuthFailure         <$> get <|>
-        MsgUserAuthSuccess         <$> get <|>
-        MsgUserAuthBanner          <$> get <|>
-        MsgUserAuthPublicKeyOk     <$> get <|>
-        MsgGlobalRequest           <$> get <|>
-        MsgRequestSuccess          <$> get <|>
-        MsgRequestFailure          <$> get <|>
-        MsgChannelOpen             <$> get <|>
-        MsgChannelOpenConfirmation <$> get <|>
-        MsgChannelOpenFailure      <$> get <|>
-        MsgChannelWindowAdjust     <$> get <|>
-        MsgChannelData             <$> get <|>
-        MsgChannelExtendedData     <$> get <|>
-        MsgChannelEof              <$> get <|>
-        MsgChannelClose            <$> get <|>
-        MsgChannelRequest          <$> get <|>
-        MsgChannelSuccess          <$> get <|>
-        MsgChannelFailure          <$> get <|> (MsgUnknown <$> getWord8)
 
 instance Encoding Disconnected where
     put (Disconnected r d l) =

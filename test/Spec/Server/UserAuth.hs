@@ -66,8 +66,8 @@ testInactive03 = testCase "dispatch other message" $ do
     where
         sess = SessionId mempty
         with _ = Just undefined
-        req0 = MsgUnknown 1
-        exp0 = exceptionUnexpectedMessage "\x01"
+        req0 = Ignore
+        exp0 = exceptionUnexpectedMessage "\x02"
 
 testActive01 :: TestTree
 testActive01 = testCase "authenticate by public key (no signature)" $ do
@@ -85,9 +85,9 @@ testActive01 = testCase "authenticate by public key (no signature)" $ do
         sess = SessionId "\196\249b\160;FF\DLE\173\&1>\179w=\238\210\140\&8!:\139=QUx\169C\209\165\FS\185I"
         pubk = PublicKeyEd25519 (pass $ Ed25519.publicKey ("\185\EOT\150\CAN\142)\175\161\242\141/\SI\214=n$?\189Z\172\214\190\EM\190^\226\r\241\197\&8\235\130" :: BS.ByteString))
         auth = AuthPublicKey pubk Nothing
-        req0 = MsgServiceRequest $ ServiceRequest (Name "ssh-userauth")
+        req0 = ServiceRequest (Name "ssh-userauth")
         res0 = ServiceAccept (Name "ssh-userauth")
-        req1 = MsgUserAuthRequest $ UserAuthRequest user srvc auth
+        req1 = UserAuthRequest user srvc auth
         res1 = UserAuthPublicKeyOk pubk
         pass (CryptoPassed x) = x
         pass _                = undefined
@@ -216,9 +216,9 @@ testActive06 = testCase "authenticate by public key (key/signature type mismatch
         pubk = PublicKeyRSA $ RSA.PublicKey 24 65537 2834792
         sign = SignatureEd25519 (pass $ Ed25519.signature ("\152\211G\164w2\253\b|\ETX\239\136\213&|\145Zp\ACK\240p\243\128\vL\139N\ESC\207LI\t?\139D\DC36\206\252p\172\190)\238 {\\*\206\203\253\176\vE\EM\SYNkG\211\&2\192\201\EOT\ACK" :: BS.ByteString))
         auth = AuthPublicKey pubk (Just sign)
-        req0 = MsgServiceRequest $ ServiceRequest (Name "ssh-userauth")
+        req0 = ServiceRequest (Name "ssh-userauth")
         res0 = ServiceAccept (Name "ssh-userauth")
-        req1 = MsgUserAuthRequest $ UserAuthRequest user srvc auth
+        req1 = UserAuthRequest user srvc auth
         res1 = UserAuthFailure ["publickey"] False
         pass (CryptoPassed x) = x
         pass _                = undefined
