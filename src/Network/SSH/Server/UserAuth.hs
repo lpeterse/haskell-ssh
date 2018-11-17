@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module Network.SSH.Server.Service.UserAuth where
+module Network.SSH.Server.UserAuth where
 
 import           Control.Exception            ( throwIO )
 import           Control.Concurrent           ( threadDelay )

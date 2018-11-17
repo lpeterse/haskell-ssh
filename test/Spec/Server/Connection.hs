@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module Spec.Server.Service.Connection ( tests ) where
+module Spec.Server.Connection ( tests ) where
 
 import           Control.Concurrent      ( threadDelay )
 import           Control.Concurrent.Async
@@ -19,7 +19,7 @@ import           Test.Tasty.HUnit
 import           Spec.Util
 
 tests :: TestTree
-tests = testGroup "Network.SSH.Server.Service.Connection"
+tests = testGroup "Network.SSH.Server.Connection"
     [ test00
     , test01
     , test02

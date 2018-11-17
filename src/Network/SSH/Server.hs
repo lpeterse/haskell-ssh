@@ -29,8 +29,8 @@ import           Data.Default
 import           Network.SSH.AuthAgent
 import           Network.SSH.Exception
 import           Network.SSH.Name
-import           Network.SSH.Server.Service.Connection
-import           Network.SSH.Server.Service.UserAuth
+import           Network.SSH.Server.Connection
+import           Network.SSH.Server.UserAuth
 import           Network.SSH.Stream
 import           Network.SSH.Transport
 

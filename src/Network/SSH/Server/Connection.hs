@@ -7,7 +7,7 @@
 {-# LANGUAGE ExistentialQuantification  #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Network.SSH.Server.Service.Connection
+module Network.SSH.Server.Connection
     ( Connection ()
     , ConnectionConfig (..)
     , SessionRequest (..)

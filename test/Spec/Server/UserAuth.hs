@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module Spec.Server.Service.UserAuth ( tests ) where
+module Spec.Server.UserAuth ( tests ) where
     
 import           Control.Concurrent.Async
 import           Crypto.Error
@@ -16,7 +16,7 @@ import           Network.SSH.Internal
 import           Spec.Util
 
 tests :: TestTree
-tests = testGroup "Network.SSH.Server.Service.UserAuth"
+tests = testGroup "Network.SSH.Server.UserAuth"
     [ testGroup "service inactive (state 0)"
         [ testInactive01
         , testInactive02
