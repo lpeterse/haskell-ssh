@@ -131,7 +131,7 @@ import           Network.SSH.Name
 
 class MessageStream a where
     sendMessage :: forall msg. Encoding msg => a -> msg -> IO ()
-    receiveMessage :: forall msg. Encoding msg => a -> IO msg
+    receiveMessage :: forall msg. Decoding msg => a -> IO msg
 
 data Message
     = MsgDisconnect              Disconnected
@@ -489,6 +489,8 @@ instance Encoding Message where
         MsgChannelSuccess           x -> put x
         MsgChannelFailure           x -> put x
         MsgUnknown                  x -> putWord8 x
+
+instance Decoding Message where
     get =
         MsgDisconnect              <$> get <|>
         MsgIgnore                  <$> get <|>
@@ -526,6 +528,8 @@ instance Encoding Disconnected where
         put r <>
         putShortString d <>
         putShortString l
+
+instance Decoding Disconnected where
     get = do
         expectWord8 1
         Disconnected <$> get <*> getShortString <*> getShortString
@@ -548,6 +552,8 @@ instance Encoding DisconnectReason where
         DisconnectNoMoreAuthMethodsAvailable  -> 14
         DisconnectIllegalUsername             -> 15
         DisconnectOtherReason n               -> n
+
+instance Decoding DisconnectReason where
     get = (<$> getWord32) $ \case
         1  -> DisconnectHostNotAllowedToConnect
         2  -> DisconnectProtocolError
@@ -568,22 +574,32 @@ instance Encoding DisconnectReason where
 
 instance Encoding Ignore where
     put _ = putWord8 2
+
+instance Decoding Ignore where
     get   = expectWord8 2 >> pure Ignore
 
 instance Encoding Unimplemented where
     put (Unimplemented w) = putWord8 3 <> B.word32BE w
+
+instance Decoding Unimplemented where
     get = expectWord8 3 >> Unimplemented <$> getWord32
 
 instance Encoding Debug where
     put (Debug ad msg lang) = putWord8 4 <> putBool ad <> putShortString msg <> putShortString lang
+
+instance Decoding Debug where
     get = expectWord8 4 >> Debug <$> getBool <*> getShortString <*> getShortString
 
 instance Encoding ServiceRequest where
     put (ServiceRequest n) = putWord8 5 <> putName n
+
+instance Decoding ServiceRequest where
     get = expectWord8 5 >> ServiceRequest <$> getName
 
 instance Encoding ServiceAccept where
     put (ServiceAccept n) = putWord8 6 <> putName n
+
+instance Decoding ServiceAccept where
     get = expectWord8 6 >> ServiceAccept <$> getName
 
 instance Encoding KexInit where
@@ -602,6 +618,8 @@ instance Encoding KexInit where
         putNameList (kexLanguagesServerToClient             kex) <>
         putBool     (kexFirstPacketFollows                  kex) <>
         B.word32BE 0 -- reserved for future extensions
+
+instance Decoding KexInit where
     get = do
         expectWord8 20
         kex <- KexInit <$> get
@@ -613,18 +631,26 @@ instance Encoding KexInit where
 
 instance Encoding KexNewKeys where
     put _ = putWord8 21
+
+instance Decoding KexNewKeys where
     get   = expectWord8 21 >> pure KexNewKeys
 
 instance Encoding KexEcdhInit where
     put (KexEcdhInit key) = putWord8 30 <> putCurve25519PublicKey key
+
+instance Decoding KexEcdhInit where
     get = expectWord8 30 >> KexEcdhInit <$> getCurve25519PublicKey
 
 instance Encoding KexEcdhReply where
     put (KexEcdhReply hkey ekey sig) = putWord8 31 <> putPublicKey hkey <> putCurve25519PublicKey ekey <> putSignature sig
+
+instance Decoding KexEcdhReply where
     get = expectWord8 31 >> KexEcdhReply <$> getPublicKey <*> getCurve25519PublicKey <*> getSignature
 
 instance Encoding UserAuthRequest where
     put (UserAuthRequest un sn am) = putWord8 50 <> putName un <> putName sn <> put am
+
+instance Decoding UserAuthRequest where
     get = expectWord8 50 >> UserAuthRequest <$> getName <*> getName <*> get
 
 instance Encoding UserAuthFailure where
@@ -632,24 +658,34 @@ instance Encoding UserAuthFailure where
         putWord8 51 <>
         putNameList ms <>
         putBool ps
+
+instance Decoding UserAuthFailure where
     get =  do
         expectWord8 51
         UserAuthFailure <$> getNameList <*> getBool
 
 instance Encoding UserAuthSuccess where
     put UserAuthSuccess = putWord8 52
+
+instance Decoding UserAuthSuccess where
     get = expectWord8 52 >> pure UserAuthSuccess
 
 instance Encoding UserAuthBanner where
     put (UserAuthBanner x y) = putWord8 53 <> putShortString x <> putShortString y
+
+instance Decoding UserAuthBanner where
     get = expectWord8 53 >> UserAuthBanner <$> getShortString <*> getShortString
 
 instance Encoding UserAuthPublicKeyOk where
     put (UserAuthPublicKeyOk pk) = putWord8 60 <> putName (name pk) <> putPublicKey pk
+
+instance Decoding UserAuthPublicKeyOk where
     get = expectWord8 60 >> getName >> UserAuthPublicKeyOk <$> getPublicKey
 
 instance Encoding GlobalRequest where
     put (GlobalRequest wantReply t) = putWord8 80 <> putName (name t) <> putBool wantReply
+
+instance Decoding GlobalRequest where
     get = do 
         expectWord8 80
         n <- getName
@@ -658,11 +694,15 @@ instance Encoding GlobalRequest where
 
 instance Encoding RequestSuccess where
     put _ = putWord8 81
+
+instance Decoding RequestSuccess where
     get   = expectWord8 81 >> pure RequestSuccess
 
 instance Encoding RequestFailure where
     put _ = putWord8 82
-    get   = expectWord8 82 >> pure RequestFailure
+
+instance Decoding RequestFailure where
+    get = expectWord8 82 >> pure RequestFailure
 
 instance Encoding ChannelOpen where
     put (ChannelOpen rc rw rp ct) =
@@ -682,6 +722,8 @@ instance Encoding ChannelOpen where
                 putShortString sa <>
                 B.word32BE sp
             ChannelOpenOther {} -> mempty
+
+instance Decoding ChannelOpen where
     get = do
         expectWord8 90
         ct <- get
@@ -707,6 +749,8 @@ instance Encoding ChannelOpenConfirmation where
         put b <>
         B.word32BE ws <>
         B.word32BE ps
+
+instance Decoding ChannelOpenConfirmation where
     get = do
         expectWord8 91
         ChannelOpenConfirmation
@@ -722,6 +766,8 @@ instance Encoding ChannelOpenFailure where
         put reason <>
         putShortString descr <>
         putShortString lang
+
+instance Decoding ChannelOpenFailure where
     get = do
         expectWord8 92
         ChannelOpenFailure <$> get <*> get <*> getShortString <*> getShortString
@@ -733,6 +779,8 @@ instance Encoding ChannelOpenFailureReason where
         ChannelOpenUnknownChannelType         -> 3
         ChannelOpenResourceShortage           -> 4
         ChannelOpenOtherFailure w32           -> w32
+
+instance Decoding ChannelOpenFailureReason where
     get = (<$> getWord32) $ \case
         1   -> ChannelOpenAdministrativelyProhibited
         2   -> ChannelOpenConnectFailed
@@ -742,82 +790,122 @@ instance Encoding ChannelOpenFailureReason where
 
 instance Encoding ChannelWindowAdjust where
     put (ChannelWindowAdjust cid ws) = putWord8 93 <> put cid <> B.word32BE ws
+
+instance Decoding ChannelWindowAdjust where
     get = expectWord8 93 >> ChannelWindowAdjust <$> get <*> getWord32
 
 instance Encoding ChannelData where
     put (ChannelData cid ba) = putWord8 94 <> put cid <> putShortString ba
+
+instance Decoding ChannelData where
     get = expectWord8 94 >> ChannelData <$> get <*> getShortString
 
 instance Encoding ChannelExtendedData where
     put (ChannelExtendedData cid x ba) = putWord8 95 <> put cid <> B.word32BE x <> putShortString ba
+
+instance Decoding ChannelExtendedData where
     get = expectWord8 95 >> ChannelExtendedData <$> get <*> getWord32 <*> getShortString
 
 instance Encoding ChannelEof where
     put (ChannelEof cid) = putWord8 96 <> put cid
+
+instance Decoding ChannelEof where
     get = expectWord8 96 >> ChannelEof <$> get
 
 instance Encoding ChannelClose where
     put (ChannelClose cid) = putWord8 97 <> put cid
+
+instance Decoding ChannelClose where
     get = expectWord8 97 >> ChannelClose <$> get
 
 instance Encoding ChannelRequest where
     put (ChannelRequest cid typ reply dat) = putWord8 98 <> put cid <> putShortString typ <> putBool reply <> putByteString dat
+
+instance Decoding ChannelRequest where
     get = expectWord8 98 >> ChannelRequest <$> get <*> getShortString <*> getBool <*> getRemainingByteString
 
 instance Encoding ChannelRequestEnv where
     put (ChannelRequestEnv key value) = putShortString key <> putShortString value
+
+instance Decoding ChannelRequestEnv where
     get = ChannelRequestEnv <$> getShortString <*> getShortString
 
 instance Encoding ChannelRequestPty where
     put (ChannelRequestPty settings) = put settings
+
+instance Decoding ChannelRequestPty where
     get = ChannelRequestPty <$> get
 
 instance Encoding ChannelRequestWindowChange where
     put (ChannelRequestWindowChange x0 x1 x2 x3) = B.word32BE x0 <> B.word32BE x1 <> B.word32BE x2 <> B.word32BE x3
+
+instance Decoding ChannelRequestWindowChange where
     get = ChannelRequestWindowChange <$> getWord32 <*> getWord32 <*> getWord32 <*> getWord32
 
 instance Encoding ChannelRequestShell where
     put _ = mempty
+
+instance Decoding ChannelRequestShell where
     get   = pure ChannelRequestShell
 
 instance Encoding ChannelRequestExec where
     put (ChannelRequestExec c) = putShortString c
+
+instance Decoding ChannelRequestExec where
     get = ChannelRequestExec <$> getShortString
 
 instance Encoding ChannelRequestSignal where
     put (ChannelRequestSignal signame) = putShortString signame
+
+instance Decoding ChannelRequestSignal where
     get = ChannelRequestSignal <$> getShortString
 
 instance Encoding ChannelRequestExitStatus where
     put (ChannelRequestExitStatus code) = putExitCode code
+
+instance Decoding ChannelRequestExitStatus where
     get = ChannelRequestExitStatus <$> getExitCode
 
 instance Encoding ChannelRequestExitSignal where
     put (ChannelRequestExitSignal signame core msg lang) = putShortString signame <> putBool core <> putShortString msg <> putShortString lang
+
+instance Decoding ChannelRequestExitSignal where
     get = ChannelRequestExitSignal <$> getShortString <*> getBool <*> getShortString <*> getShortString
 
 instance Encoding ChannelSuccess where
     put (ChannelSuccess cid) = putWord8 99 <> put cid
+
+instance Decoding ChannelSuccess where
     get = expectWord8 99 >> (ChannelSuccess <$> get)
 
 instance Encoding ChannelFailure where
     put (ChannelFailure cid) = putWord8 100 <> put cid
+
+instance Decoding ChannelFailure where
     get = expectWord8 100 >> (ChannelFailure <$> get)
 
 instance Encoding Cookie where
     put (Cookie s) = B.shortByteString s
+
+instance Decoding Cookie where
     get = Cookie . SBS.toShort <$> getBytes 16
 
 instance Encoding ChannelId where
     put (ChannelId x) = B.word32BE x
+
+instance Decoding ChannelId where
     get = ChannelId <$> getWord32
 
 instance Encoding ChannelType where
     put (ChannelType x) = putShortString x
+
+instance Decoding ChannelType where
     get = ChannelType <$> getShortString
 
 instance Encoding SessionId where
     put (SessionId x) = putShortString x
+
+instance Decoding SessionId where
     get = SessionId <$> getShortString
 
 instance Encoding Version where
@@ -825,6 +913,8 @@ instance Encoding Version where
         B.shortByteString x <>
         putWord8 0x0d <>
         putWord8 0x0a
+
+instance Decoding Version where
     get = do
       mapM_ expectWord8 magic
       untilCRLF 0 (reverse magic)
@@ -849,6 +939,8 @@ instance Encoding AuthMethod where
             Nothing  -> putBool False <> putName (name pk) <> putPublicKey pk
             Just sig -> putBool True <> putName (name pk) <> putPublicKey pk <> putSignature sig
         AuthOther {} -> mempty
+
+instance Decoding AuthMethod where
     get = getName >>= \case
         Name "none" ->
             pure AuthNone
@@ -895,6 +987,8 @@ getSignature = getFramed $ getName >>= \case
 instance Encoding PtySettings where
     put (PtySettings env wc hc wp hp modes) =
         putShortString env <> B.word32BE wc <> B.word32BE hc <> B.word32BE wp <> B.word32BE hp <> putShortString modes
+
+instance Decoding PtySettings where
     get =
         PtySettings <$> getShortString <*> getWord32 <*> getWord32 <*> getWord32 <*> getWord32 <*> getShortString
 

@@ -105,8 +105,6 @@ instance MessageStream Transport where
         kexIfNecessary t
         transportReceiveMessage t
 
-
-
 withTransport ::
     (DuplexStream stream, AuthAgent agent) =>
     TransportConfig -> Maybe agent -> stream ->
@@ -191,7 +189,7 @@ transportSendMessage env msg =
     where
         payload = put msg
 
-transportReceiveMessage :: Encoding msg => Transport -> IO msg
+transportReceiveMessage :: Decoding msg => Transport -> IO msg
 transportReceiveMessage env = do
     raw <- transportReceiveRawMessage env
     maybe (throwIO $ exceptionUnexpectedMessage raw) pure (runGet raw)

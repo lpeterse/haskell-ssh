@@ -18,13 +18,15 @@ type Get = G.Get
 
 class Encoding a where
     put :: forall b. B.Builder b => a -> b
+
+class Decoding a where
     get :: Get a
 
 runPut :: B.ByteArrayBuilder -> BS.ByteString
 runPut = B.toByteArray
 {-# INLINEABLE runPut #-}
 
-runGet :: (Fail.MonadFail m, Encoding a) => BS.ByteString -> m a
+runGet :: (Fail.MonadFail m, Decoding a) => BS.ByteString -> m a
 runGet bs = case G.runGet get bs of
     Left  e -> Fail.fail e
     Right a -> pure a

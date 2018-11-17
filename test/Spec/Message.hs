@@ -79,7 +79,7 @@ testParserIdentity = testGroup "put . get == id"
     , QC.testProperty ":: Message"                    (parserIdentity :: Message                    -> Property)
     ]
     where
-        parserIdentity :: (Encoding a, Eq a, Show a) => a -> Property
+        parserIdentity :: (Encoding a, Decoding a, Eq a, Show a) => a -> Property
         parserIdentity x = Just x === runGet (runPut $ put x)
 
 testParserIdentityPublicKey :: TestTree

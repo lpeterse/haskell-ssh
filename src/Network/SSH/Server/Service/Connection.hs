@@ -219,19 +219,13 @@ data ConnectionMsg
     | ConnectionChannelWindowAdjust ChannelWindowAdjust
     deriving (Eq, Show)
 
-instance Encoding ConnectionMsg where
-    put (ConnectionChannelOpen x) = put x
-    put (ConnectionChannelClose x) = put x
-    put (ConnectionChannelEof x) = put x
-    put (ConnectionChannelData x) = put x
-    put (ConnectionChannelRequest x) = put x
-    put (ConnectionChannelWindowAdjust x) = put x
-    get = ConnectionChannelOpen <$> get
-      <|> ConnectionChannelClose <$> get
-      <|> ConnectionChannelEof <$> get
-      <|> ConnectionChannelData <$> get
-      <|> ConnectionChannelRequest <$> get
-      <|> ConnectionChannelWindowAdjust <$> get
+instance Decoding ConnectionMsg where
+    get =   (ConnectionChannelOpen         <$> get)
+        <|> (ConnectionChannelClose        <$> get)
+        <|> (ConnectionChannelEof          <$> get)
+        <|> (ConnectionChannelData         <$> get)
+        <|> (ConnectionChannelRequest      <$> get)
+        <|> (ConnectionChannelWindowAdjust <$> get)
 
 serveConnection :: forall stream identity. MessageStream stream =>
     ConnectionConfig identity -> stream -> identity -> IO ()
