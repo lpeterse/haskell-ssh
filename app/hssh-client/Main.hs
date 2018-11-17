@@ -30,7 +30,7 @@ main = do
                 , userAuthConfig  = def { getAgent  = Just <$> getAgent, userName = "lpetersen" }
                 }
         S.connect stream (S.socketAddress ai)
-        handle config stream >>= print
+        handle config stream
     where
         open  = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
         close = S.close
@@ -47,13 +47,13 @@ main = do
             (privateKey, _) : _ <- decodePrivateKeyFile BS.empty file :: IO [(KeyPair, BA.Bytes)]
             pure privateKey
 
-        handle :: (DuplexStream stream) => Config -> stream -> IO Disconnect
-        handle config stream = withConnection config stream $ \connection -> do
+        handle :: (DuplexStream stream) => Config -> stream -> IO ()
+        handle config stream = runClient config stream $ \connection -> do
             print "connection established"
             exec connection (Command "ls") $ ExecHandler $ \stdin stdout stderr -> do
                 pure ()
             threadDelay 1000000
-            pure "foo"
+            pure ()
 
 -------------------------------------------------------------------------------
 -- Instances for use with the socket library

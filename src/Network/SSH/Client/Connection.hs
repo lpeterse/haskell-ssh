@@ -6,7 +6,7 @@
 module Network.SSH.Client.Connection where
 
 import           Control.Applicative
-import           Control.Concurrent.Async              ( Async (..), async, withAsync )
+import           Control.Concurrent.Async              ( Async (..), link, async, withAsync, waitSTM )
 import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TMVar
 import           Control.Exception                     ( Exception, throwIO )
@@ -29,6 +29,7 @@ import           Network.SSH.Key
 import           Network.SSH.Name
 import           Network.SSH.Stream
 import           Network.SSH.Transport
+import qualified Network.SSH.Builder                   as B
 import qualified Network.SSH.TStreamingQueue           as Q
 
 data ConnectionConfig
@@ -59,8 +60,8 @@ instance Default ConnectionConfig where
 
 data Connection
     = Connection
-    { connTransport :: Transport
-    , connConfig    :: ConnectionConfig
+    { connConfig    :: ConnectionConfig
+    , connOutbound  :: TMVar OutboundMessage
     , connChannels  :: TVar (M.Map ChannelId ChannelState)
     }
 
@@ -93,31 +94,47 @@ data ChannelSession
 
 newtype Command = Command BS.ByteString
 
-data ConnectionMessage
-    = C1  GlobalRequest
-    | C2  ChannelOpenConfirmation
-    | C3  ChannelOpenFailure
-    | C4  ChannelWindowAdjust
-    | C5  ChannelRequest
-    | C6  ChannelSuccess
-    | C7  ChannelFailure
-    | C8  ChannelData
-    | C9  ChannelExtendedData
-    | C96 ChannelEof
-    | C97 ChannelClose
+data InboundMessage
+    = I080 GlobalRequest
+    | I091 ChannelOpenConfirmation
+    | I092 ChannelOpenFailure
+    | I093 ChannelWindowAdjust
+    | I094 ChannelData
+    | I095 ChannelExtendedData
+    | I096 ChannelEof
+    | I097 ChannelClose
+    | I098 ChannelRequest
+    | I099 ChannelSuccess
+    | I100 ChannelFailure
 
-instance Decoding ConnectionMessage where
-    get   = C1  <$> get
-        <|> C2  <$> get
-        <|> C3  <$> get
-        <|> C4  <$> get
-        <|> C5  <$> get
-        <|> C6  <$> get
-        <|> C7  <$> get
-        <|> C8  <$> get
-        <|> C9  <$> get
-        <|> C96 <$> get
-        <|> C97 <$> get
+instance Decoding InboundMessage where
+    get   = I080 <$> get
+        <|> I091 <$> get
+        <|> I092 <$> get
+        <|> I093 <$> get
+        <|> I094 <$> get
+        <|> I095 <$> get
+        <|> I096 <$> get
+        <|> I097 <$> get
+        <|> I098 <$> get
+        <|> I099 <$> get
+        <|> I100 <$> get
+
+data OutboundMessage
+    = O90 ChannelOpen
+    | O93 ChannelWindowAdjust
+    | O94 ChannelData
+    | O96 ChannelEof
+    | O97 ChannelClose
+    | O98 ChannelRequest
+
+instance Encoding OutboundMessage where
+    put (O90 x) = put x
+    put (O93 x) = put x
+    put (O94 x) = put x
+    put (O96 x) = put x
+    put (O97 x) = put x
+    put (O98 x) = put x
 
 data ChannelException
     = ChannelOpenFailed ChannelOpenFailureReason ChannelOpenFailureDescription
@@ -132,6 +149,61 @@ newtype Environment = Environment ()
 
 newtype ExecHandler a = ExecHandler (forall stdin stdout stderr. (OutputStream stdin, InputStream stdout, InputStream stderr)
     => stdin -> stdout -> stderr -> IO a)
+
+sendOutbound :: Connection -> OutboundMessage -> IO ()
+sendOutbound c = atomically . putTMVar (connOutbound c)
+
+withConnection :: (MessageStream stream) => ConnectionConfig -> stream -> (Connection -> IO a) -> IO a
+withConnection config stream handler = do
+    c <- atomically $ Connection config <$> newEmptyTMVar <*> newTVar mempty
+    withAsync (dispatchIncoming stream c) $ \receiverThread -> do
+        link receiverThread -- FIXME
+        withAsync (handler c) $ \handlerThread -> fix $ \continue -> do
+            let left  = Left  <$> takeTMVar (connOutbound c)
+                right = Right <$> waitSTM handlerThread
+            atomically (left <|> right) >>= \case
+                Left msg -> sendMessage stream msg >> continue
+                Right a  -> pure a
+    where
+        dispatchIncoming :: (MessageStream stream) => stream -> Connection -> IO ()
+        dispatchIncoming s c = forever $ receiveMessage s >>= \case
+            I080 x -> print x -- FIXME
+            I091 x@(ChannelOpenConfirmation lid _ _ _) -> atomically $ do
+                getChannelStateSTM c lid >>= \case
+                    ChannelOpening f  -> f (Right x)
+                    _                 -> throwSTM exceptionInvalidChannelState
+            I092 x@(ChannelOpenFailure lid _ _ _) -> atomically $ do
+                getChannelStateSTM c lid >>= \case
+                    ChannelOpening f  -> f (Left x)
+                    _                 -> throwSTM exceptionInvalidChannelState
+            I093 (ChannelWindowAdjust lid size) -> atomically $ do
+                getChannelStateSTM c lid >>= \case
+                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+                    ChannelRunning ch -> channelAdjustWindowSTM ch size
+                    ChannelClosing {} -> pure ()
+            I094 (ChannelData lid dat) -> atomically $ do
+                getChannelStateSTM c lid >>= \case
+                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+                    ChannelRunning ch -> channelDataSTM ch dat
+                    ChannelClosing {} -> pure ()
+            I095  (ChannelExtendedData lid typ dat) -> atomically $ do
+                getChannelStateSTM c lid >>= \case
+                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+                    ChannelRunning ch -> channelExtendedDataSTM ch typ dat
+                    ChannelClosing {} -> pure ()
+            I096 (ChannelEof lid) -> atomically $ do
+                getChannelStateSTM c lid >>= \case
+                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+                    ChannelRunning ch -> channelEofSTM ch
+                    ChannelClosing {} -> pure ()
+            I097 (ChannelClose lid) -> do
+                atomically $ getChannelStateSTM c lid >>= \case
+                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+                    ChannelRunning {} -> freeChannelSTM c lid
+                    ChannelClosing {} -> freeChannelSTM c lid
+            I098  x -> print x
+            I099  x -> print x
+            I100  x -> print x
 
 exec :: Connection -> Command -> ExecHandler a -> IO a
 exec c cmd (ExecHandler handler) = do
@@ -162,14 +234,13 @@ exec c cmd (ExecHandler handler) = do
             writeTVar trws rws
             setChannelStateSTM c lid $ ChannelRunning channel
             putTMVar r (Right channel)
-    sendMessage (connTransport c)
-        $ ChannelOpen lid maxQueueSize maxPacketSize ChannelOpenSession
+    sendOutbound c $ O90 $ ChannelOpen lid maxQueueSize maxPacketSize ChannelOpenSession
     atomically (readTMVar r) >>= \case
         Left (ChannelOpenFailure _ reason descr _) -> throwIO
             $ ChannelOpenFailed reason
             $ ChannelOpenFailureDescription $ SBS.fromShort descr
         Right ch -> do
-            sendMessage (connTransport c) $ ChannelRequest
+            sendOutbound c $ O98 $ ChannelRequest
                 { crChannel   = chanIdRemote ch
                 , crType      = "exec"
                 , crWantReply = True
@@ -227,3 +298,32 @@ setChannelStateSTM :: Connection -> ChannelId -> ChannelState -> STM ()
 setChannelStateSTM c lid st = do
     channels <- readTVar (connChannels c)
     writeTVar (connChannels c) $! M.insert lid st channels
+
+channelAdjustWindowSTM :: Channel -> Word32 -> STM ()
+channelAdjustWindowSTM ch increment = case chanApplication ch of
+    ChannelApplicationSession ChannelSession { sessStdin = queue } ->
+        Q.addWindowSpace queue increment <|> throwSTM exceptionWindowSizeOverflow
+
+channelDataSTM :: Channel -> SBS.ShortByteString -> STM ()
+channelDataSTM ch datShort = case chanApplication ch of
+    ChannelApplicationSession ChannelSession { sessStdout = queue } -> do
+        enqueued <- Q.enqueue queue dat <|> pure 0
+        when (enqueued /= len) (throwSTM exceptionWindowSizeUnderrun)
+    where
+        dat = SBS.fromShort datShort
+        len = fromIntegral (SBS.length datShort)
+
+channelExtendedDataSTM :: Channel -> Word32 -> SBS.ShortByteString -> STM ()
+channelExtendedDataSTM ch _ datShort = case chanApplication ch of
+    ChannelApplicationSession ChannelSession { sessStderr = queue } -> do
+        enqueued <- Q.enqueue queue dat <|> pure 0
+        when (enqueued /= len) (throwSTM exceptionWindowSizeUnderrun)
+    where
+        dat = SBS.fromShort datShort
+        len = fromIntegral (SBS.length datShort)
+
+channelEofSTM :: Channel -> STM ()
+channelEofSTM ch = case chanApplication ch of
+    ChannelApplicationSession ChannelSession { sessStdout = out, sessStderr = err } -> do
+        Q.terminate out
+        Q.terminate err
