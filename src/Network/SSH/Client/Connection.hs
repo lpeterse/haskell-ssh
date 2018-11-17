@@ -78,7 +78,6 @@ data Channel
     , chanMaxPacketSizeRemote :: Word32
     , chanWindowSizeLocal     :: TVar Word32
     , chanWindowSizeRemote    :: TVar Word32
-    , chanThread              :: TMVar (Async ())
     , chanApplication         :: ChannelApplication
     }
 
@@ -90,6 +89,7 @@ data ChannelSession
     { sessStdin       :: Q.TStreamingQueue
     , sessStdout      :: Q.TStreamingQueue
     , sessStderr      :: Q.TStreamingQueue
+    , sessExit        :: TMVar (Either ExitSignal ExitCode)
     }
 
 newtype Command = Command BS.ByteString
@@ -147,8 +147,15 @@ newtype ChannelOpenFailureDescription = ChannelOpenFailureDescription BS.ByteStr
 
 newtype Environment = Environment ()
 
+data ExitSignal
+    = ExitSignal
+    { exitSignalName   :: Name
+    , exitCoreDumped   :: Bool
+    , exitErrorMessage :: BS.ByteString
+    } deriving (Eq, Ord, Show)
+
 newtype ExecHandler a = ExecHandler (forall stdin stdout stderr. (OutputStream stdin, InputStream stdout, InputStream stderr)
-    => stdin -> stdout -> stderr -> IO a)
+    => stdin -> stdout -> stderr -> STM (Either ExitSignal ExitCode) -> IO a)
 
 sendOutbound :: Connection -> OutboundMessage -> IO ()
 sendOutbound c = atomically . putTMVar (connOutbound c)
@@ -168,52 +175,54 @@ withConnection config stream handler = do
         dispatchIncoming :: (MessageStream stream) => stream -> Connection -> IO ()
         dispatchIncoming s c = forever $ receiveMessage s >>= \case
             I080 x -> print x -- FIXME
-            I091 x@(ChannelOpenConfirmation lid _ _ _) -> atomically $ do
-                getChannelStateSTM c lid >>= \case
+            I091 x@(ChannelOpenConfirmation lid _ _ _) ->
+                atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening f  -> f (Right x)
                     _                 -> throwSTM exceptionInvalidChannelState
-            I092 x@(ChannelOpenFailure lid _ _ _) -> atomically $ do
-                getChannelStateSTM c lid >>= \case
+            I092 x@(ChannelOpenFailure lid _ _ _) ->
+                atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening f  -> f (Left x)
                     _                 -> throwSTM exceptionInvalidChannelState
-            I093 (ChannelWindowAdjust lid size) -> atomically $ do
-                getChannelStateSTM c lid >>= \case
+            I093 (ChannelWindowAdjust lid size) ->
+                atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
                     ChannelRunning ch -> channelAdjustWindowSTM ch size
                     ChannelClosing {} -> pure ()
-            I094 (ChannelData lid dat) -> atomically $ do
-                getChannelStateSTM c lid >>= \case
+            I094 (ChannelData lid dat) ->
+                atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
                     ChannelRunning ch -> channelDataSTM ch dat
                     ChannelClosing {} -> pure ()
-            I095  (ChannelExtendedData lid typ dat) -> atomically $ do
-                getChannelStateSTM c lid >>= \case
+            I095  (ChannelExtendedData lid typ dat) ->
+                atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
                     ChannelRunning ch -> channelExtendedDataSTM ch typ dat
                     ChannelClosing {} -> pure ()
-            I096 (ChannelEof lid) -> atomically $ do
-                getChannelStateSTM c lid >>= \case
+            I096 (ChannelEof lid) ->
+                atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
                     ChannelRunning ch -> channelEofSTM ch
                     ChannelClosing {} -> pure ()
-            I097 (ChannelClose lid) -> do
+            I097 (ChannelClose lid) ->
+                atomically $ closeChannelSTM c lid
+            I098 (ChannelRequest lid typ wantReply dat) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning {} -> freeChannelSTM c lid
-                    ChannelClosing {} -> freeChannelSTM c lid
-            I098  x -> print x
-            I099  x -> print x
-            I100  x -> print x
+                    ChannelRunning ch -> channelRequestSTM ch typ wantReply dat
+                    ChannelClosing {} -> pure ()
+            I099  x -> print x -- FIXME
+            I100  x -> print x -- FIXME
 
 exec :: Connection -> Command -> ExecHandler a -> IO a
 exec c cmd (ExecHandler handler) = do
-    tlws    <- newTVarIO maxQueueSize
-    trws    <- newTVarIO 0
-    stdin   <- atomically (Q.newTStreamingQueue maxQueueSize trws)
-    stdout  <- atomically (Q.newTStreamingQueue maxQueueSize tlws)
-    stderr  <- atomically (Q.newTStreamingQueue maxQueueSize tlws)
-    r       <- newEmptyTMVarIO
-    lid     <- atomically $ openChannelSTM c $ \case
+    tlws     <- newTVarIO maxQueueSize
+    trws     <- newTVarIO 0
+    stdin    <- atomically (Q.newTStreamingQueue maxQueueSize trws)
+    stdout   <- atomically (Q.newTStreamingQueue maxQueueSize tlws)
+    stderr   <- atomically (Q.newTStreamingQueue maxQueueSize tlws)
+    exit     <- newEmptyTMVarIO
+    r        <- newEmptyTMVarIO
+    lid      <- atomically $ openChannelSTM c $ \case
         Left x@ChannelOpenFailure {} -> do
             putTMVar r (Left x)
         Right (ChannelOpenConfirmation lid rid rws rps) -> do
@@ -221,6 +230,7 @@ exec c cmd (ExecHandler handler) = do
                     { sessStdin               = stdin
                     , sessStdout              = stdout
                     , sessStderr              = stderr
+                    , sessExit                = exit
                     }
             let channel = Channel
                     { chanIdLocal             = lid
@@ -246,7 +256,23 @@ exec c cmd (ExecHandler handler) = do
                 , crWantReply = True
                 , crData      = runPut (put $ ChannelRequestExec "ls")
                 }
-            handler stdin stdout stderr
+            withAsync (handler stdin stdout stderr (readTMVar exit)) $ \handlerAsync -> do
+                let x1 = do -- wait for channel data
+                        dat <- Q.dequeueShort stdin (chanMaxPacketSizeRemote ch)
+                        putTMVar (connOutbound c) $ O94 $ ChannelData (chanIdRemote ch) dat
+                        pure Nothing
+                    x2 = do -- wait for necessary window adjust
+                        -- FIXME: need to consider stderr as well
+                        recommended <- Q.askWindowSpaceAdjustRecommended stdout
+                        unless recommended retry
+                        increment <- Q.fillWindowSpace stdout
+                        putTMVar (connOutbound c) $ O93 $ ChannelWindowAdjust (chanIdRemote ch) increment
+                        pure Nothing
+                    x3 = do -- wait for handler thread to terminate
+                        Just <$> waitSTM handlerAsync
+                fix $ \continue -> atomically (x1 <|> x2 <|> x3) >>= \case
+                    Nothing -> continue
+                    Just a  -> pure a
     where
         -- The maxQueueSize must at least be one (even if 0 in the config)
         -- and lower than range of Int (might happen on 32bit systems
@@ -284,6 +310,19 @@ openChannelSTM c handler = do
                     | otherwise = Just (ChannelId i)
                 maxCount = channelMaxCount (connConfig c)
 
+closeChannelSTM :: Connection -> ChannelId -> STM ()
+closeChannelSTM c lid = getChannelStateSTM c lid >>= \case
+    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+    ChannelRunning ch -> do
+        case chanApplication ch of
+            ChannelApplicationSession ChannelSession { sessExit = exit } ->
+                -- In case the server did not send an exit-status message
+                -- the close message serves the same purpose (closing the session).
+                void $ tryPutTMVar exit $ Right $ ExitFailure (-1)
+        putTMVar (connOutbound c) $ O97 $ ChannelClose (chanIdRemote ch)
+        freeChannelSTM c lid
+    ChannelClosing {} -> freeChannelSTM c lid
+
 freeChannelSTM :: Connection -> ChannelId -> STM ()
 freeChannelSTM c lid = do
     channels <- readTVar (connChannels c)
@@ -310,7 +349,7 @@ channelDataSTM ch datShort = case chanApplication ch of
         enqueued <- Q.enqueue queue dat <|> pure 0
         when (enqueued /= len) (throwSTM exceptionWindowSizeUnderrun)
     where
-        dat = SBS.fromShort datShort
+        dat = SBS.fromShort datShort -- TODO
         len = fromIntegral (SBS.length datShort)
 
 channelExtendedDataSTM :: Channel -> Word32 -> SBS.ShortByteString -> STM ()
@@ -319,7 +358,7 @@ channelExtendedDataSTM ch _ datShort = case chanApplication ch of
         enqueued <- Q.enqueue queue dat <|> pure 0
         when (enqueued /= len) (throwSTM exceptionWindowSizeUnderrun)
     where
-        dat = SBS.fromShort datShort
+        dat = SBS.fromShort datShort -- TODO
         len = fromIntegral (SBS.length datShort)
 
 channelEofSTM :: Channel -> STM ()
@@ -327,3 +366,19 @@ channelEofSTM ch = case chanApplication ch of
     ChannelApplicationSession ChannelSession { sessStdout = out, sessStderr = err } -> do
         Q.terminate out
         Q.terminate err
+
+channelRequestSTM :: Channel -> SBS.ShortByteString -> Bool -> BS.ByteString -> STM ()
+channelRequestSTM ch typ wantReply dat = case chanApplication ch of
+    ChannelApplicationSession ChannelSession { sessExit = exit } -> case (typ, wantReply) of
+        ("exit-signal", False) -> case runGet dat of
+            Nothing -> throwSTM exceptionInvalidChannelRequest
+            Just (ChannelRequestExitSignal signame coredumped errmsg _) ->
+                void $ tryPutTMVar exit $ Left $ ExitSignal
+                    (Name signame)
+                    coredumped
+                    (SBS.fromShort errmsg)
+        ("exit-status", False) -> case runGet dat of
+            Nothing -> throwSTM exceptionInvalidChannelRequest
+            Just (ChannelRequestExitStatus status) ->
+                void $ tryPutTMVar exit $ Right status
+        _ -> throwSTM exceptionInvalidChannelRequest

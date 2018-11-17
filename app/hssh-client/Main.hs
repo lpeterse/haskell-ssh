@@ -9,6 +9,7 @@ import           Control.Exception              ( bracket
                                                 , handle
                                                 , throwIO
                                                 )
+import           Control.Monad.STM
 import qualified Data.ByteArray                 as BA
 import qualified Data.ByteString                as BS
 import           Data.Default
@@ -27,7 +28,7 @@ main = do
     bracket open close $ \stream -> do
         let config = def
                 { transportConfig = def { onReceive = print }
-                , userAuthConfig  = def { getAgent  = Just <$> getAgent, userName = "lpetersen" }
+                , userAuthConfig  = def { getAgent  = Just <$> getAgent, userName = "lars" }
                 }
         S.connect stream (S.socketAddress ai)
         handle config stream
@@ -48,10 +49,11 @@ main = do
             pure privateKey
 
         handle :: (DuplexStream stream) => Config -> stream -> IO ()
-        handle config stream = runClient config stream $ \connection -> do
+        handle config stream = runClient config stream $ \c -> do
             print "connection established"
-            exec connection (Command "ls") $ ExecHandler $ \stdin stdout stderr -> do
-                pure ()
+            exec c (Command "ls") $ ExecHandler $ \stdin stdout stderr exit -> do
+                receive stdout 4096 >>= print
+                atomically exit >>= print
             threadDelay 1000000
             pure ()
 

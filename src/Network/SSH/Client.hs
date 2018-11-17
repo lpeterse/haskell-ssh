@@ -46,5 +46,5 @@ runClient config stream handler = do
         requestServiceWithAuthentication (userAuthConfig config) transport sessionId (Name "ssh-connection")
         withConnection (connectionConfig config) transport handler
     case ea of
-        Left  _ -> error "FIXME"
+        Left  e -> print e >> undefined
         Right a -> pure a
