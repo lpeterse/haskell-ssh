@@ -28,7 +28,7 @@ main = do
     bracket open close $ \stream -> do
         let config = def
                 { transportConfig = def { onReceive = print }
-                , userAuthConfig  = def { getAgent  = Just <$> getAgent, userName = "lars" }
+                , userAuthConfig  = def { getAgent  = Just <$> getAgent, userName = "lpetersen" }
                 }
         S.connect stream (S.socketAddress ai)
         handle config stream

@@ -205,23 +205,25 @@ transportReceiveRawMessageMaybe env =
         plainText <- decrypt packets
         onReceive (tConfig env) plainText
         modifyMVar_ (tPacketsReceived env) $ \pacs  -> pure $! pacs + 1
-        case interpreter plainText of
-            Just i  -> i >> pure (decrypt, Nothing)
-            Nothing -> case runGet plainText of
-                Just KexNewKeys  -> do
-                    (,Nothing) <$> readMVar (tDecryptionCtxNext env)
-                Nothing -> pure (decrypt, Just plainText)
+        case interpreter decrypt plainText of
+            -- Transport layer messages shall not leave the transport layer.
+            -- Their effect is executed immediately and Nothing is returned.
+            Just m  -> (, Nothing) <$> m
+            Nothing -> pure (decrypt, Just plainText)
     where
-        interpreter plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5 <|> f i6
+        interpreter :: DecryptionContext -> BS.ByteString -> Maybe (IO DecryptionContext)
+        interpreter d plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5 <|> f i6 <|> f i7
             where
                 f i = i <$> runGet plainText
+                i0 :: Disconnected -> IO DecryptionContext
                 i0 (Disconnected r m _) = throwIO $ Disconnect Remote r (DisconnectMessage $ SBS.fromShort m)
-                i1 Debug             {} = pure ()
-                i2 Ignore            {} = pure ()
-                i3 Unimplemented     {} = pure ()
-                i4 x@KexInit         {} = kexContinue env (Init x)
-                i5 x@KexEcdhInit     {} = kexContinue env (EcdhInit x)
-                i6 x@KexEcdhReply    {} = kexContinue env (EcdhReply x)
+                i1 Debug             {} = pure d
+                i2 Ignore            {} = pure d
+                i3 Unimplemented     {} = pure d
+                i4 x@KexInit         {} = kexContinue env (Init x) >> pure d
+                i5 x@KexEcdhInit     {} = kexContinue env (EcdhInit x) >> pure d
+                i6 x@KexEcdhReply    {} = kexContinue env (EcdhReply x) >> pure d
+                i7 KexNewKeys        {} = readMVar (tDecryptionCtxNext env)
 
 -------------------------------------------------------------------------------
 -- CRYPTO ---------------------------------------------------------------------
