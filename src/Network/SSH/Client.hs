@@ -15,16 +15,10 @@ module Network.SSH.Client
     )
 where
 
-import           Control.Concurrent.STM.TVar
-import           Control.Concurrent.Async
-import           Control.Monad
-import           Control.Monad.STM
 import           Data.Default
 
 import           Network.SSH.Client.Connection
 import           Network.SSH.Client.UserAuth
-import           Network.SSH.Exception
-import           Network.SSH.Message
 import           Network.SSH.Key
 import           Network.SSH.Name
 import           Network.SSH.Stream

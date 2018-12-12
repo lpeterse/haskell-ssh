@@ -6,7 +6,7 @@
 module Network.SSH.Client.Connection where
 
 import           Control.Applicative
-import           Control.Concurrent.Async              ( Async (..), link, async, withAsync, waitSTM )
+import           Control.Concurrent.Async              ( link, withAsync, waitSTM )
 import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TMVar
 import           Control.Exception                     ( Exception, throwIO )
@@ -14,7 +14,6 @@ import           Control.Monad
 import           Control.Monad.STM
 import           Data.Default
 import           Data.Function                         ( fix )
-import           Data.List                             ( intersect )
 import           Data.Map.Strict                       as M
 import           System.Exit
 import           Data.Word
@@ -25,11 +24,8 @@ import           Network.SSH.Constants
 import           Network.SSH.Exception
 import           Network.SSH.Encoding
 import           Network.SSH.Message
-import           Network.SSH.Key
 import           Network.SSH.Name
 import           Network.SSH.Stream
-import           Network.SSH.Transport
-import qualified Network.SSH.Builder                   as B
 import qualified Network.SSH.TStreamingQueue           as Q
 
 data ConnectionConfig
