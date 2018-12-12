@@ -179,10 +179,10 @@ withConnection config stream handler = do
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening f  -> f (Left x)
                     _                 -> throwSTM exceptionInvalidChannelState
-            I093 (ChannelWindowAdjust lid size) ->
+            I093 (ChannelWindowAdjust lid sz) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> channelAdjustWindowSTM ch size
+                    ChannelRunning ch -> channelAdjustWindowSTM ch sz
                     ChannelClosing {} -> pure ()
             I094 (ChannelData lid dat) ->
                 atomically $ getChannelStateSTM c lid >>= \case
@@ -210,7 +210,7 @@ withConnection config stream handler = do
             I100  x -> print x -- FIXME
 
 exec :: Connection -> Command -> ExecHandler a -> IO a
-exec c cmd (ExecHandler handler) = do
+exec c _cmd (ExecHandler handler) = do
     tlws     <- newTVarIO maxQueueSize
     trws     <- newTVarIO 0
     stdin    <- atomically (Q.newTStreamingQueue maxQueueSize trws)

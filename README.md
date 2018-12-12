@@ -1,4 +1,5 @@
-# hssh
+hssh - Haskell SSH [![Hackage](https://img.shields.io/github/release/lpeterse/haskell-hssh.svg)](https://github.com/lpeterse/haskell-hssh/releases) [![Travis](https://img.shields.io/travis/lpeterse/haskell-hssh.svg)](https://travis-ci.org/lpeterse/haskell-hssh)
+=======================
 
 ## Introduction
 
