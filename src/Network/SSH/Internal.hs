@@ -1,6 +1,5 @@
 module Network.SSH.Internal
     ( module Network.SSH.Algorithms
-    , module Network.SSH.Client.Connection
     , module Network.SSH.Client.UserAuth
     , module Network.SSH.Encoding
     , module Network.SSH.Exception

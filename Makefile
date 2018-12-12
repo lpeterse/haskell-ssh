@@ -1,4 +1,4 @@
-.PHONY: test hpc
+.PHONY: install test hpc hp doc
 
 install:
 	stack install
