@@ -1,4 +1,3 @@
-{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE MultiWayIf                #-}
 {-# LANGUAGE TupleSections             #-}
@@ -50,9 +49,8 @@ import           Network.SSH.Name
 import           Network.SSH.Stream
 
 data Transport
-    = forall stream. (DuplexStream stream) => Transport
-    { tStream                   :: stream
-    , tConfig                   :: TransportConfig
+    = Transport
+    { tConfig                   :: TransportConfig
     , tClientVersion            :: Version
     , tServerVersion            :: Version
     , tBytesSent                :: MVar Word64
@@ -109,6 +107,16 @@ instance MessageStream Transport where
         kexIfNecessary t
         transportReceiveMessage t
 
+-------------------------------------------------------------------------------
+-- PUBLIC FUNCTIONS -----------------------------------------------------------
+-------------------------------------------------------------------------------
+
+clientVersion :: Transport -> Version
+clientVersion = tClientVersion
+
+serverVersion :: Transport -> Version
+serverVersion = tServerVersion
+
 withClientTransport :: 
     (DuplexStream stream) =>
     TransportConfig -> stream ->
@@ -120,7 +128,7 @@ withClientTransport config stream runWith = withFinalExceptionHandler $ do
     sv <- receiveVersion stream
     env <- newTransport config stream (version config) sv
     withRespondingExceptionHandler env $ do
-        (sessionId, hostKey) <- kexClientInitialize env
+        (sessionId, hostKey) <- kexClientInitialize stream env
         a <- runWith env sessionId hostKey
         sendMessage env (Disconnected DisconnectByApplication mempty mempty)
         pure a
@@ -137,10 +145,14 @@ withServerTransport config stream agent runWith = withFinalExceptionHandler $ do
     sendVersion stream (version config)
     env <- newTransport config stream cv (version config)
     withRespondingExceptionHandler env $ do
-        sessionId <- kexServerInitialize env agent
+        sessionId <- kexServerInitialize stream env agent
         a <- runWith env sessionId
         sendMessage env (Disconnected DisconnectByApplication mempty mempty)
         pure a
+
+-------------------------------------------------------------------------------
+-- PRIVATE FUNCTIONS ----------------------------------------------------------
+-------------------------------------------------------------------------------
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
 transportSendMessage env msg =
@@ -195,10 +207,10 @@ transportReceiveRawMessageMaybe env =
 -- KEY EXCHANGE (SERVER) ------------------------------------------------------
 -------------------------------------------------------------------------------
 
-kexServerInitialize :: (AuthAgent agent) => Transport -> agent -> IO SessionId
-kexServerInitialize env agent = do
+kexServerInitialize :: (DuplexStream stream, AuthAgent agent) => stream -> Transport -> agent -> IO SessionId
+kexServerInitialize stream env agent = do
     cookie <- newCookie
-    putMVar (tKexContinuation env) $ kexServerContinuation env cookie agent
+    putMVar (tKexContinuation env) $ kexServerContinuation stream env cookie agent
     kexTrigger env
     dontAcceptMessageUntilKexComplete
     where
@@ -210,8 +222,8 @@ kexServerInitialize env agent = do
                     Just sid -> pure sid
 
 -- NB: Uses transportSendMessage to avoid rekeying-loop
-kexServerContinuation :: AuthAgent agent => Transport -> Cookie -> agent -> KexContinuation
-kexServerContinuation env@Transport { tStream = stream } cookie authAgent = serverKex0
+kexServerContinuation :: (DuplexStream stream, AuthAgent agent) => stream -> Transport -> Cookie -> agent -> KexContinuation
+kexServerContinuation stream env cookie authAgent = serverKex0
     where
         serverKex0 :: KexContinuation
         serverKex0 = KexContinuation $ \case
@@ -279,11 +291,11 @@ kexServerContinuation env@Transport { tStream = stream } cookie authAgent = serv
 -- KEY EXCHANGE (CLIENT) ------------------------------------------------------
 -------------------------------------------------------------------------------
 
-kexClientInitialize :: Transport -> IO (SessionId, PublicKey)
-kexClientInitialize env = do
+kexClientInitialize :: (DuplexStream stream) => stream -> Transport -> IO (SessionId, PublicKey)
+kexClientInitialize stream env = do
     cookie <- newCookie
     mHostKey <- newEmptyMVar
-    putMVar (tKexContinuation env) $ kexClientContinuation env cookie mHostKey
+    putMVar (tKexContinuation env) $ kexClientContinuation stream env cookie mHostKey
     kexTrigger env
     sid <- dontAcceptMessageUntilKexComplete
     hostKey <- readMVar mHostKey -- Assertion: The host key is non-empty after key exchange
@@ -297,8 +309,8 @@ kexClientInitialize env = do
                     Just sid -> pure sid
 
 -- NB: Uses transportSendMessage to avoid rekeying-loop
-kexClientContinuation :: Transport -> Cookie -> MVar PublicKey -> KexContinuation
-kexClientContinuation env@Transport { tStream = stream } cookie mHostKey = clientKex0
+kexClientContinuation :: (DuplexStream stream) => stream -> Transport  -> Cookie -> MVar PublicKey -> KexContinuation
+kexClientContinuation stream env cookie mHostKey = clientKex0
     where
         clientKex0 :: KexContinuation
         clientKex0 = KexContinuation $ \case
@@ -483,16 +495,6 @@ kexWithVerifiedSignature key hash sig action = case (key, sig) of
     _ -> throwIO exceptionKexInvalidSignature
 
 -------------------------------------------------------------------------------
--- PUBLIC FUNCTIONS ON TRANSPORT ----------------------------------------------
--------------------------------------------------------------------------------
-
-clientVersion :: Transport -> Version
-clientVersion = tClientVersion
-
-serverVersion :: Transport -> Version
-serverVersion = tServerVersion
-
--------------------------------------------------------------------------------
 -- UTIL -----------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
@@ -538,11 +540,7 @@ withRespondingExceptionHandler env run = (Right <$> run) `catch` \e-> case e of
     _ -> pure (Left e)
 
 newTransport :: DuplexStream stream
-    => TransportConfig
-    -> stream
-    -> Version
-    -> Version
-    -> IO Transport
+    => TransportConfig -> stream -> Version -> Version -> IO Transport
 newTransport config stream cv sv = do
     xBytesSent           <- newMVar 0
     xPacketsSent         <- newMVar 0
@@ -558,8 +556,7 @@ newTransport config stream cv sv = do
     xRekeySent           <- newMVar 0
     xRekeyRcvd           <- newMVar 0
     pure Transport
-        { tStream                   = stream
-        , tConfig                   = config
+        { tConfig                   = config
         , tClientVersion            = cv
         , tServerVersion            = sv
         , tBytesSent                = xBytesSent
