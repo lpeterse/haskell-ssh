@@ -20,8 +20,8 @@ main = defaultMain $ testGroup "Network.SSH"
     --, Spec.Client.UserAuth.tests
     --, Spec.Key.tests
     --, Spec.Message.tests
-    --, Spec.Server.tests
-    --, Spec.Server.Connection.tests
+    --  Spec.Server.tests
+    -- Spec.Server.Connection.tests
     --, Spec.Server.UserAuth.tests
      Spec.Transport.tests
     --, Spec.TStreamingQueue.tests

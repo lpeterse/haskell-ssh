@@ -32,6 +32,12 @@ runGet bs = case G.runGet get bs of
     Right a -> pure a
 {-# INLINEABLE runGet #-}
 
+runGetter :: (Fail.MonadFail m) => BS.ByteString -> Get a -> m a
+runGetter bs getter = case G.runGet getter bs of
+    Left  e -> Fail.fail e
+    Right a -> pure a
+{-# INLINEABLE runGetter #-}
+
 putExitCode :: B.Builder b => ExitCode -> b
 putExitCode = \case
     ExitSuccess -> B.word32BE 0

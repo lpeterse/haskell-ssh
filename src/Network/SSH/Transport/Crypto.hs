@@ -34,14 +34,24 @@ import qualified Network.SSH.Transport.Crypto.Poly1305 as Poly1305M
 
 newtype KeyStreams = KeyStreams (BS.ByteString -> [BA.Bytes])
 
-type DecryptionContext = Word64 -> IO BS.ByteString
+type DecryptionContext = Word64 -> IO (Int, BS.ByteString)
 type EncryptionContext = Word64 -> B.ByteArrayBuilder -> IO Int
+
+-- |   HEADER   | PADLEN |   PAYLOAD   |  PADDING   |  MAC   |
+-- |---------------------------------------------------------|
+-- |  headerLen |                                            |
+-- |            |   1    |                                   |
+-- |                     | payloadLen  |                     |
+-- |                                   | paddingLen |        |
+-- |                                                | macLen |
+-- |            |                 packetLen                  |
+-- |                        messageLen                       |
 
 plainEncryptionContext :: OutputStream stream => stream -> EncryptionContext
 plainEncryptionContext stream _ payload = allocaBytes messageLen $ \ptr -> do
     B.copyToPtr messageBuilder ptr
     sendAllUnsafe stream (BA.MemView ptr messageLen)
-    pure packetLen
+    pure messageLen
     where
         payloadLen = B.babLength payload
         paddingLen = 16 - (headerLen + 1 + payloadLen) `mod` 8
@@ -67,7 +77,7 @@ plainDecryptionContext stream = const $ allocaBytes headerLen $ \headerPtr -> do
         when (paddingLen + 1 >= packetLen) (throwIO exceptionInvalidPacket)
         -- return the length of the actual message without padding
         pure (packetLen - 1 - paddingLen)
-    pure $! BS.take bsLen (BS.drop 1 bs)
+    pure (headerLen + packetLen, BS.take bsLen (BS.drop 1 bs))
 
 newChaCha20Poly1305EncryptionContext ::
     (OutputStream stream, BA.ByteArrayAccess key) =>
@@ -178,7 +188,7 @@ newChaCha20Poly1305DecryptionContext stream headerKey mainKey = do
         -- The resulting message is a slice of the `BS.ByteString` (without padding and mac).
         -- The header, padding and mac are not confidential and remain in memory until the
         -- whole `BS.ByteString` gets collected. This saves allocations.
-        pure $! BS.take bsLen (BS.drop (headerLen + 1) bs)
+        pure (headerLen + packetLen + macLen, BS.take bsLen (BS.drop (headerLen + 1) bs))
 
 -------------------------------------------------------------------------------
 -- UTIL

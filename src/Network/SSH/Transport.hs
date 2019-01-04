@@ -8,6 +8,10 @@ module Network.SSH.Transport
     , Disconnected (..)
     , clientVersion
     , serverVersion
+    , getBytesSent
+    , getBytesReceived
+    , getPacketsSent
+    , getPacketsReceived
     , withClientTransport
     , withServerTransport
     , plainEncryptionContext
@@ -22,7 +26,7 @@ import           Control.Concurrent             ( threadDelay )
 import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
 import           Control.Exception              ( throwIO, handle, catch, fromException)
-import           Control.Monad                  ( when, void )
+import           Control.Monad                  ( when, void, join )
 import           Control.Monad.STM
 import           Data.Default
 import           Data.List
@@ -63,9 +67,10 @@ data Transport
     , tDecryptionCtxNext        :: MVar DecryptionContext
     , tKexContinuation          :: MVar KexContinuation
     , tSessionId                :: MVar SessionId
-    , tLastRekeyingTime         :: MVar Word64
-    , tLastRekeyingDataSent     :: MVar Word64
-    , tLastRekeyingDataReceived :: MVar Word64
+    , tRekeyingCounter          :: MVar Word64
+    , tRekeyingLastTime         :: MVar Word64
+    , tRekeyingLastDataSent     :: MVar Word64
+    , tRekeyingLastDataReceived :: MVar Word64
     }
 
 data TransportConfig
@@ -108,7 +113,7 @@ instance MessageStream Transport where
         transportReceiveMessage t
 
 -------------------------------------------------------------------------------
--- PUBLIC FUNCTIONS -----------------------------------------------------------
+-- PUBLIC FUNCTIONS
 -------------------------------------------------------------------------------
 
 clientVersion :: Transport -> Version
@@ -117,7 +122,19 @@ clientVersion = tClientVersion
 serverVersion :: Transport -> Version
 serverVersion = tServerVersion
 
-withClientTransport :: 
+getBytesSent :: Transport -> IO Word64
+getBytesSent = readMVar . tBytesSent
+
+getBytesReceived :: Transport -> IO Word64
+getBytesReceived = readMVar . tBytesReceived
+
+getPacketsSent :: Transport -> IO Word64
+getPacketsSent = readMVar . tPacketsSent
+
+getPacketsReceived :: Transport -> IO Word64
+getPacketsReceived = readMVar . tPacketsReceived
+
+withClientTransport ::
     (DuplexStream stream) =>
     TransportConfig -> stream ->
     (Transport -> SessionId -> PublicKey -> IO a) -> IO (Either Disconnect a)
@@ -130,10 +147,10 @@ withClientTransport config stream runWith = withFinalExceptionHandler $ do
     withRespondingExceptionHandler env $ do
         (sessionId, hostKey) <- kexClientInitialize stream env
         a <- runWith env sessionId hostKey
-        sendMessage env (Disconnected DisconnectByApplication mempty mempty)
+        transportSendMessage env (Disconnected DisconnectByApplication mempty mempty)
         pure a
 
-withServerTransport :: 
+withServerTransport ::
     (DuplexStream stream, AuthAgent agent) =>
     TransportConfig -> stream -> agent ->
     (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
@@ -147,11 +164,11 @@ withServerTransport config stream agent runWith = withFinalExceptionHandler $ do
     withRespondingExceptionHandler env $ do
         sessionId <- kexServerInitialize stream env agent
         a <- runWith env sessionId
-        sendMessage env (Disconnected DisconnectByApplication mempty mempty)
+        transportSendMessage env (Disconnected DisconnectByApplication mempty mempty)
         pure a
 
 -------------------------------------------------------------------------------
--- PRIVATE FUNCTIONS ----------------------------------------------------------
+-- PRIVATE FUNCTIONS
 -------------------------------------------------------------------------------
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
@@ -169,42 +186,48 @@ transportSendMessage env msg =
 
 transportReceiveMessage :: Decoding msg => Transport -> IO msg
 transportReceiveMessage env = do
-    raw <- transportReceiveRawMessage env
-    maybe (throwIO $ exceptionUnexpectedMessage raw) pure (runGet raw)
+    maybe (transportReceiveMessage env) pure =<< transportReceiveMessageMaybe env
 
-transportReceiveRawMessage :: Transport -> IO BS.ByteString
-transportReceiveRawMessage env =
-    maybe (transportReceiveRawMessage env) pure =<< transportReceiveRawMessageMaybe env
-
-transportReceiveRawMessageMaybe :: Transport -> IO (Maybe BS.ByteString)
-transportReceiveRawMessageMaybe env =
+transportReceiveMessageMaybe :: Decoding msg => Transport -> IO (Maybe msg)
+transportReceiveMessageMaybe env =
     modifyMVar (tDecryptionCtx env) $ \decrypt -> do
         packets <- readMVar (tPacketsReceived env)
-        plainText <- decrypt packets
+        (bytesReceived, plainText) <- decrypt packets
         onReceive (tConfig env) plainText
-        modifyMVar_ (tPacketsReceived env) $ \pacs  -> pure $! pacs + 1
-        case interpreter decrypt plainText of
-            -- Transport layer messages shall not leave the transport layer.
-            -- Their effect is executed immediately and Nothing is returned.
-            Just m  -> (, Nothing) <$> m
-            Nothing -> pure (decrypt, Just plainText)
-    where
-        interpreter :: DecryptionContext -> BS.ByteString -> Maybe (IO DecryptionContext)
-        interpreter d plainText = f i0 <|> f i1 <|> f i2 <|> f i3 <|> f i4 <|> f i5 <|> f i6 <|> f i7
-            where
-                f i = i <$> runGet plainText
-                i0 :: Disconnected -> IO DecryptionContext
-                i0 (Disconnected r m _) = throwIO $ Disconnect Remote r (DisconnectMessage $ SBS.fromShort m)
-                i1 Debug             {} = pure d
-                i2 Ignore            {} = pure d
-                i3 Unimplemented     {} = pure d
-                i4 x@KexInit         {} = kexContinue env (Init x) >> pure d
-                i5 x@KexEcdhInit     {} = kexContinue env (EcdhInit x) >> pure d
-                i6 x@KexEcdhReply    {} = kexContinue env (EcdhReply x) >> pure d
-                i7 KexNewKeys        {} = readMVar (tDecryptionCtxNext env)
+        modifyMVar_ (tPacketsReceived env) $ \pacs -> pure $! pacs + 1
+        modifyMVar_ (tBytesReceived env) $ \bytes -> pure $! bytes + fromIntegral bytesReceived
+        -- Throw exception when this is a Disconnect message.
+        case runGet plainText of
+            Just (Disconnected r m _) -> throwIO $ Disconnect Remote r (DisconnectMessage $ SBS.fromShort m)
+            Nothing                   -> pure ()
+        -- In case this is a KexNewKeys message the next
+        -- available decryption context shall be activated.
+        decryptNext <- case runGet plainText of
+            Just KexNewKeys -> readMVar (tDecryptionCtxNext env)
+            Nothing         -> pure decrypt
+        -- Run effects of other Kex messages.
+        join $ runGetter plainText
+            $   (kexContinue env . Init <$> get)
+            <|> (kexContinue env . EcdhInit <$> get)
+            <|> (kexContinue env . EcdhReply <$> get)
+            <|> pure (pure ())
+        -- Try to decode message to the expected type (including transport messages!).
+        -- Otherwise return Nothing is this was a transport layer message.
+        -- Only throw exception if this message was neither
+        -- expected nor a transport layer message.
+        case runGetter plainText $ (Just <$> get)
+                <|> ((get :: Get Debug)         >> pure Nothing)
+                <|> ((get :: Get Ignore)        >> pure Nothing)
+                <|> ((get :: Get Unimplemented) >> pure Nothing)
+                <|> ((get :: Get KexInit)       >> pure Nothing)
+                <|> ((get :: Get KexEcdhInit)   >> pure Nothing)
+                <|> ((get :: Get KexEcdhReply)  >> pure Nothing)
+                <|> ((get :: Get KexNewKeys)    >> pure Nothing) of
+            Just mmsg -> pure (decryptNext, mmsg)
+            Nothing  -> throwIO $ exceptionUnexpectedMessage plainText
 
 -------------------------------------------------------------------------------
--- KEY EXCHANGE (SERVER) ------------------------------------------------------
+-- KEY EXCHANGE (SERVER)
 -------------------------------------------------------------------------------
 
 kexServerInitialize :: (DuplexStream stream, AuthAgent agent) => stream -> Transport -> agent -> IO SessionId
@@ -212,14 +235,13 @@ kexServerInitialize stream env agent = do
     cookie <- newCookie
     putMVar (tKexContinuation env) $ kexServerContinuation stream env cookie agent
     kexTrigger env
-    dontAcceptMessageUntilKexComplete
+    waitUntilKexComplete
     where
-        dontAcceptMessageUntilKexComplete = do
-            transportReceiveRawMessageMaybe env >>= \case
-                Just _  -> throwIO exceptionKexInvalidTransition
-                Nothing -> tryReadMVar (tSessionId env) >>= \case
-                    Nothing -> dontAcceptMessageUntilKexComplete
-                    Just sid -> pure sid
+        waitUntilKexComplete = transportReceiveMessageMaybe env >>= \case
+            Nothing -> waitUntilKexComplete
+            Just KexNewKeys -> tryReadMVar (tSessionId env) >>= \case
+                Nothing -> throwIO exceptionKexInvalidTransition
+                Just sid -> pure sid
 
 -- NB: Uses transportSendMessage to avoid rekeying-loop
 kexServerContinuation :: (DuplexStream stream, AuthAgent agent) => stream -> Transport -> Cookie -> agent -> KexContinuation
@@ -288,7 +310,7 @@ kexServerContinuation stream env cookie authAgent = serverKex0
                 mainKeySC : headerKeySC : _ = keys "D"
 
 -------------------------------------------------------------------------------
--- KEY EXCHANGE (CLIENT) ------------------------------------------------------
+-- KEY EXCHANGE (CLIENT)
 -------------------------------------------------------------------------------
 
 kexClientInitialize :: (DuplexStream stream) => stream -> Transport -> IO (SessionId, PublicKey)
@@ -297,16 +319,15 @@ kexClientInitialize stream env = do
     mHostKey <- newEmptyMVar
     putMVar (tKexContinuation env) $ kexClientContinuation stream env cookie mHostKey
     kexTrigger env
-    sid <- dontAcceptMessageUntilKexComplete
+    sid <- waitUntilKexComplete
     hostKey <- readMVar mHostKey -- Assertion: The host key is non-empty after key exchange
     pure (sid, hostKey)
     where
-        dontAcceptMessageUntilKexComplete = do
-            transportReceiveRawMessageMaybe env >>= \case
-                Just _  -> throwIO exceptionKexInvalidTransition
-                Nothing -> tryReadMVar (tSessionId env) >>= \case
-                    Nothing -> dontAcceptMessageUntilKexComplete
-                    Just sid -> pure sid
+        waitUntilKexComplete = transportReceiveMessageMaybe env >>= \case
+            Nothing -> waitUntilKexComplete
+            Just KexNewKeys -> tryReadMVar (tSessionId env) >>= \case
+                Nothing -> throwIO exceptionKexInvalidTransition
+                Just sid -> pure sid
 
 -- NB: Uses transportSendMessage to avoid rekeying-loop
 kexClientContinuation :: (DuplexStream stream) => stream -> Transport  -> Cookie -> MVar PublicKey -> KexContinuation
@@ -381,7 +402,7 @@ kexClientContinuation stream env cookie mHostKey = clientKex0
                 mainKeySC : headerKeySC : _ = keys "D"
 
 -------------------------------------------------------------------------------
--- KEY EXCHANGE (GENERIC) -----------------------------------------------------
+-- KEY EXCHANGE (GENERIC)
 -------------------------------------------------------------------------------
 
 kexTrigger :: Transport -> IO ()
@@ -393,9 +414,9 @@ kexIfNecessary env = do
     kexRekeyingRequired env >>= \case
         False -> pure ()
         True -> do
-            void $ swapMVar (tLastRekeyingTime         env) =<< getEpochSeconds
-            void $ swapMVar (tLastRekeyingDataSent     env) =<< readMVar (tBytesSent     env)
-            void $ swapMVar (tLastRekeyingDataReceived env) =<< readMVar (tBytesReceived env)
+            void $ swapMVar (tRekeyingLastTime         env) =<< getEpochSeconds
+            void $ swapMVar (tRekeyingLastDataSent     env) =<< readMVar (tBytesSent     env)
+            void $ swapMVar (tRekeyingLastDataReceived env) =<< readMVar (tBytesReceived env)
             kexTrigger env
 
 kexContinue :: Transport -> KexStep -> IO ()
@@ -433,11 +454,11 @@ kexInit config cookie = KexInit
 kexRekeyingRequired :: Transport -> IO Bool
 kexRekeyingRequired env = do
     tNow <- getEpochSeconds
-    t    <- readMVar (tLastRekeyingTime env)
+    t    <- readMVar (tRekeyingLastTime env)
     sNow <- readMVar (tBytesSent env)
-    s    <- readMVar (tLastRekeyingDataSent env)
+    s    <- readMVar (tRekeyingLastDataSent env)
     rNow <- readMVar (tBytesReceived env)
-    r    <- readMVar (tLastRekeyingDataReceived env)
+    r    <- readMVar (tRekeyingLastDataReceived env)
     pure $ t + interval  < tNow
         || s + threshold < sNow
         || r + threshold < rNow
@@ -495,7 +516,7 @@ kexWithVerifiedSignature key hash sig action = case (key, sig) of
     _ -> throwIO exceptionKexInvalidSignature
 
 -------------------------------------------------------------------------------
--- UTIL -----------------------------------------------------------------------
+-- UTIL
 -------------------------------------------------------------------------------
 
 sendVersion :: (OutputStream stream) => stream -> Version -> IO ()
@@ -552,6 +573,7 @@ newTransport config stream cv sv = do
     xDecryptionCtxNext   <- newMVar (plainDecryptionContext stream)
     xKexContinuation     <- newEmptyMVar
     xSessionId           <- newEmptyMVar
+    xRekeyCounter        <- newMVar 0
     xRekeyTime           <- newMVar =<< getEpochSeconds
     xRekeySent           <- newMVar 0
     xRekeyRcvd           <- newMVar 0
@@ -569,7 +591,8 @@ newTransport config stream cv sv = do
         , tDecryptionCtxNext        = xDecryptionCtxNext
         , tKexContinuation          = xKexContinuation
         , tSessionId                = xSessionId
-        , tLastRekeyingTime         = xRekeyTime
-        , tLastRekeyingDataSent     = xRekeySent
-        , tLastRekeyingDataReceived = xRekeyRcvd
+        , tRekeyingCounter          = xRekeyCounter
+        , tRekeyingLastTime         = xRekeyTime
+        , tRekeyingLastDataSent     = xRekeySent
+        , tRekeyingLastDataReceived = xRekeyRcvd
         }
