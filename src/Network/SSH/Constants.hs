@@ -11,8 +11,8 @@ import           Network.SSH.Message
 
 import qualified Paths_hssh                    as Library
 
-version :: Version
-version = Version ("SSH-2.0-hssh_" <> v)
+defaultVersion :: Version
+defaultVersion = Version ("SSH-2.0-hssh_" <> v)
   where
     v = SBS.toShort $ BS.pack $ fmap (fromIntegral . fromEnum) (V.showVersion Library.version)
 

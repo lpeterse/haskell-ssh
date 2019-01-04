@@ -19,6 +19,7 @@ tests = testGroup "Network.SSH.Transport"
     [ test01
     , test02
     , test03
+    , test033
     , test04
     , test05
     , test06
@@ -50,6 +51,25 @@ test02 = testCase "client shall return server host key after key exchange" $ do
     where
         runServer stream config agent = withServerTransport config stream agent $ \_ _ -> pure ()
         runClient stream config  = withClientTransport config stream $ \_ _ hk -> pure hk
+
+test033 :: TestTree
+test033 = testCase "client and server version shall be reported correctly" $ do
+    (clientSocket, serverSocket) <- newSocketPair
+    sk <- Ed25519.generateSecretKey
+    let pk = Ed25519.toPublic sk
+    let agent = KeyPairEd25519 pk sk
+    withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
+            (Right st, Right ct) <- waitBoth server client
+            assertEqual "client version on client" (version clientConfig) (clientVersion ct)
+            assertEqual "server version on client" (version serverConfig) (serverVersion ct)
+            assertEqual "client version on server" (version clientConfig) (clientVersion st)
+            assertEqual "server version on server" (version serverConfig) (serverVersion st)
+    where
+        runServer stream config agent = withServerTransport config stream agent $ \t _ -> pure t
+        runClient stream config  = withClientTransport config stream $ \t _ _ -> pure t
+        serverConfig = def { version = Version "SSH-2.0-hssh_server" }
+        clientConfig = def { version = Version "SSH-2.0-hssh_client" }
 
 test03 :: TestTree
 test03 = testCase "server sends first message, client receives" $ do

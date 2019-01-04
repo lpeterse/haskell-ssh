@@ -7,6 +7,8 @@ module Network.SSH.Transport
     ( Transport()
     , TransportConfig (..)
     , Disconnected (..)
+    , clientVersion
+    , serverVersion
     , withClientTransport
     , withServerTransport
     , plainEncryptionContext
@@ -70,7 +72,8 @@ data Transport
 
 data TransportConfig
     = TransportConfig
-    { serverHostKeyAlgorithms :: NEL.NonEmpty HostKeyAlgorithm
+    { version                 :: Version
+    , serverHostKeyAlgorithms :: NEL.NonEmpty HostKeyAlgorithm
     , kexAlgorithms           :: NEL.NonEmpty KeyExchangeAlgorithm
     , encryptionAlgorithms    :: NEL.NonEmpty EncryptionAlgorithm
     , maxTimeBeforeRekey      :: Word64
@@ -81,7 +84,8 @@ data TransportConfig
 
 instance Default TransportConfig where
     def = TransportConfig
-        { serverHostKeyAlgorithms  = pure SshEd25519
+        { version                  = defaultVersion
+        , serverHostKeyAlgorithms  = pure SshEd25519
         , kexAlgorithms            = pure Curve25519Sha256AtLibsshDotOrg
         , encryptionAlgorithms     = pure Chacha20Poly1305AtOpensshDotCom
         , maxTimeBeforeRekey       = 3600
@@ -112,13 +116,9 @@ withClientTransport ::
 withClientTransport config stream runWith = withFinalExceptionHandler $ do
     -- The client starts by sending its own version and then waits
     -- for the server to respond.
-    clientVersion <- sendVersion stream
-    serverVersion <- receiveVersion stream
-    env <- newTransport
-        config
-        stream
-        clientVersion
-        serverVersion
+    sendVersion stream (version config)
+    sv <- receiveVersion stream
+    env <- newTransport config stream (version config) sv
     withRespondingExceptionHandler env $ do
         (sessionId, hostKey) <- kexClientInitialize env
         a <- runWith env sessionId hostKey
@@ -133,13 +133,9 @@ withServerTransport config stream agent runWith = withFinalExceptionHandler $ do
     -- Receive the peer version and reject immediately if this
     -- is not an SSH connection attempt (before allocating
     -- any more resources); respond with the server version string.
-    clientVersion <- receiveVersion stream
-    serverVersion <- sendVersion stream
-    env <- newTransport
-        config
-        stream
-        clientVersion
-        serverVersion
+    cv <- receiveVersion stream
+    sendVersion stream (version config)
+    env <- newTransport config stream cv (version config)
     withRespondingExceptionHandler env $ do
         sessionId <- kexServerInitialize env agent
         a <- runWith env sessionId
@@ -487,13 +483,22 @@ kexWithVerifiedSignature key hash sig action = case (key, sig) of
     _ -> throwIO exceptionKexInvalidSignature
 
 -------------------------------------------------------------------------------
+-- PUBLIC FUNCTIONS ON TRANSPORT ----------------------------------------------
+-------------------------------------------------------------------------------
+
+clientVersion :: Transport -> Version
+clientVersion = tClientVersion
+
+serverVersion :: Transport -> Version
+serverVersion = tServerVersion
+
+-------------------------------------------------------------------------------
 -- UTIL -----------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
-sendVersion :: (OutputStream stream) => stream -> IO Version
-sendVersion stream = do
-    sendAll stream $ runPut $ put version
-    pure version
+sendVersion :: (OutputStream stream) => stream -> Version -> IO ()
+sendVersion stream v = do
+    sendAll stream $ runPut $ put v
 
 -- The maximum length of the version string is 255 chars including CR+LF.
 -- The version string is usually short and transmitted within
@@ -538,7 +543,7 @@ newTransport :: DuplexStream stream
     -> Version
     -> Version
     -> IO Transport
-newTransport config stream clientVersion serverVersion = do
+newTransport config stream cv sv = do
     xBytesSent           <- newMVar 0
     xPacketsSent         <- newMVar 0
     xBytesReceived       <- newMVar 0
@@ -555,8 +560,8 @@ newTransport config stream clientVersion serverVersion = do
     pure Transport
         { tStream                   = stream
         , tConfig                   = config
-        , tClientVersion            = clientVersion
-        , tServerVersion            = serverVersion
+        , tClientVersion            = cv
+        , tServerVersion            = sv
         , tBytesSent                = xBytesSent
         , tPacketsSent              = xPacketsSent
         , tBytesReceived            = xBytesReceived
