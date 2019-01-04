@@ -22,10 +22,11 @@ tests = testGroup "Network.SSH.Transport"
     , test04
     , test05
     , test06
+    , test07
     ]
 
 test01 :: TestTree
-test01 = testCase "key exchange yields same session id on both sides" $ do
+test01 = testCase "key exchange shall yield same session id on both sides" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server ->
@@ -33,11 +34,25 @@ test01 = testCase "key exchange yields same session id on both sides" $ do
             (Right sid1, Right sid2) <- waitBoth server client
             assertEqual "session ids" sid1 sid2
     where
-        runServer stream config agent = withTransport config (Just agent) stream (const pure)
-        runClient stream config  = withTransport config (Nothing :: Maybe KeyPair) stream (const pure)
+        runServer stream config agent = withServerTransport config stream agent (const pure)
+        runClient stream config  = withClientTransport config stream $ \_ sid _ -> pure sid
 
 test02 :: TestTree
-test02 = testCase "server sends first message, client receives" $ do
+test02 = testCase "client shall return server host key after key exchange" $ do
+    (clientSocket, serverSocket) <- newSocketPair
+    sk <- Ed25519.generateSecretKey
+    let pk = Ed25519.toPublic sk
+    let agent = KeyPairEd25519 pk sk
+    withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket def `finally` close clientSocket) $ \client -> do
+            (Right (), Right pk') <- waitBoth server client
+            assertEqual "server host key" (PublicKeyEd25519 pk) pk'
+    where
+        runServer stream config agent = withServerTransport config stream agent $ \_ _ -> pure ()
+        runClient stream config  = withClientTransport config stream $ \_ _ hk -> pure hk
+
+test03 :: TestTree
+test03 = testCase "server sends first message, client receives" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server ->
@@ -46,45 +61,45 @@ test02 = testCase "server sends first message, client receives" $ do
             assertEqual "s" (Right ()) s
             assertEqual "c" (Right "ABCD") c
     where
-        runServer stream config agent = withTransport config (Just agent) stream $ \transport _ -> do
+        runServer stream config agent = withServerTransport config stream agent $ \transport _ -> do
             sendMessage transport (ChannelData (ChannelId 0) "ABCD")
             pure ()
-        runClient stream config  = withTransport config (Nothing :: Maybe KeyPair) stream $ \transport _ -> do
+        runClient stream config  = withClientTransport config stream $ \transport _ _ -> do
             ChannelData _ msg <- receiveMessage transport
             pure msg
 
-test03 :: TestTree
-test03 = testCase "client sends incorrect version string" $ do
+test04 :: TestTree
+test04 = testCase "client sends incorrect version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket "GET / HTTP/1.1\n\n"
         wait server >>= assertEqual "res" (Left exceptionProtocolVersionNotSupported)
     where
-        runServer stream config agent = withTransport config (Just agent) stream (const pure)
+        runServer stream config agent = withServerTransport config stream agent (const pure)
 
-test04 :: TestTree
-test04 = testCase "client sends incomplete version string" $ do
+test05 :: TestTree
+test05 = testCase "client sends incomplete version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket "SSH-2.0-OpenSSH_4.3"
         wait server >>= assertEqual "res" (Left exceptionProtocolVersionNotSupported)
     where
-        runServer stream config agent = withTransport config (Just agent) stream (const pure)
+        runServer stream config agent = withServerTransport config stream agent (const pure)
 
-test05 :: TestTree
-test05 = testCase "client disconnects hard before sending version string" $ do
+test06 :: TestTree
+test06 = testCase "client disconnects hard before sending version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         close clientSocket
         wait server >>= assertEqual "res" (Left exceptionConnectionLost)
     where
-        runServer stream config agent = withTransport config (Just agent) stream (const pure)
+        runServer stream config agent = withServerTransport config stream agent (const pure)
 
-test06 :: TestTree
-test06 = testCase "client disconnects gracefully after sending version string" $ do
+test07 :: TestTree
+test07 = testCase "client disconnects gracefully after sending version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
     agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
@@ -92,7 +107,7 @@ test06 = testCase "client disconnects gracefully after sending version string" $
         void $ plainEncryptionContext clientSocket 0 (put $ Disconnected DisconnectByApplication "ABC" mempty)
         wait server >>= assertEqual "res" (Left $ Disconnect Remote DisconnectByApplication "ABC")
     where
-        runServer stream config agent = withTransport config (Just agent) stream (const pure)
+        runServer stream config agent = withServerTransport config stream agent (const pure)
 
 {-
 assertCorrectSignature ::

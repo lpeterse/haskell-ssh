@@ -131,7 +131,6 @@ class MessageStream a where
     sendMessage :: forall msg. Encoding msg => a -> msg -> IO ()
     receiveMessage :: forall msg. Decoding msg => a -> IO msg
 
-
 data Disconnected
     = Disconnected
     { disconnectedReason      :: DisconnectReason
@@ -387,7 +386,6 @@ data PtySettings
     , ptyHeightPixels :: Word32
     , ptyModes        :: SBS.ShortByteString
     } deriving (Eq, Show)
-
 
 type ChannelWindowSize = Word32
 type ChannelPacketSize = Word32
@@ -858,7 +856,7 @@ instance Decoding AuthMethod where
         other -> pure (AuthOther other)
 
 putPublicKey :: B.Builder b => PublicKey -> b
-putPublicKey k = B.word32BE (fromIntegral $ B.length $ f ()) <> (f ())
+putPublicKey k = B.word32BE (fromIntegral $ B.length $ f ()) <> f ()
     where
         f () = putName (name k) <> case k of
             PublicKeyEd25519 key -> putEd25519PublicKey key
@@ -872,7 +870,7 @@ getPublicKey = getFramed $ getName >>= \case
     other              -> PublicKeyOther <$> pure other
 
 putSignature :: B.Builder b => Signature -> b 
-putSignature s = B.word32BE (fromIntegral $ B.length $ f ()) <> (f ())
+putSignature s = B.word32BE (fromIntegral $ B.length $ f ()) <> f ()
     where
         f () = putName (name s) <> case s of
             SignatureEd25519 sig -> putEd25519Signature sig

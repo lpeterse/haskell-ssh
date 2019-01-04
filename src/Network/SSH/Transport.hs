@@ -7,7 +7,8 @@ module Network.SSH.Transport
     ( Transport()
     , TransportConfig (..)
     , Disconnected (..)
-    , withTransport
+    , withClientTransport
+    , withServerTransport
     , plainEncryptionContext
     , plainDecryptionContext
     , newChaCha20Poly1305EncryptionContext
@@ -47,10 +48,9 @@ import           Network.SSH.Name
 import           Network.SSH.Stream
 
 data Transport
-    = forall stream agent. (DuplexStream stream, AuthAgent agent) => TransportEnv
+    = forall stream. (DuplexStream stream) => Transport
     { tStream                   :: stream
     , tConfig                   :: TransportConfig
-    , tAuthAgent                :: Maybe agent
     , tClientVersion            :: Version
     , tServerVersion            :: Version
     , tBytesSent                :: MVar Word64
@@ -105,76 +105,46 @@ instance MessageStream Transport where
         kexIfNecessary t
         transportReceiveMessage t
 
-withTransport ::
-    (DuplexStream stream, AuthAgent agent) =>
-    TransportConfig -> Maybe agent -> stream ->
-    (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
-withTransport config magent stream runWith = withFinalExceptionHandler $ do
-    (clientVersion, serverVersion) <- case magent of
-        -- Receive the peer version and reject immediately if this
-        -- is not an SSH connection attempt (before allocating
-        -- any more resources); respond with the server version string.
-        Just {} -> do
-            cv <- receiveVersion stream
-            sv <- sendVersion stream
-            pure (cv, sv)
-        -- Start with sending local version and then wait for response.
-        Nothing -> do
-            cv <- sendVersion stream
-            sv <- receiveVersion stream
-            pure (cv, sv)
-    xBytesSent           <- newMVar 0
-    xPacketsSent         <- newMVar 0
-    xBytesReceived       <- newMVar 0
-    xPacketsReceived     <- newMVar 0
-    xEncryptionCtx       <- newMVar (plainEncryptionContext stream)
-    xEncryptionCtxNext   <- newMVar (plainEncryptionContext stream)
-    xDecryptionCtx       <- newMVar (plainDecryptionContext stream)
-    xDecryptionCtxNext   <- newMVar (plainDecryptionContext stream)
-    xKexContinuation     <- newEmptyMVar
-    xSessionId           <- newEmptyMVar
-    xRekeyTime           <- newMVar =<< getEpochSeconds
-    xRekeySent           <- newMVar 0
-    xRekeyRcvd           <- newMVar 0
-    let env = TransportEnv
-            { tStream                   = stream
-            , tConfig                   = config
-            , tAuthAgent                = magent
-            , tClientVersion            = clientVersion
-            , tServerVersion            = serverVersion
-            , tBytesSent                = xBytesSent
-            , tPacketsSent              = xPacketsSent
-            , tBytesReceived            = xBytesReceived
-            , tPacketsReceived          = xPacketsReceived
-            , tEncryptionCtx            = xEncryptionCtx
-            , tEncryptionCtxNext        = xEncryptionCtxNext
-            , tDecryptionCtx            = xDecryptionCtx
-            , tDecryptionCtxNext        = xDecryptionCtxNext
-            , tKexContinuation          = xKexContinuation
-            , tSessionId                = xSessionId
-            , tLastRekeyingTime         = xRekeyTime
-            , tLastRekeyingDataSent     = xRekeySent
-            , tLastRekeyingDataReceived = xRekeyRcvd
-            }
+withClientTransport :: 
+    (DuplexStream stream) =>
+    TransportConfig -> stream ->
+    (Transport -> SessionId -> PublicKey -> IO a) -> IO (Either Disconnect a)
+withClientTransport config stream runWith = withFinalExceptionHandler $ do
+    -- The client starts by sending its own version and then waits
+    -- for the server to respond.
+    clientVersion <- sendVersion stream
+    serverVersion <- receiveVersion stream
+    env <- newTransport
+        config
+        stream
+        clientVersion
+        serverVersion
     withRespondingExceptionHandler env $ do
-        sessionId <- kexInitialize env
+        (sessionId, hostKey) <- kexClientInitialize env
+        a <- runWith env sessionId hostKey
+        sendMessage env (Disconnected DisconnectByApplication mempty mempty)
+        pure a
+
+withServerTransport :: 
+    (DuplexStream stream, AuthAgent agent) =>
+    TransportConfig -> stream -> agent ->
+    (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
+withServerTransport config stream agent runWith = withFinalExceptionHandler $ do
+    -- Receive the peer version and reject immediately if this
+    -- is not an SSH connection attempt (before allocating
+    -- any more resources); respond with the server version string.
+    clientVersion <- receiveVersion stream
+    serverVersion <- sendVersion stream
+    env <- newTransport
+        config
+        stream
+        clientVersion
+        serverVersion
+    withRespondingExceptionHandler env $ do
+        sessionId <- kexServerInitialize env agent
         a <- runWith env sessionId
         sendMessage env (Disconnected DisconnectByApplication mempty mempty)
         pure a
-    where
-        withFinalExceptionHandler :: IO (Either Disconnect a) -> IO (Either Disconnect a)
-        withFinalExceptionHandler =
-            handle $ \e -> maybe (throwIO e) (pure . Left) (fromException e)
-
-        withRespondingExceptionHandler :: Transport -> IO a -> IO (Either Disconnect a)
-        withRespondingExceptionHandler env run = (Right <$> run) `catch` \e-> case e of
-            Disconnect _ DisconnectConnectionLost _ -> pure (Left e)
-            Disconnect Local r (DisconnectMessage m) ->
-                withAsync (threadDelay (1000*1000)) $ \thread1 ->
-                withAsync (transportSendMessage env $ Disconnected r (SBS.toShort m) mempty) $ \thread2 -> do
-                    atomically $ void (waitCatchSTM thread1) <|> void (waitCatchSTM thread2)
-                    pure (Left e)
-            _ -> pure (Left e)
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
 transportSendMessage env msg =
@@ -226,33 +196,13 @@ transportReceiveRawMessageMaybe env =
                 i7 KexNewKeys        {} = readMVar (tDecryptionCtxNext env)
 
 -------------------------------------------------------------------------------
--- CRYPTO ---------------------------------------------------------------------
+-- KEY EXCHANGE (SERVER) ------------------------------------------------------
 -------------------------------------------------------------------------------
 
-setChaCha20Poly1305Context :: Transport -> KeyStreams -> IO ()
-setChaCha20Poly1305Context env@TransportEnv { tStream = stream, tAuthAgent = agent } (KeyStreams keys) = do
-    modifyMVar_ (tEncryptionCtxNext env) $ const $ case agent of
-        Just {} -> newChaCha20Poly1305EncryptionContext stream headerKeySC mainKeySC
-        Nothing -> newChaCha20Poly1305EncryptionContext stream headerKeyCS mainKeyCS
-    modifyMVar_ (tDecryptionCtxNext env) $ const $ case agent of
-        Just {} -> newChaCha20Poly1305DecryptionContext stream headerKeyCS mainKeyCS
-        Nothing -> newChaCha20Poly1305DecryptionContext stream headerKeySC mainKeySC
-    where
-    -- Derive the required encryption/decryption keys.
-    -- The integrity keys etc. are not needed with chacha20.
-    mainKeyCS : headerKeyCS : _ = keys "C"
-    mainKeySC : headerKeySC : _ = keys "D"
-
--------------------------------------------------------------------------------
--- KEY EXCHANGE ---------------------------------------------------------------
--------------------------------------------------------------------------------
-
-kexInitialize :: Transport -> IO SessionId
-kexInitialize env@TransportEnv { tAuthAgent = agent } = do
+kexServerInitialize :: (AuthAgent agent) => Transport -> agent -> IO SessionId
+kexServerInitialize env agent = do
     cookie <- newCookie
-    putMVar (tKexContinuation env) $ case agent of
-        Just aa -> kexServerContinuation env cookie aa
-        Nothing -> kexClientContinuation env cookie
+    putMVar (tKexContinuation env) $ kexServerContinuation env cookie agent
     kexTrigger env
     dontAcceptMessageUntilKexComplete
     where
@@ -263,86 +213,9 @@ kexInitialize env@TransportEnv { tAuthAgent = agent } = do
                     Nothing -> dontAcceptMessageUntilKexComplete
                     Just sid -> pure sid
 
-kexTrigger :: Transport -> IO ()
-kexTrigger env = do
-    modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f Nothing
-
-kexIfNecessary :: Transport -> IO ()
-kexIfNecessary env = do
-    kexRekeyingRequired env >>= \case
-        False -> pure ()
-        True -> do
-            void $ swapMVar (tLastRekeyingTime         env) =<< getEpochSeconds
-            void $ swapMVar (tLastRekeyingDataSent     env) =<< readMVar (tBytesSent     env)
-            void $ swapMVar (tLastRekeyingDataReceived env) =<< readMVar (tBytesReceived env)
-            kexTrigger env
-
-kexContinue :: Transport -> KexStep -> IO ()
-kexContinue env step = do
-    modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f (Just step)
-
--- NB: Uses transportSendMessage to avoid rekeying-loop
-kexClientContinuation :: Transport -> Cookie -> KexContinuation
-kexClientContinuation env cookie = clientKex0
-    where
-        clientKex0 :: KexContinuation
-        clientKex0 = KexContinuation $ \case
-            Nothing -> do
-                transportSendMessage env cki
-                pure (clientKex1 cki)
-            Just (Init ski) -> do
-                cekSecret <- Curve25519.generateSecretKey
-                let cek = Curve25519.toPublic cekSecret
-                transportSendMessage env cki
-                transportSendMessage env (KexEcdhInit cek)
-                pure (clientKex2 cki ski cek cekSecret)
-            _ -> throwIO exceptionKexInvalidTransition
-            where
-                cki = kexInit (tConfig env) cookie
-
-        clientKex1 :: KexInit -> KexContinuation
-        clientKex1 cki = KexContinuation $ \case
-            Nothing ->
-                pure (clientKex1 cki)
-            Just (Init ski) -> do
-                cekSecret <- Curve25519.generateSecretKey
-                let cek = Curve25519.toPublic cekSecret
-                transportSendMessage env (KexEcdhInit cek)
-                pure (clientKex2 cki ski cek cekSecret)
-            _ -> throwIO exceptionKexInvalidTransition
-
-        clientKex2 :: KexInit -> KexInit -> Curve25519.PublicKey -> Curve25519.SecretKey -> KexContinuation
-        clientKex2 cki ski cek cekSecret = KexContinuation $ \case
-            Nothing ->
-                pure (clientKex2 cki ski cek cekSecret)
-            Just (EcdhReply ecdhReply) -> do
-                consumeEcdhReply cki ski cek cekSecret ecdhReply
-                pure clientKex0
-            _ -> throwIO exceptionKexInvalidTransition
-
-        consumeEcdhReply :: KexInit -> KexInit -> Curve25519.PublicKey -> Curve25519.SecretKey -> KexEcdhReply -> IO ()
-        consumeEcdhReply cki ski cek cekSecret ecdhReply = do
-            kexAlgorithm   <- kexCommonKexAlgorithm ski cki
-            encAlgorithmCS <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsClientToServer
-            encAlgorithmSC <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsServerToClient
-            case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
-                (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
-                    kexWithVerifiedSignature shk hash sig $ do
-                        sid <- trySetSessionId env (SessionId $ SBS.toShort $ BA.convert hash)
-                        setChaCha20Poly1305Context env $ kexKeys sec hash sid
-                        transportSendMessage env KexNewKeys
-            where
-                cv   = tClientVersion env
-                sv   = tServerVersion env
-                shk  = kexServerHostKey ecdhReply
-                sek  = kexServerEphemeralKey ecdhReply
-                sec  = Curve25519.dh sek cekSecret
-                sig  = kexHashSignature ecdhReply
-                hash = kexHash cv sv cki ski shk cek sek sec
-
 -- NB: Uses transportSendMessage to avoid rekeying-loop
 kexServerContinuation :: AuthAgent agent => Transport -> Cookie -> agent -> KexContinuation
-kexServerContinuation env cookie authAgent = serverKex0
+kexServerContinuation env@Transport { tStream = stream } cookie authAgent = serverKex0
     where
         serverKex0 :: KexContinuation
         serverKex0 = KexContinuation $ \case
@@ -390,9 +263,136 @@ kexServerContinuation env cookie authAgent = serverKex0
                             hash = kexHash cv sv cki ski shk cek sek sec
                         sig <- maybe (throwIO exceptionKexNoSignature) pure =<< sign authAgent shk hash
                         sid <- trySetSessionId env (SessionId $ SBS.toShort $ BA.convert hash)
-                        setChaCha20Poly1305Context env $ kexKeys sec hash sid
+                        setChaCha20Poly1305Context $ kexKeys sec hash sid
                         transportSendMessage env (KexEcdhReply shk sek sig)
                         transportSendMessage env KexNewKeys
+
+        setChaCha20Poly1305Context :: KeyStreams -> IO ()
+        setChaCha20Poly1305Context (KeyStreams keys) = do
+            modifyMVar_ (tEncryptionCtxNext env) $ const
+                $ newChaCha20Poly1305EncryptionContext stream headerKeySC mainKeySC
+            modifyMVar_ (tDecryptionCtxNext env) $ const
+                $ newChaCha20Poly1305DecryptionContext stream headerKeyCS mainKeyCS
+            where
+                -- Derive the required encryption/decryption keys.
+                -- The integrity keys etc. are not needed with chacha20.
+                mainKeyCS : headerKeyCS : _ = keys "C"
+                mainKeySC : headerKeySC : _ = keys "D"
+
+-------------------------------------------------------------------------------
+-- KEY EXCHANGE (CLIENT) ------------------------------------------------------
+-------------------------------------------------------------------------------
+
+kexClientInitialize :: Transport -> IO (SessionId, PublicKey)
+kexClientInitialize env = do
+    cookie <- newCookie
+    mHostKey <- newEmptyMVar
+    putMVar (tKexContinuation env) $ kexClientContinuation env cookie mHostKey
+    kexTrigger env
+    sid <- dontAcceptMessageUntilKexComplete
+    hostKey <- readMVar mHostKey -- Assertion: The host key is non-empty after key exchange
+    pure (sid, hostKey)
+    where
+        dontAcceptMessageUntilKexComplete = do
+            transportReceiveRawMessageMaybe env >>= \case
+                Just _  -> throwIO exceptionKexInvalidTransition
+                Nothing -> tryReadMVar (tSessionId env) >>= \case
+                    Nothing -> dontAcceptMessageUntilKexComplete
+                    Just sid -> pure sid
+
+-- NB: Uses transportSendMessage to avoid rekeying-loop
+kexClientContinuation :: Transport -> Cookie -> MVar PublicKey -> KexContinuation
+kexClientContinuation env@Transport { tStream = stream } cookie mHostKey = clientKex0
+    where
+        clientKex0 :: KexContinuation
+        clientKex0 = KexContinuation $ \case
+            Nothing -> do
+                transportSendMessage env cki
+                pure (clientKex1 cki)
+            Just (Init ski) -> do
+                cekSecret <- Curve25519.generateSecretKey
+                let cek = Curve25519.toPublic cekSecret
+                transportSendMessage env cki
+                transportSendMessage env (KexEcdhInit cek)
+                pure (clientKex2 cki ski cek cekSecret)
+            _ -> throwIO exceptionKexInvalidTransition
+            where
+                cki = kexInit (tConfig env) cookie
+
+        clientKex1 :: KexInit -> KexContinuation
+        clientKex1 cki = KexContinuation $ \case
+            Nothing ->
+                pure (clientKex1 cki)
+            Just (Init ski) -> do
+                cekSecret <- Curve25519.generateSecretKey
+                let cek = Curve25519.toPublic cekSecret
+                transportSendMessage env (KexEcdhInit cek)
+                pure (clientKex2 cki ski cek cekSecret)
+            _ -> throwIO exceptionKexInvalidTransition
+
+        clientKex2 :: KexInit -> KexInit -> Curve25519.PublicKey -> Curve25519.SecretKey -> KexContinuation
+        clientKex2 cki ski cek cekSecret = KexContinuation $ \case
+            Nothing ->
+                pure (clientKex2 cki ski cek cekSecret)
+            Just (EcdhReply ecdhReply) -> do
+                consumeEcdhReply cki ski cek cekSecret ecdhReply
+                pure clientKex0
+            _ -> throwIO exceptionKexInvalidTransition
+
+        consumeEcdhReply :: KexInit -> KexInit -> Curve25519.PublicKey -> Curve25519.SecretKey -> KexEcdhReply -> IO ()
+        consumeEcdhReply cki ski cek cekSecret ecdhReply = do
+            kexAlgorithm   <- kexCommonKexAlgorithm ski cki
+            encAlgorithmCS <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsClientToServer
+            encAlgorithmSC <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsServerToClient
+            case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
+                (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
+                    kexWithVerifiedSignature shk hash sig $ do
+                        sid <- trySetSessionId env (SessionId $ SBS.toShort $ BA.convert hash)
+                        putMVar mHostKey shk -- FIXME: Swap and compare!
+                        setChaCha20Poly1305Context $ kexKeys sec hash sid
+                        transportSendMessage env KexNewKeys
+            where
+                cv   = tClientVersion env
+                sv   = tServerVersion env
+                shk  = kexServerHostKey ecdhReply
+                sek  = kexServerEphemeralKey ecdhReply
+                sec  = Curve25519.dh sek cekSecret
+                sig  = kexHashSignature ecdhReply
+                hash = kexHash cv sv cki ski shk cek sek sec
+
+        setChaCha20Poly1305Context :: KeyStreams -> IO ()
+        setChaCha20Poly1305Context (KeyStreams keys) = do
+            modifyMVar_ (tEncryptionCtxNext env) $ const
+                $ newChaCha20Poly1305EncryptionContext stream headerKeyCS mainKeyCS
+            modifyMVar_ (tDecryptionCtxNext env) $ const
+                $ newChaCha20Poly1305DecryptionContext stream headerKeySC mainKeySC
+            where
+                -- Derive the required encryption/decryption keys.
+                -- The integrity keys etc. are not needed with chacha20.
+                mainKeyCS : headerKeyCS : _ = keys "C"
+                mainKeySC : headerKeySC : _ = keys "D"
+
+-------------------------------------------------------------------------------
+-- KEY EXCHANGE (GENERIC) -----------------------------------------------------
+-------------------------------------------------------------------------------
+
+kexTrigger :: Transport -> IO ()
+kexTrigger env = do
+    modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f Nothing
+
+kexIfNecessary :: Transport -> IO ()
+kexIfNecessary env = do
+    kexRekeyingRequired env >>= \case
+        False -> pure ()
+        True -> do
+            void $ swapMVar (tLastRekeyingTime         env) =<< getEpochSeconds
+            void $ swapMVar (tLastRekeyingDataSent     env) =<< readMVar (tBytesSent     env)
+            void $ swapMVar (tLastRekeyingDataReceived env) =<< readMVar (tBytesReceived env)
+            kexTrigger env
+
+kexContinue :: Transport -> KexStep -> IO ()
+kexContinue env step = do
+    modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f (Just step)
 
 kexCommonKexAlgorithm :: KexInit -> KexInit -> IO KeyExchangeAlgorithm
 kexCommonKexAlgorithm ski cki = case kexKexAlgorithms cki `intersect` kexKexAlgorithms ski of
@@ -441,12 +441,6 @@ kexRekeyingRequired env = do
     -- nonce reuse!
     interval  = min (maxTimeBeforeRekey $ tConfig env) 3600
     threshold = min (maxDataBeforeRekey $ tConfig env) (1024 * 1024 * 1024)
-
-trySetSessionId :: Transport -> SessionId -> IO SessionId
-trySetSessionId env sidDef =
-    tryReadMVar (tSessionId env) >>= \case
-        Nothing  -> putMVar (tSessionId env) sidDef >> pure sidDef
-        Just sid -> pure sid
 
 kexHash ::
     Version ->               -- client version string
@@ -517,3 +511,63 @@ receiveVersion stream = do
 
 getEpochSeconds :: IO Word64
 getEpochSeconds = (`div` 1000000000) <$> getMonotonicTimeNSec
+
+trySetSessionId :: Transport -> SessionId -> IO SessionId
+trySetSessionId env sidDef =
+    tryReadMVar (tSessionId env) >>= \case
+        Nothing  -> putMVar (tSessionId env) sidDef >> pure sidDef
+        Just sid -> pure sid
+
+withFinalExceptionHandler :: IO (Either Disconnect a) -> IO (Either Disconnect a)
+withFinalExceptionHandler =
+    handle $ \e -> maybe (throwIO e) (pure . Left) (fromException e)
+
+withRespondingExceptionHandler :: Transport -> IO a -> IO (Either Disconnect a)
+withRespondingExceptionHandler env run = (Right <$> run) `catch` \e-> case e of
+    Disconnect _ DisconnectConnectionLost _ -> pure (Left e)
+    Disconnect Local r (DisconnectMessage m) ->
+        withAsync (threadDelay (1000*1000)) $ \thread1 ->
+        withAsync (transportSendMessage env $ Disconnected r (SBS.toShort m) mempty) $ \thread2 -> do
+            atomically $ void (waitCatchSTM thread1) <|> void (waitCatchSTM thread2)
+            pure (Left e)
+    _ -> pure (Left e)
+
+newTransport :: DuplexStream stream
+    => TransportConfig
+    -> stream
+    -> Version
+    -> Version
+    -> IO Transport
+newTransport config stream clientVersion serverVersion = do
+    xBytesSent           <- newMVar 0
+    xPacketsSent         <- newMVar 0
+    xBytesReceived       <- newMVar 0
+    xPacketsReceived     <- newMVar 0
+    xEncryptionCtx       <- newMVar (plainEncryptionContext stream)
+    xEncryptionCtxNext   <- newMVar (plainEncryptionContext stream)
+    xDecryptionCtx       <- newMVar (plainDecryptionContext stream)
+    xDecryptionCtxNext   <- newMVar (plainDecryptionContext stream)
+    xKexContinuation     <- newEmptyMVar
+    xSessionId           <- newEmptyMVar
+    xRekeyTime           <- newMVar =<< getEpochSeconds
+    xRekeySent           <- newMVar 0
+    xRekeyRcvd           <- newMVar 0
+    pure Transport
+        { tStream                   = stream
+        , tConfig                   = config
+        , tClientVersion            = clientVersion
+        , tServerVersion            = serverVersion
+        , tBytesSent                = xBytesSent
+        , tPacketsSent              = xPacketsSent
+        , tBytesReceived            = xBytesReceived
+        , tPacketsReceived          = xPacketsReceived
+        , tEncryptionCtx            = xEncryptionCtx
+        , tEncryptionCtxNext        = xEncryptionCtxNext
+        , tDecryptionCtx            = xDecryptionCtx
+        , tDecryptionCtxNext        = xDecryptionCtxNext
+        , tKexContinuation          = xKexContinuation
+        , tSessionId                = xSessionId
+        , tLastRekeyingTime         = xRekeyTime
+        , tLastRekeyingDataSent     = xRekeySent
+        , tLastRekeyingDataReceived = xRekeyRcvd
+        }

@@ -93,7 +93,7 @@ serve config agent stream = run >>= \case
     Right () -> pure $ Disconnect Local DisconnectByApplication mempty
     where
         run =
-            withTransport (transportConfig config) (Just agent) stream $ \transport session ->
+            withServerTransport (transportConfig config) stream agent $ \transport session ->
             withAuthentication (userAuthConfig config) transport session $ \case
                 Name "ssh-connection" ->
                     Just $ serveConnection (connectionConfig config) transport

@@ -36,7 +36,7 @@ instance Default Config where
 
 runClient :: DuplexStream stream => Config -> stream -> (Connection -> IO a) -> IO a
 runClient config stream handler = do
-    ea <- withTransport (transportConfig config) (Nothing :: Maybe KeyPair) stream $ \transport sessionId -> do
+    ea <- withClientTransport (transportConfig config) stream $ \transport sessionId hostKey -> do
         requestServiceWithAuthentication (userAuthConfig config) transport sessionId (Name "ssh-connection")
         withConnection (connectionConfig config) transport handler
     case ea of
