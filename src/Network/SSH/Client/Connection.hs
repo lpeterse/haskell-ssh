@@ -329,7 +329,7 @@ session c mcommand (SessionHandler handler) = do
                 -- TODO: Right now, it is not attempted to drain any queues.
                 --       It is open for discussion whether it should stay this way.
                 sendClose <- atomically $ freeChannelSTM c lid
-                when sendClose $ do
+                when sendClose do
                     sendOutbound c $ O96 $ ChannelEof (chanIdRemote ch)
                     sendOutbound c $ O97 $ ChannelClose (chanIdRemote ch)
                 pure a
