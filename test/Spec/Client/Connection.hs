@@ -48,6 +48,7 @@ tests = testGroup "Network.SSH.Client.Connection"
             , testSessionShell02
             , testSessionShell03
             , testSessionShell04
+            , testSessionShell05
             ]
         ]
     ]
@@ -236,7 +237,7 @@ testSessionShell02 = testCase "shall increase channel ids when requesting severa
         req2 = ChannelOpen (ChannelId 1) ws ps ChannelOpenSession
 
 testSessionShell03 :: TestTree
-testSessionShell03 = testCase "shall throw exception when channel open fails" $ do
+testSessionShell03 = testCase "shall throw exception when channel open failed" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     invoked <- newEmptyMVar
     let s c    = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
@@ -282,3 +283,33 @@ testSessionShell04 = testCase "shall request shell when channel open confirmed" 
         ps   = 128
         req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
         req2 = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+
+testSessionShell05 :: TestTree
+testSessionShell05 = testCase "shall throw exception when shell request failed" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    me <- newEmptyMVar
+    let s c = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+    let a = withConnection conf clientStream $ \c ->
+                withAsync (s c) $ \sThread ->
+                    putMVar me =<< waitCatch sThread
+    withAsync a $ \_ -> do
+        assertEqual "req1" req1 =<< receiveMessage serverStream
+        sendMessage serverStream $ ChannelOpenConfirmation lid rid ws ps
+        assertEqual "req2" req2 =<< receiveMessage serverStream
+        sendMessage serverStream $ ChannelFailure lid
+        (Left e) <- readMVar me
+        case fromException e of
+            Nothing -> assertFailure (show e)
+            Just e' -> assertEqual "exp3" exp3 e'
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        req2 = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        exp3 = ChannelRequestFailed

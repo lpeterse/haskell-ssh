@@ -105,6 +105,10 @@ exceptionInvalidChannelRequest :: Disconnect
 exceptionInvalidChannelRequest =
     Disconnect Local DisconnectProtocolError "invalid channel request"
 
+exceptionUnexpectedChannelResponse :: Disconnect
+exceptionUnexpectedChannelResponse =
+    Disconnect Local DisconnectProtocolError "unexpected channel response"
+
 exceptionWindowSizeOverflow :: Disconnect
 exceptionWindowSizeOverflow =
     Disconnect Local DisconnectProtocolError "window size overflow"

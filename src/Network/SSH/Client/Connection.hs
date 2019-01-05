@@ -74,6 +74,7 @@ data Channel
     , chanMaxPacketSizeRemote :: Word32
     , chanWindowSizeLocal     :: TVar Word32
     , chanWindowSizeRemote    :: TVar Word32
+    , chanRequestSuccess      :: TMVar Bool
     , chanApplication         :: ChannelApplication
     }
 
@@ -138,6 +139,7 @@ instance Encoding OutboundMessage where
 
 data ChannelException
     = ChannelOpenFailed ChannelOpenFailureReason ChannelOpenFailureDescription
+    | ChannelRequestFailed
     deriving (Eq, Show)
 
 instance Exception ChannelException where
@@ -215,13 +217,15 @@ withConnection config stream handler = withMappedLinkedExceptions $ do
             I099 (ChannelSuccess lid) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> error "NO IMPLEMENTED"
-                    ChannelClosing {} -> error "NO IMPLEMENTED"
+                    ChannelRunning ch -> putTMVar (chanRequestSuccess ch) True
+                        <|> throwSTM exceptionUnexpectedChannelResponse
+                    ChannelClosing {} -> pure ()
             I100  (ChannelFailure lid) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> error "NO IMPLEMENTED"
-                    ChannelClosing {} -> error "NO IMPLEMENTED"
+                    ChannelRunning ch -> putTMVar (chanRequestSuccess ch) False
+                        <|> throwSTM exceptionUnexpectedChannelResponse
+                    ChannelClosing {} -> pure ()
 
 ---------------------------------------------------------------------------------------------------
 -- PUBLIC FUNCTIONS
@@ -249,6 +253,7 @@ session c mcommand (SessionHandler handler) = do
     stderr   <- atomically (Q.newTStreamingQueue maxQueueSize tlws)
     exit     <- newEmptyTMVarIO
     r        <- newEmptyTMVarIO
+    rs       <- newEmptyTMVarIO
     lid      <- atomically $ allocChannelSTM c $ \case
         Left x@ChannelOpenFailure {} -> do
             putTMVar r (Left x)
@@ -266,6 +271,7 @@ session c mcommand (SessionHandler handler) = do
                     , chanMaxPacketSizeRemote = rps
                     , chanWindowSizeLocal     = tlws
                     , chanWindowSizeRemote    = trws
+                    , chanRequestSuccess      = rs
                     , chanApplication         = ChannelApplicationSession session
                     }
             writeTVar trws rws
@@ -290,6 +296,11 @@ session c mcommand (SessionHandler handler) = do
                     , crWantReply = True
                     , crData      = runPut (put ChannelRequestShell)
                     }
+            -- Wait for response for this request.
+            -- Throw exception in case the request failed.
+            success <- atomically $ takeTMVar (chanRequestSuccess ch)
+            unless success $ throwIO ChannelRequestFailed
+            -- Invoke the user supplied handler function.
             withAsync (handler stdin stdout stderr (readTMVar exit)) $ \handlerAsync -> do
                 let x1 = do -- wait for channel data
                         dat <- Q.dequeueShort stdin (chanMaxPacketSizeRemote ch)
