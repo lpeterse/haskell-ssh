@@ -6,10 +6,10 @@
 module Network.SSH.Client.Connection where
 
 import           Control.Applicative
-import           Control.Concurrent.Async              ( link, withAsync, waitSTM )
+import           Control.Concurrent.Async              ( ExceptionInLinkedThread (..), link, withAsync, waitSTM )
 import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TMVar
-import           Control.Exception                     ( Exception, throwIO )
+import           Control.Exception                     ( Exception, throwIO, catch )
 import           Control.Monad
 import           Control.Monad.STM
 import           Data.Default
@@ -37,7 +37,7 @@ data ConnectionConfig
       --   limits the maximum window size, default: 32 kB)
       --
       --   Increasing this value might help with performance issues
-      --   (if connection delay is in a bad ration with the available bandwidth the window
+      --   (if connection delay is in a bad ratio with the available bandwidth the window
       --   resizing might cause unncessary throttling).
     , channelMaxPacketSize  :: Word32
       -- ^ The maximum size of inbound channel data payload (default: 32 kB)
@@ -104,7 +104,7 @@ data InboundMessage
     | I100 ChannelFailure
 
 instance Decoding InboundMessage where
-    get   = I080 <$> get
+    get =   I080 <$> get
         <|> I091 <$> get
         <|> I092 <$> get
         <|> I093 <$> get
@@ -150,7 +150,7 @@ data ExitSignal
     , exitErrorMessage :: BS.ByteString
     } deriving (Eq, Ord, Show)
 
-newtype ExecHandler a = ExecHandler (forall stdin stdout stderr. (OutputStream stdin, InputStream stdout, InputStream stderr)
+newtype SessionHandler a = SessionHandler (forall stdin stdout stderr. (OutputStream stdin, InputStream stdout, InputStream stderr)
     => stdin -> stdout -> stderr -> STM (Either ExitSignal ExitCode) -> IO a)
 
 sendOutbound :: Connection -> OutboundMessage -> IO ()
@@ -159,15 +159,20 @@ sendOutbound c = atomically . putTMVar (connOutbound c)
 withConnection :: (MessageStream stream) => ConnectionConfig -> stream -> (Connection -> IO a) -> IO a
 withConnection config stream handler = do
     c <- atomically $ Connection config <$> newEmptyTMVar <*> newTVar mempty
-    withAsync (dispatchIncoming stream c) $ \receiverThread -> do
-        link receiverThread -- FIXME
+    withMappedLinkedException $ withAsync (dispatchIncoming stream c) $ \receiverThread -> do
+        link receiverThread -- rethrow exceptions in main thread
         withAsync (handler c) $ \handlerThread -> fix $ \continue -> do
+            link handlerThread -- rethrow exceptions in main thread
             let left  = Left  <$> takeTMVar (connOutbound c)
                 right = Right <$> waitSTM handlerThread
             atomically (left <|> right) >>= \case
                 Left msg -> sendMessage stream msg >> continue
                 Right a  -> pure a
     where
+        withMappedLinkedException :: IO a -> IO a
+        withMappedLinkedException action =
+            action `catch` \(ExceptionInLinkedThread _ e) -> throwIO e
+
         dispatchIncoming :: (MessageStream stream) => stream -> Connection -> IO ()
         dispatchIncoming s c = forever $ receiveMessage s >>= \case
             I080 x -> print x -- FIXME
@@ -209,8 +214,14 @@ withConnection config stream handler = do
             I099  x -> print x -- FIXME
             I100  x -> print x -- FIXME
 
-exec :: Connection -> Command -> ExecHandler a -> IO a
-exec c _cmd (ExecHandler handler) = do
+shell :: Connection -> SessionHandler a -> IO a
+shell c = session c Nothing
+
+exec :: Connection -> Command -> SessionHandler a -> IO a
+exec c command = session c (Just command)
+
+session :: Connection -> Maybe Command -> SessionHandler a -> IO a
+session c mcommand (SessionHandler handler) = do
     tlws     <- newTVarIO maxQueueSize
     trws     <- newTVarIO 0
     stdin    <- atomically (Q.newTStreamingQueue maxQueueSize trws)
@@ -246,12 +257,19 @@ exec c _cmd (ExecHandler handler) = do
             $ ChannelOpenFailed reason
             $ ChannelOpenFailureDescription $ SBS.fromShort descr
         Right ch -> do
-            sendOutbound c $ O98 $ ChannelRequest
-                { crChannel   = chanIdRemote ch
-                , crType      = "exec"
-                , crWantReply = True
-                , crData      = runPut (put $ ChannelRequestExec "ls")
-                }
+            sendOutbound c $ O98 $ case mcommand of
+                Just (Command command) -> ChannelRequest
+                    { crChannel   = chanIdRemote ch
+                    , crType      = "exec"
+                    , crWantReply = True
+                    , crData      = runPut (put $ ChannelRequestExec $ SBS.toShort command)
+                    }
+                Nothing -> ChannelRequest
+                    { crChannel   = chanIdRemote ch
+                    , crType      = "shell"
+                    , crWantReply = True
+                    , crData      = runPut (put ChannelRequestShell)
+                    }
             withAsync (handler stdin stdout stderr (readTMVar exit)) $ \handlerAsync -> do
                 let x1 = do -- wait for channel data
                         dat <- Q.dequeueShort stdin (chanMaxPacketSizeRemote ch)

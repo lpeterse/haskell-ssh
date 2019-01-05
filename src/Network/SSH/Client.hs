@@ -3,15 +3,20 @@
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE RankNTypes                #-}
 module Network.SSH.Client
-    ( Config (..)
+    (
+    -- * Config
+      Config (..)
     , UserAuthConfig (..)
     , ConnectionConfig (..)
-    , runClient
     -- * Connection
-    -- ** exec
-    , ExecHandler (..)
-    , Command (..)
+    , Connection ()
+    -- ** withClientConnection
+    , withClientConnection
+    -- ** shell & exec
+    , shell
     , exec
+    , SessionHandler (..)
+    , Command (..)
     )
 where
 
@@ -34,8 +39,8 @@ data Config
 instance Default Config where
     def = Config def def def
 
-runClient :: DuplexStream stream => Config -> stream -> (Connection -> IO a) -> IO a
-runClient config stream handler = do
+withClientConnection :: DuplexStream stream => Config -> stream -> (Connection -> IO a) -> IO a
+withClientConnection config stream handler = do
     ea <- withClientTransport (transportConfig config) stream $ \transport sessionId hostKey -> do
         requestServiceWithAuthentication (userAuthConfig config) transport sessionId (Name "ssh-connection")
         withConnection (connectionConfig config) transport handler

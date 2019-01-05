@@ -1,5 +1,6 @@
 module Network.SSH.Internal
     ( module Network.SSH.Algorithms
+    , module Network.SSH.Client.Connection
     , module Network.SSH.Client.UserAuth
     , module Network.SSH.Encoding
     , module Network.SSH.Exception
@@ -14,7 +15,7 @@ module Network.SSH.Internal
     ) where
 
 import Network.SSH.Algorithms
-import Network.SSH.Client.Connection ()
+import Network.SSH.Client.Connection ( withConnection )
 import Network.SSH.Client.UserAuth ( requestServiceWithAuthentication )
 import Network.SSH.Encoding
 import Network.SSH.Exception

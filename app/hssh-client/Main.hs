@@ -49,9 +49,9 @@ main = do
             pure privateKey
 
         handle :: (DuplexStream stream) => Config -> stream -> IO ()
-        handle config stream = runClient config stream $ \c -> do
+        handle config stream = withClientConnection config stream $ \c -> do
             print "connection established"
-            exec c (Command "ls") $ ExecHandler $ \stdin stdout stderr exit -> do
+            exec c (Command "ls") $ SessionHandler $ \stdin stdout stderr exit -> do
                 receive stdout 4096 >>= print
                 atomically exit >>= print
             threadDelay 1000000
