@@ -208,7 +208,14 @@ withConnection config stream handler = withMappedLinkedExceptions $ do
                     ChannelRunning ch -> channelEofSTM ch
                     ChannelClosing {} -> pure ()
             I097 (ChannelClose lid) ->
-                atomically $ freeChannelSTM c lid
+                atomically $ getChannelStateSTM c lid >>= \case
+                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+                    ChannelRunning ch -> error "NOT IMPLEMENTED"
+                    -- A closing channel means that we have already sent
+                    -- a close message and this is either a reponse or
+                    -- a coincidence. In either case, it is okay to just
+                    -- free the channel.
+                    ChannelClosing {} -> void $ freeChannelSTM c lid
             I098 (ChannelRequest lid typ wantReply dat) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
@@ -315,9 +322,17 @@ session c mcommand (SessionHandler handler) = do
                         pure Nothing
                     x3 = do -- wait for handler thread to terminate
                         Just <$> waitSTM handlerAsync
-                fix $ \continue -> atomically (x1 <|> x2 <|> x3) >>= \case
-                    Nothing -> continue
-                    Just a  -> pure a
+                a <- fix $ \continue -> atomically (x1 <|> x2 <|> x3) >>= \case
+                        Nothing -> continue
+                        Just a  -> pure a
+                -- The session handler returned a result.
+                -- TODO: Right now, it is not attempted to drain any queues.
+                --       It is open for discussion whether it should stay this way.
+                sendClose <- atomically $ freeChannelSTM c lid
+                when sendClose $ do
+                    sendOutbound c $ O96 $ ChannelEof (chanIdRemote ch)
+                    sendOutbound c $ O97 $ ChannelClose (chanIdRemote ch)
+                pure a
     where
         -- The maxQueueSize must at least be one (even if 0 in the config)
         -- and lower than range of Int (might happen on 32bit systems
@@ -355,7 +370,7 @@ allocChannelSTM c handler = do
                     | otherwise = Just (ChannelId i)
                 maxCount = channelMaxCount (connConfig c)
 
-freeChannelSTM :: Connection -> ChannelId -> STM ()
+freeChannelSTM :: Connection -> ChannelId -> STM Bool
 freeChannelSTM c lid = getChannelStateSTM c lid >>= \case
     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
     ChannelRunning ch -> do
@@ -364,9 +379,11 @@ freeChannelSTM c lid = getChannelStateSTM c lid >>= \case
                 -- In case the server did not send an exit-status message
                 -- the close message serves the same purpose (closing the session).
                 void $ tryPutTMVar exit $ Right $ ExitFailure (-1)
-        putTMVar (connOutbound c) $ O97 $ ChannelClose (chanIdRemote ch)
         free c lid
-    ChannelClosing {} -> free c lid
+        pure True
+    ChannelClosing {} -> do
+        free c lid
+        pure False
     where
         free c lid = do
             channels <- readTVar (connChannels c)
