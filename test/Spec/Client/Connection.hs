@@ -3,7 +3,8 @@ module Spec.Client.Connection ( tests ) where
 
 import           Control.Concurrent          ( threadDelay )
 import           Control.Concurrent.Async
-import           Control.Exception           ( AssertionFailed (..), throw, throwIO )
+import           Control.Concurrent.MVar
+import           Control.Exception           ( AssertionFailed (..), fromException, throw, throwIO )
 import           Crypto.Error
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
@@ -41,10 +42,11 @@ tests = testGroup "Network.SSH.Client.Connection"
         , testDispatch11
         , testDispatch12
         ]
-    , testGroup "session channels"
-        [ testGroup "open"
-            [ testSessionChannelOpen01
-            , testSessionChannelOpen02
+    , testGroup "session"
+        [ testGroup "shell"
+            [ testSessionShell01
+            , testSessionShell02
+            , testSessionShell03
             ]
         ]
     ]
@@ -197,8 +199,8 @@ testDispatch12 = testCase "ChannelFailure shall cause exception" $ do
     where
         exp = Disconnect Local DisconnectProtocolError (DisconnectMessage "invalid channel id")
 
-testSessionChannelOpen01 :: TestTree
-testSessionChannelOpen01 = testCase "client shall send channel open request" $ do
+testSessionShell01 :: TestTree
+testSessionShell01 = testCase "shall send channel open request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let action = withConnection conf clientStream $ \c ->
             shell c $ SessionHandler $ \_ _ _ _ -> pure ()
@@ -213,8 +215,8 @@ testSessionChannelOpen01 = testCase "client shall send channel open request" $ d
         ps   = 128
         req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
 
-testSessionChannelOpen02 :: TestTree
-testSessionChannelOpen02 = testCase "client shall increase channel ids when requesting several channels" $ do
+testSessionShell02 :: TestTree
+testSessionShell02 = testCase "shall increase channel ids when requesting several channels" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let action = withConnection conf clientStream $ \c -> do
             let x = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
@@ -231,3 +233,30 @@ testSessionChannelOpen02 = testCase "client shall increase channel ids when requ
         ps   = 128
         req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
         req2 = ChannelOpen (ChannelId 1) ws ps ChannelOpenSession
+
+testSessionShell03 :: TestTree
+testSessionShell03 = testCase "shall throw exception when channel open fails" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    invoked <- newEmptyMVar
+    let s c    = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+    let action = withConnection conf clientStream $ \c -> withAsync (s c) $ \sThread -> do
+            failure <- waitCatch sThread
+            putMVar invoked failure
+    withAsync action $ \_ -> do
+        assertEqual "req1" req1 =<< receiveMessage serverStream
+        sendMessage serverStream $ ChannelOpenFailure lid ChannelOpenAdministrativelyProhibited "" ""
+        (Left e) <- readMVar invoked
+        case fromException e of
+            Nothing -> assertFailure (show e)
+            Just e' -> assertEqual "exp2" exp2 e'
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        exp2 = ChannelOpenFailed ChannelOpenAdministrativelyProhibited (ChannelOpenFailureDescription "")

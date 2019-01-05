@@ -206,7 +206,7 @@ withConnection config stream handler = withMappedLinkedExceptions $ do
                     ChannelRunning ch -> channelEofSTM ch
                     ChannelClosing {} -> pure ()
             I097 (ChannelClose lid) ->
-                atomically $ closeChannelSTM c lid
+                atomically $ freeChannelSTM c lid
             I098 (ChannelRequest lid typ wantReply dat) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
@@ -249,7 +249,7 @@ session c mcommand (SessionHandler handler) = do
     stderr   <- atomically (Q.newTStreamingQueue maxQueueSize tlws)
     exit     <- newEmptyTMVarIO
     r        <- newEmptyTMVarIO
-    lid      <- atomically $ openChannelSTM c $ \case
+    lid      <- atomically $ allocChannelSTM c $ \case
         Left x@ChannelOpenFailure {} -> do
             putTMVar r (Left x)
         Right (ChannelOpenConfirmation lid rid rws rps) -> do
@@ -321,11 +321,11 @@ session c mcommand (SessionHandler handler) = do
         maxPacketSize = max 1 $ fromIntegral $ min maxBoundIntWord32
             (channelMaxPacketSize $ connConfig c)
 
-openChannelSTM ::
+allocChannelSTM ::
     Connection ->
     (Either ChannelOpenFailure ChannelOpenConfirmation -> STM ()) ->
     STM ChannelId
-openChannelSTM c handler = do
+allocChannelSTM c handler = do
     channels <- readTVar (connChannels c)
     case findSlot channels of
         Nothing -> retry
@@ -344,8 +344,8 @@ openChannelSTM c handler = do
                     | otherwise = Just (ChannelId i)
                 maxCount = channelMaxCount (connConfig c)
 
-closeChannelSTM :: Connection -> ChannelId -> STM ()
-closeChannelSTM c lid = getChannelStateSTM c lid >>= \case
+freeChannelSTM :: Connection -> ChannelId -> STM ()
+freeChannelSTM c lid = getChannelStateSTM c lid >>= \case
     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
     ChannelRunning ch -> do
         case chanApplication ch of
@@ -354,13 +354,12 @@ closeChannelSTM c lid = getChannelStateSTM c lid >>= \case
                 -- the close message serves the same purpose (closing the session).
                 void $ tryPutTMVar exit $ Right $ ExitFailure (-1)
         putTMVar (connOutbound c) $ O97 $ ChannelClose (chanIdRemote ch)
-        freeChannelSTM c lid
-    ChannelClosing {} -> freeChannelSTM c lid
-
-freeChannelSTM :: Connection -> ChannelId -> STM ()
-freeChannelSTM c lid = do
-    channels <- readTVar (connChannels c)
-    writeTVar (connChannels c) $! M.delete lid channels
+        free c lid
+    ChannelClosing {} -> free c lid
+    where
+        free c lid = do
+            channels <- readTVar (connChannels c)
+            writeTVar (connChannels c) $! M.delete lid channels
 
 getChannelStateSTM :: Connection -> ChannelId -> STM ChannelState
 getChannelStateSTM c lid = do

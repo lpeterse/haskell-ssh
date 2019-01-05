@@ -17,6 +17,9 @@ module Network.SSH.Client
     , exec
     , SessionHandler (..)
     , Command (..)
+    -- ** Exceptions
+    , ChannelException (..)
+    , ChannelOpenFailureDescription (..)
     )
 where
 
