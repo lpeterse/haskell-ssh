@@ -67,7 +67,7 @@ data ChannelState
     | ChannelClosing
 
 data Channel
-    = Channel 
+    = Channel
     { chanIdLocal             :: ChannelId
     , chanIdRemote            :: ChannelId
     , chanMaxPacketSizeLocal  :: Word32
@@ -117,7 +117,9 @@ instance Decoding InboundMessage where
         <|> I100 <$> get
 
 data OutboundMessage
-    = O90 ChannelOpen
+    = O81 RequestSuccess
+    | O82 RequestFailure
+    | O90 ChannelOpen
     | O93 ChannelWindowAdjust
     | O94 ChannelData
     | O96 ChannelEof
@@ -125,6 +127,8 @@ data OutboundMessage
     | O98 ChannelRequest
 
 instance Encoding OutboundMessage where
+    put (O81 x) = put x
+    put (O82 x) = put x
     put (O90 x) = put x
     put (O93 x) = put x
     put (O94 x) = put x
@@ -153,29 +157,26 @@ data ExitSignal
 newtype SessionHandler a = SessionHandler (forall stdin stdout stderr. (OutputStream stdin, InputStream stdout, InputStream stderr)
     => stdin -> stdout -> stderr -> STM (Either ExitSignal ExitCode) -> IO a)
 
-sendOutbound :: Connection -> OutboundMessage -> IO ()
-sendOutbound c = atomically . putTMVar (connOutbound c)
-
 withConnection :: (MessageStream stream) => ConnectionConfig -> stream -> (Connection -> IO a) -> IO a
-withConnection config stream handler = do
+withConnection config stream handler = withMappedLinkedExceptions $ do
     c <- atomically $ Connection config <$> newEmptyTMVar <*> newTVar mempty
-    withMappedLinkedException $ withAsync (dispatchIncoming stream c) $ \receiverThread -> do
+    withAsync (dispatchIncoming stream c) $ \receiverThread -> do
         link receiverThread -- rethrow exceptions in main thread
         withAsync (handler c) $ \handlerThread -> fix $ \continue -> do
-            link handlerThread -- rethrow exceptions in main thread
             let left  = Left  <$> takeTMVar (connOutbound c)
                 right = Right <$> waitSTM handlerThread
             atomically (left <|> right) >>= \case
                 Left msg -> sendMessage stream msg >> continue
                 Right a  -> pure a
     where
-        withMappedLinkedException :: IO a -> IO a
-        withMappedLinkedException action =
+        withMappedLinkedExceptions :: IO a -> IO a
+        withMappedLinkedExceptions action =
             action `catch` \(ExceptionInLinkedThread _ e) -> throwIO e
 
         dispatchIncoming :: (MessageStream stream) => stream -> Connection -> IO ()
         dispatchIncoming s c = forever $ receiveMessage s >>= \case
-            I080 x -> print x -- FIXME
+            I080 (GlobalRequest wantReply _) -> when wantReply
+                $ sendOutbound c (O82 RequestFailure)
             I091 x@(ChannelOpenConfirmation lid _ _ _) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening f  -> f (Right x)
@@ -211,14 +212,33 @@ withConnection config stream handler = do
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
                     ChannelRunning ch -> channelRequestSTM ch typ wantReply dat
                     ChannelClosing {} -> pure ()
-            I099  x -> print x -- FIXME
-            I100  x -> print x -- FIXME
+            I099 (ChannelSuccess lid) ->
+                atomically $ getChannelStateSTM c lid >>= \case
+                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+                    ChannelRunning ch -> error "NO IMPLEMENTED"
+                    ChannelClosing {} -> error "NO IMPLEMENTED"
+            I100  (ChannelFailure lid) ->
+                atomically $ getChannelStateSTM c lid >>= \case
+                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+                    ChannelRunning ch -> error "NO IMPLEMENTED"
+                    ChannelClosing {} -> error "NO IMPLEMENTED"
+
+---------------------------------------------------------------------------------------------------
+-- PUBLIC FUNCTIONS
+---------------------------------------------------------------------------------------------------
 
 shell :: Connection -> SessionHandler a -> IO a
 shell c = session c Nothing
 
 exec :: Connection -> Command -> SessionHandler a -> IO a
 exec c command = session c (Just command)
+
+---------------------------------------------------------------------------------------------------
+-- INTERNAL FUNCTIONS
+---------------------------------------------------------------------------------------------------
+
+sendOutbound :: Connection -> OutboundMessage -> IO ()
+sendOutbound c = atomically . putTMVar (connOutbound c)
 
 session :: Connection -> Maybe Command -> SessionHandler a -> IO a
 session c mcommand (SessionHandler handler) = do
@@ -309,9 +329,9 @@ openChannelSTM c handler = do
     channels <- readTVar (connChannels c)
     case findSlot channels of
         Nothing -> retry
-        Just i  -> do
-            setChannelStateSTM c i (ChannelOpening handler)
-            pure i
+        Just lid -> do
+            setChannelStateSTM c lid (ChannelOpening handler)
+            pure lid
     where
         findSlot :: M.Map ChannelId a -> Maybe ChannelId
         findSlot m

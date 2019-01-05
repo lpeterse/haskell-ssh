@@ -11,6 +11,7 @@ import           Data.Default
 import qualified Data.ByteString       as BS
 import qualified Data.ByteString.Short as SBS
 
+import           Network.SSH.Server
 import           Network.SSH.Internal
 
 import           Test.Tasty
