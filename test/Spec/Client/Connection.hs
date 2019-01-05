@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase        #-}
 module Spec.Client.Connection ( tests ) where
 
 import           Control.Concurrent          ( threadDelay )
@@ -49,6 +50,7 @@ tests = testGroup "Network.SSH.Client.Connection"
             , testSessionShell03
             , testSessionShell04
             , testSessionShell05
+            , testSessionShell06
             ]
         ]
     ]
@@ -313,3 +315,32 @@ testSessionShell05 = testCase "shall throw exception when shell request failed" 
         req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
         req2 = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
         exp3 = ChannelRequestFailed
+
+testSessionShell06 :: TestTree
+testSessionShell06 = testCase "shall invoke session handler when shell request successful" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    me <- newEmptyMVar
+    let s c = shell c $ SessionHandler $ \_ _ _ _ -> pure 123
+    let a = withConnection conf clientStream $ \c ->
+                withAsync (s c) $ \sThread ->
+                    putMVar me =<< waitCatch sThread
+    withAsync a $ \_ -> do
+        assertEqual "req1" req1 =<< receiveMessage serverStream
+        sendMessage serverStream $ ChannelOpenConfirmation lid rid ws ps
+        assertEqual "req2" req2 =<< receiveMessage serverStream
+        sendMessage serverStream $ ChannelSuccess lid
+        readMVar me >>= \case
+            Left e -> assertFailure (show e)
+            Right a -> assertEqual "handler result" 123 a 
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        req2 = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+
