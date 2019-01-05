@@ -31,7 +31,9 @@ tests = testGroup "Network.SSH.Transport"
         ]
     , testGroup "sendMessage / receiveMessage" 
         [ testSendReceive01
+        , testSendReceive02
         , testSendReceive05
+        , testSendReceive06
         ]
     , testGroup "traffic accounting"
         [ testTraffic01
@@ -160,6 +162,26 @@ testSendReceive01 = testCase "server sends Ignore and client shall receive it" $
             Ignore <- receiveMessage t
             putMVar done ()
 
+testSendReceive02 :: TestTree
+testSendReceive02 = testCase "server sends Ignore and client shall ignore it when expecting something else" $ do
+    (clientSocket, serverSocket) <- newSocketPair
+    sk <- Ed25519.generateSecretKey
+    let pk = Ed25519.toPublic sk
+    let agent = KeyPairEd25519 pk sk
+    done <- newEmptyMVar
+    withAsync (runServer serverSocket def agent done `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket def done `finally` close clientSocket) $ \client -> do
+            waitBoth server client
+            readMVar done
+    where
+        runServer stream config agent done = withServerTransport config stream agent $ \t _ -> do
+            sendMessage t Ignore
+            sendMessage t (ChannelData (ChannelId 0) "ABC")
+            readMVar done
+        runClient stream config done = withClientTransport config stream $ \t _ _ -> do
+            ChannelData (ChannelId 0) "ABC" <- receiveMessage t
+            putMVar done ()
+
 testSendReceive05 :: TestTree
 testSendReceive05 = testCase "server sends ChannelData and client shall receive it" $ do
     (clientSocket, serverSocket) <- newSocketPair
@@ -178,6 +200,25 @@ testSendReceive05 = testCase "server sends ChannelData and client shall receive 
         runClient stream config done = withClientTransport config stream $ \t _ _ -> do
             ChannelData (ChannelId 0) "ABC" <- receiveMessage t
             putMVar done ()
+
+testSendReceive06 :: TestTree
+testSendReceive06 = testCase "client sends ChannelData and server shall receive it" $ do
+    (clientSocket, serverSocket) <- newSocketPair
+    sk <- Ed25519.generateSecretKey
+    let pk = Ed25519.toPublic sk
+    let agent = KeyPairEd25519 pk sk
+    done <- newEmptyMVar
+    withAsync (runServer serverSocket def agent done `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket def done `finally` close clientSocket) $ \client -> do
+            waitBoth server client
+            readMVar done
+    where
+        runServer stream config agent done = withServerTransport config stream agent $ \t _ -> do
+            ChannelData (ChannelId 0) "ABC" <- receiveMessage t
+            putMVar done ()
+        runClient stream config done = withClientTransport config stream $ \t _ _ -> do
+            sendMessage t (ChannelData (ChannelId 0) "ABC")
+            readMVar done
 
 ---------------------------------------------------------------------------------------------------
 -- TRAFFIC ACCOUNTING
