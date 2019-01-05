@@ -288,23 +288,23 @@ testTraffic02 = testCase "packets sent/received shall match on client/server aft
 ---------------------------------------------------------------------------------------------------
 
 testReKex01 :: TestTree
-testReKex01 = testCase "rekeying counter shall be 0 right after initial key exchange" $ do
+testReKex01 = testCase "kex counter shall be 1 right after initial key exchange" $ do
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
     let agent = KeyPairEd25519 pk sk
     withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
-            (Right st, Right ct) <- waitBoth server client
-            assertEqual "client version on client" (version clientConfig) (clientVersion ct)
-            assertEqual "server version on client" (version serverConfig) (serverVersion ct)
-            assertEqual "client version on server" (version clientConfig) (clientVersion st)
-            assertEqual "server version on server" (version serverConfig) (serverVersion st)
+            (Right cs, Right cc) <- waitBoth server client
+            assertEqual "client kex count" 1 cc
+            assertEqual "server kex count" 1 cs
     where
-        runServer stream config agent = withServerTransport config stream agent $ \t _ -> pure t
-        runClient stream config  = withClientTransport config stream $ \t _ _ -> pure t
-        serverConfig = def { version = Version "SSH-2.0-hssh_server" }
-        clientConfig = def { version = Version "SSH-2.0-hssh_client" }
+        runServer stream config agent = withServerTransport config stream agent $ \t _ ->
+            getKexCount t
+        runClient stream config  = withClientTransport config stream $ \t _ _ -> do
+            getKexCount t
+        serverConfig = def
+        clientConfig = def
 
 testReKex02 :: TestTree
 testReKex02 = testCase "server shall rekey when bytes sent is exceeded" $ do

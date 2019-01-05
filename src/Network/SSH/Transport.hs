@@ -392,8 +392,15 @@ kexClientContinuation stream env cookie mHostKey = clientKex0
             case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
                 (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) ->
                     kexWithVerifiedSignature shk hash sig $ do
+                        -- The session id does not change after the first key exchange.
+                        -- The next operation eventually initializes it and returns
+                        -- the existing session id otherwise.
                         sid <- trySetSessionId env (SessionId $ SBS.toShort $ BA.convert hash)
-                        putMVar mHostKey shk -- FIXME: Swap and compare!
+                        -- The host key variable can only be set during the initial key exchange.
+                        -- According to standard, the host keys may change but it is ignored here.
+                        -- This is secure under the assumption that the authenticated channel over
+                        -- which subsequent key exchanges take place is not compromised.
+                        void $ tryPutMVar mHostKey shk
                         setChaCha20Poly1305Context $ kexKeys sec hash sid
                         transportSendMessage env KexNewKeys
             where
