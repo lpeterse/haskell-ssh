@@ -47,6 +47,7 @@ tests = testGroup "Network.SSH.Client.Connection"
             [ testSessionShell01
             , testSessionShell02
             , testSessionShell03
+            , testSessionShell04
             ]
         ]
     ]
@@ -260,3 +261,24 @@ testSessionShell03 = testCase "shall throw exception when channel open fails" $ 
         ps   = 128
         req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
         exp2 = ChannelOpenFailed ChannelOpenAdministrativelyProhibited (ChannelOpenFailureDescription "")
+
+testSessionShell04 :: TestTree
+testSessionShell04 = testCase "shall request shell when channel open confirmed" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let s c    = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+    let action = withConnection conf clientStream s
+    withAsync action $ \_ -> do
+        assertEqual "req1" req1 =<< receiveMessage serverStream
+        sendMessage serverStream $ ChannelOpenConfirmation lid rid ws ps
+        assertEqual "req2" req2 =<< receiveMessage serverStream
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        req2 = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
