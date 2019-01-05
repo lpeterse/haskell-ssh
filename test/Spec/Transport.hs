@@ -1,10 +1,11 @@
 {-# LANGUAGE OverloadedStrings          #-}
 module Spec.Transport ( tests ) where
 
+import           Control.Concurrent ( threadDelay )
 import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
 import           Control.Exception
-import           Control.Monad ( void )
+import           Control.Monad ( forever, forM_, void )
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import           Data.Default
 
@@ -39,8 +40,15 @@ tests = testGroup "Network.SSH.Transport"
         [ testTraffic01
         , testTraffic02
         ]
+    , testGroup "initial key exchange"
+        [
+        ]
     , testGroup "key re-exchange"
-        [ testKex01
+        [ testReKex01
+        , testReKex02
+        , testReKex03
+        , testReKex04
+        , testReKex05
         ]
     ]
 
@@ -271,11 +279,16 @@ testTraffic02 = testCase "packets sent/received shall match on client/server aft
         clientConfig = def
 
 ---------------------------------------------------------------------------------------------------
+-- INITIAL KEY EXCHANGE
+---------------------------------------------------------------------------------------------------
+
+
+---------------------------------------------------------------------------------------------------
 -- KEY RE-EXCHANGE
 ---------------------------------------------------------------------------------------------------
 
-testKex01 :: TestTree
-testKex01 = testCase "server shall initiate re-keying after data threshold" $ do
+testReKex01 :: TestTree
+testReKex01 = testCase "rekeying counter shall be 0 right after initial key exchange" $ do
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
@@ -292,6 +305,140 @@ testKex01 = testCase "server shall initiate re-keying after data threshold" $ do
         runClient stream config  = withClientTransport config stream $ \t _ _ -> pure t
         serverConfig = def { version = Version "SSH-2.0-hssh_server" }
         clientConfig = def { version = Version "SSH-2.0-hssh_client" }
+
+testReKex02 :: TestTree
+testReKex02 = testCase "server shall rekey when bytes sent is exceeded" $ do
+    (clientSocket, serverSocket) <- newSocketPair
+    sk <- Ed25519.generateSecretKey
+    done <- newEmptyMVar
+    mt <- newEmptyMVar
+    let pk = Ed25519.toPublic sk
+    let agent = KeyPairEd25519 pk sk
+    let runServer stream config agent = withServerTransport config stream agent $ \t _ -> do
+            putMVar mt t
+            readMVar done -- keep the server alive till end of test
+    let runClient stream config  = withClientTransport config stream $ \t _ _ -> forever $ do
+            Ignore <- receiveMessage t -- keep the client responsive
+            pure ()
+    withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
+            t <- readMVar mt
+            kexCount1 <- getKexCount t
+            assertEqual "kexCount" 1 kexCount1
+            sent0 <- getBytesSent t
+            assertBool "sent0 does not exceed threshold" (sent0 < threshold)
+            sendMessage t Ignore
+            sent1 <- getBytesSent t
+            assertBool "sent1 does not exceed threshold" (sent1 < threshold)
+            let messageSize = sent1 - sent0
+            let remainingSize = threshold - sent1
+            let n = (remainingSize `div` messageSize) + 2
+            forM_ [1..n] $ const $ sendMessage t Ignore
+            sent2 <- getBytesSent t
+            assertBool "sent2 does exceed threshold" (sent2 > threshold)
+            kexCount2 <- getKexCount t
+            assertEqual "kexCount" 2 kexCount2
+            putMVar done ()
+    where
+        threshold = 1000
+        serverConfig = def { maxDataBeforeRekey = threshold }
+        clientConfig = def
+
+testReKex03 :: TestTree
+testReKex03 = testCase "client shall rekey when bytes sent is exceeded" $ do
+    (clientSocket, serverSocket) <- newSocketPair
+    sk <- Ed25519.generateSecretKey
+    done <- newEmptyMVar
+    mt <- newEmptyMVar
+    let pk = Ed25519.toPublic sk
+    let agent = KeyPairEd25519 pk sk
+    let runServer stream config agent = withServerTransport config stream agent $ \t _ -> forever $ do
+            Ignore <- receiveMessage t -- keep the server responsive
+            pure ()
+    let runClient stream config  = withClientTransport config stream $ \t _ _ -> do
+            putMVar mt t
+            readMVar done -- keep the client alive till end of test
+    withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
+            t <- readMVar mt
+            kexCount1 <- getKexCount t
+            assertEqual "kexCount" 1 kexCount1
+            sent0 <- getBytesSent t
+            assertBool "sent0 does not exceed threshold" (sent0 < threshold)
+            sendMessage t Ignore
+            sent1 <- getBytesSent t
+            assertBool "sent1 does not exceed threshold" (sent1 < threshold)
+            let messageSize = sent1 - sent0
+            let remainingSize = threshold - sent1
+            let n = (remainingSize `div` messageSize) + 2
+            forM_ [1..n] $ const $ sendMessage t Ignore
+            sent2 <- getBytesSent t
+            assertBool "sent2 does exceed threshold" (sent2 > threshold)
+            kexCount2 <- getKexCount t
+            assertEqual "kexCount" 2 kexCount2
+            putMVar done ()
+    where
+        threshold = 1000
+        serverConfig = def
+        clientConfig = def { maxDataBeforeRekey = threshold }
+
+testReKex04 :: TestTree
+testReKex04 = testCase "server shall rekey when time is exceeded" $ do
+    (clientSocket, serverSocket) <- newSocketPair
+    sk <- Ed25519.generateSecretKey
+    done <- newEmptyMVar
+    mt <- newEmptyMVar
+    let pk = Ed25519.toPublic sk
+    let agent = KeyPairEd25519 pk sk
+    let runServer stream config agent = withServerTransport config stream agent $ \t _ -> do
+            putMVar mt t
+            readMVar done -- keep the server alive till end of test
+    let runClient stream config  = withClientTransport config stream $ \t _ _ -> forever $ do
+            Ignore <- receiveMessage t -- keep the client responsive
+            pure ()
+    withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
+            t <- readMVar mt
+            kexCount1 <- getKexCount t
+            assertEqual "kexCount" 1 kexCount1
+            threadDelay 1100000 -- 1.1 seconds
+            sendMessage t Ignore -- send something to trigger rekeying
+            kexCount2 <- getKexCount t
+            assertEqual "kexCount" 2 kexCount2
+            putMVar done ()
+    where
+        threshold = 1 -- 1 second
+        serverConfig = def { maxTimeBeforeRekey = threshold }
+        clientConfig = def
+
+testReKex05 :: TestTree
+testReKex05 = testCase "client shall rekey when time is exceeded" $ do
+    (clientSocket, serverSocket) <- newSocketPair
+    sk <- Ed25519.generateSecretKey
+    done <- newEmptyMVar
+    mt <- newEmptyMVar
+    let pk = Ed25519.toPublic sk
+    let agent = KeyPairEd25519 pk sk
+    let runServer stream config agent = withServerTransport config stream agent $ \t _ -> forever $ do
+            Ignore <- receiveMessage t -- keep the server responsive
+            pure ()
+    let runClient stream config  = withClientTransport config stream $ \t _ _ -> do
+            putMVar mt t
+            readMVar done -- keep the client alive till end of test
+    withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
+        withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
+            t <- readMVar mt
+            kexCount1 <- getKexCount t
+            assertEqual "kexCount" 1 kexCount1
+            threadDelay 1100000 -- 1.1 seconds
+            sendMessage t Ignore -- send something to trigger rekeying
+            kexCount2 <- getKexCount t
+            assertEqual "kexCount" 2 kexCount2
+            putMVar done ()
+    where
+        threshold = 1 -- 1 second
+        serverConfig = def
+        clientConfig = def { maxTimeBeforeRekey = threshold }
 
 {-
 assertCorrectSignature ::

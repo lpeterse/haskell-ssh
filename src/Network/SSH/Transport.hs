@@ -12,6 +12,7 @@ module Network.SSH.Transport
     , getBytesReceived
     , getPacketsSent
     , getPacketsReceived
+    , getKexCount
     , withClientTransport
     , withServerTransport
     , plainEncryptionContext
@@ -67,10 +68,10 @@ data Transport
     , tDecryptionCtxNext        :: MVar DecryptionContext
     , tKexContinuation          :: MVar KexContinuation
     , tSessionId                :: MVar SessionId
-    , tRekeyingCounter          :: MVar Word64
-    , tRekeyingLastTime         :: MVar Word64
-    , tRekeyingLastDataSent     :: MVar Word64
-    , tRekeyingLastDataReceived :: MVar Word64
+    , tKexCount                 :: MVar Word64
+    , tKexLastTime              :: MVar Word64
+    , tKexLastDataSent          :: MVar Word64
+    , tKexLastDataReceived      :: MVar Word64
     }
 
 data TransportConfig
@@ -106,10 +107,10 @@ newtype KexContinuation = KexContinuation (Maybe KexStep -> IO KexContinuation)
 
 instance MessageStream Transport where
     sendMessage t msg = do
-        kexIfNecessary t
+        kexTriggerWhenNecessary t
         transportSendMessage t msg
     receiveMessage t = do
-        kexIfNecessary t
+        kexTriggerWhenNecessary t
         transportReceiveMessage t
 
 -------------------------------------------------------------------------------
@@ -133,6 +134,9 @@ getPacketsSent = readMVar . tPacketsSent
 
 getPacketsReceived :: Transport -> IO Word64
 getPacketsReceived = readMVar . tPacketsReceived
+
+getKexCount :: Transport -> IO Word64
+getKexCount = readMVar . tKexCount
 
 withClientTransport ::
     (DuplexStream stream) =>
@@ -247,17 +251,27 @@ kexServerInitialize stream env agent = do
 kexServerContinuation :: (DuplexStream stream, AuthAgent agent) => stream -> Transport -> Cookie -> agent -> KexContinuation
 kexServerContinuation stream env cookie authAgent = serverKex0
     where
+        -- Being in this state means no kex is currently in progress.
+        -- Kex may be started by either passing Nothing which means
+        -- it is initialized locally. Passing (Just cki) means
+        -- the other side initializes it. A race wherein both sides
+        -- initiate a kex simultaneously may occur: This is expected
+        -- and the algorithm can handle it.
+        -- The `kexSetMilestone` call snapshots the the bytes sent/
+        -- receive and the current time in order to keep track of
+        -- when the next kex becomes necessary.
         serverKex0 :: KexContinuation
-        serverKex0 = KexContinuation $ \case
-            Nothing -> do
-                transportSendMessage env ski
-                pure (serverKex1 ski)
-            Just (Init cki) -> do
-                transportSendMessage env ski
-                pure (serverKex2 cki ski)
-            _ -> throwIO exceptionKexInvalidTransition
-            where
-                ski = kexInit (tConfig env) cookie
+        serverKex0 = KexContinuation $ \mstep -> do
+            kexSetMilestone env
+            let ski = kexInit (tConfig env) cookie
+            case mstep of
+                Nothing -> do
+                    transportSendMessage env ski
+                    pure (serverKex1 ski)
+                Just (Init cki) -> do
+                    transportSendMessage env ski
+                    pure (serverKex2 cki ski)
+                _ -> throwIO exceptionKexInvalidTransition
 
         serverKex1 :: KexInit -> KexContinuation
         serverKex1 ski = KexContinuation $ \case
@@ -333,20 +347,22 @@ kexClientInitialize stream env = do
 kexClientContinuation :: (DuplexStream stream) => stream -> Transport  -> Cookie -> MVar PublicKey -> KexContinuation
 kexClientContinuation stream env cookie mHostKey = clientKex0
     where
+        -- See `serverKex0` for documentation.
         clientKex0 :: KexContinuation
-        clientKex0 = KexContinuation $ \case
-            Nothing -> do
-                transportSendMessage env cki
-                pure (clientKex1 cki)
-            Just (Init ski) -> do
-                cekSecret <- Curve25519.generateSecretKey
-                let cek = Curve25519.toPublic cekSecret
-                transportSendMessage env cki
-                transportSendMessage env (KexEcdhInit cek)
-                pure (clientKex2 cki ski cek cekSecret)
-            _ -> throwIO exceptionKexInvalidTransition
-            where
-                cki = kexInit (tConfig env) cookie
+        clientKex0 = KexContinuation $ \mstep -> do
+            kexSetMilestone env
+            let cki = kexInit (tConfig env) cookie
+            case mstep of
+                Nothing -> do
+                    transportSendMessage env cki
+                    pure (clientKex1 cki)
+                Just (Init ski) -> do
+                    cekSecret <- Curve25519.generateSecretKey
+                    let cek = Curve25519.toPublic cekSecret
+                    transportSendMessage env cki
+                    transportSendMessage env (KexEcdhInit cek)
+                    pure (clientKex2 cki ski cek cekSecret)
+                _ -> throwIO exceptionKexInvalidTransition
 
         clientKex1 :: KexInit -> KexContinuation
         clientKex1 cki = KexContinuation $ \case
@@ -409,15 +425,17 @@ kexTrigger :: Transport -> IO ()
 kexTrigger env = do
     modifyMVar_ (tKexContinuation env) $ \(KexContinuation f) -> f Nothing
 
-kexIfNecessary :: Transport -> IO ()
-kexIfNecessary env = do
-    kexRekeyingRequired env >>= \case
-        False -> pure ()
-        True -> do
-            void $ swapMVar (tRekeyingLastTime         env) =<< getEpochSeconds
-            void $ swapMVar (tRekeyingLastDataSent     env) =<< readMVar (tBytesSent     env)
-            void $ swapMVar (tRekeyingLastDataReceived env) =<< readMVar (tBytesReceived env)
-            kexTrigger env
+kexTriggerWhenNecessary :: Transport -> IO ()
+kexTriggerWhenNecessary env = do
+    required <- kexRekeyingRequired env
+    when required (kexTrigger env)
+
+kexSetMilestone :: Transport -> IO ()
+kexSetMilestone env = do
+    void $ modifyMVar_ (tKexCount env) $ \count -> pure $! count + 1
+    void $ swapMVar (tKexLastTime         env) =<< getEpochSeconds
+    void $ swapMVar (tKexLastDataSent     env) =<< readMVar (tBytesSent     env)
+    void $ swapMVar (tKexLastDataReceived env) =<< readMVar (tBytesReceived env)
 
 kexContinue :: Transport -> KexStep -> IO ()
 kexContinue env step = do
@@ -454,14 +472,14 @@ kexInit config cookie = KexInit
 kexRekeyingRequired :: Transport -> IO Bool
 kexRekeyingRequired env = do
     tNow <- getEpochSeconds
-    t    <- readMVar (tRekeyingLastTime env)
+    t    <- readMVar (tKexLastTime env)
     sNow <- readMVar (tBytesSent env)
-    s    <- readMVar (tRekeyingLastDataSent env)
+    s    <- readMVar (tKexLastDataSent env)
     rNow <- readMVar (tBytesReceived env)
-    r    <- readMVar (tRekeyingLastDataReceived env)
-    pure $ t + interval  < tNow
-        || s + threshold < sNow
-        || r + threshold < rNow
+    r    <- readMVar (tKexLastDataReceived env)
+    pure $ t + interval  <= tNow
+        || s + threshold <= sNow
+        || r + threshold <= rNow
   where
     -- For reasons of fool-proofness the rekeying interval/threshold
     -- shall never be greater than 1 hour or 1GB.
@@ -573,10 +591,10 @@ newTransport config stream cv sv = do
     xDecryptionCtxNext   <- newMVar (plainDecryptionContext stream)
     xKexContinuation     <- newEmptyMVar
     xSessionId           <- newEmptyMVar
-    xRekeyCounter        <- newMVar 0
-    xRekeyTime           <- newMVar =<< getEpochSeconds
-    xRekeySent           <- newMVar 0
-    xRekeyRcvd           <- newMVar 0
+    xKexCount            <- newMVar 0
+    xKexTime             <- newMVar =<< getEpochSeconds
+    xKexSent             <- newMVar 0
+    xKexRcvd             <- newMVar 0
     pure Transport
         { tConfig                   = config
         , tClientVersion            = cv
@@ -591,8 +609,8 @@ newTransport config stream cv sv = do
         , tDecryptionCtxNext        = xDecryptionCtxNext
         , tKexContinuation          = xKexContinuation
         , tSessionId                = xSessionId
-        , tRekeyingCounter          = xRekeyCounter
-        , tRekeyingLastTime         = xRekeyTime
-        , tRekeyingLastDataSent     = xRekeySent
-        , tRekeyingLastDataReceived = xRekeyRcvd
+        , tKexCount                 = xKexCount
+        , tKexLastTime              = xKexTime
+        , tKexLastDataSent          = xKexSent
+        , tKexLastDataReceived      = xKexRcvd
         }
