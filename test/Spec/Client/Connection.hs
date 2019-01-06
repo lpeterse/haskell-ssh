@@ -62,6 +62,8 @@ tests = testGroup "Network.SSH.Client.Connection"
         , testGroup "shell (channel requests)" 
             [ testSessionShellRequest01
             , testSessionShellRequest02
+            , testSessionShellRequest03
+            , testSessionShellRequest04
             ]
         ]
     ]
@@ -607,3 +609,74 @@ testSessionShellRequest02 = testCase "unknown requests shall be ignored (when wa
         sc3  = ChannelRequest lid "req-unknown" False ""
         cs3  = ChannelEof rid
         cs4  = ChannelClose rid
+
+testSessionShellRequest03 :: TestTree
+testSessionShellRequest03 = testCase "'exit-status' shall be passed to the session handler" $ do
+    mes <- newEmptyMVar
+    (serverStream,clientStream) <- newDummyTransportPair
+    let action = withConnection conf clientStream $ \c -> do
+            let s = runShell c $ SessionHandler $ \_ _ _ exitSTM ->
+                    putMVar mes =<< atomically exitSTM
+            withAsync s wait
+    withAsync action $ \thread -> do
+        -- open / open confirmation
+        assertEqual "cs1" cs1 =<< receiveMessage serverStream
+        sendMessage serverStream sc1
+        -- shell request / response
+        assertEqual "cs2" cs2 =<< receiveMessage serverStream
+        sendMessage serverStream sc2
+        -- exit-status request
+        sendMessage serverStream sc3
+        -- eof and close
+        assertEqual "exit-status" es =<< readMVar mes
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        sc1  = ChannelOpenConfirmation lid rid ws ps
+        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        sc2  = ChannelSuccess lid
+        sc3  = ChannelRequest lid "exit-status" False "\NUL\NUL\NUL\NUL"
+        es   = Right ExitSuccess
+
+testSessionShellRequest04 :: TestTree
+testSessionShellRequest04 = testCase "'exit-signal' shall be passed to the session handler" $ do
+    mes <- newEmptyMVar
+    (serverStream,clientStream) <- newDummyTransportPair
+    let action = withConnection conf clientStream $ \c -> do
+            let s = runShell c $ SessionHandler $ \_ _ _ exitSTM ->
+                    putMVar mes =<< atomically exitSTM
+            withAsync s wait
+    withAsync action $ \thread -> do
+        -- open / open confirmation
+        assertEqual "cs1" cs1 =<< receiveMessage serverStream
+        sendMessage serverStream sc1
+        -- shell request / response
+        assertEqual "cs2" cs2 =<< receiveMessage serverStream
+        sendMessage serverStream sc2
+        -- exit-status request
+        sendMessage serverStream sc3
+        -- eof and close
+        assertEqual "exit-status" es =<< readMVar mes
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        sc1  = ChannelOpenConfirmation lid rid ws ps
+        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        sc2  = ChannelSuccess lid
+        sc3  = ChannelRequest lid "exit-signal" False $ runPut $ put sig
+        sig  = ChannelRequestExitSignal "INTR" False "" ""
+        es   = Left (ExitSignal "INTR" False "")

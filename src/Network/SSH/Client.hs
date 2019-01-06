@@ -19,6 +19,7 @@ module Network.SSH.Client
     , SessionHandler (..)
     -- ** Misc
     , Command (..)
+    , ExitSignal (..)
     , ChannelException (..)
     , ChannelOpenFailureDescription (..)
     )
