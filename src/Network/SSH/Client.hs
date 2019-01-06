@@ -15,6 +15,8 @@ module Network.SSH.Client
     -- ** shell & exec
     , shell
     , exec
+    -- ** Misc
+    , getChannelCount
     , SessionHandler (..)
     , Command (..)
     -- ** Exceptions

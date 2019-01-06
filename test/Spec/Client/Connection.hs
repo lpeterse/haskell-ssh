@@ -6,6 +6,7 @@ import           Control.Concurrent          ( threadDelay )
 import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
 import           Control.Exception           ( AssertionFailed (..), fromException, throw, throwIO )
+import           Control.Monad.STM
 import           Crypto.Error
 import qualified Crypto.PubKey.Ed25519    as Ed25519
 import qualified Crypto.PubKey.RSA        as RSA
@@ -54,6 +55,9 @@ tests = testGroup "Network.SSH.Client.Connection"
             , testSessionShell06
             , testSessionShell07
             , testSessionShell08
+            , testSessionShell09
+            , testSessionShell10
+            , testSessionShell11
             ]
         ]
     ]
@@ -398,3 +402,135 @@ testSessionShell08 = testCase "shall send eof and close after session handler th
         req2 = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
         req3 = ChannelEof rid
         req4 = ChannelClose rid
+
+testSessionShell09 :: TestTree
+testSessionShell09 = testCase "shall close properly even if canceled before channel open confirmed" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mc    <- newEmptyMVar
+    step1 <- newEmptyMVar
+    step2 <- newEmptyMVar
+    step3 <- newEmptyMVar
+    let action = withConnection conf clientStream $ \c -> do
+            putMVar mc c
+            readMVar step1
+            let s = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+            withAsync s $ \shellThread -> do
+                readMVar step2
+                cancel shellThread
+                putMVar step3 ()
+                threadDelay 1000000 -- wait till end of test
+    withAsync action $ \_ -> do
+        c <- readMVar mc
+        assertEqual "channel count before" 0 =<< getChannelCount c
+        putMVar step1 ()
+        assertEqual "req1" req1 =<< receiveMessage serverStream
+        assertEqual "channel count (1)" 1 =<< getChannelCount c
+        putMVar step2 () -- cancel shell thread now
+        readMVar step3   -- wait for shell thread to be canceled
+        sendMessage serverStream $ ChannelOpenConfirmation lid rid ws ps
+        assertEqual "req2" req2 =<< receiveMessage serverStream
+        assertEqual "channel count (1)" 1 =<< getChannelCount c
+        sendMessage serverStream $ ChannelClose lid
+        threadDelay 10000 -- wait for client cleanup
+        assertEqual "channel count after" 0 =<< getChannelCount c
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        req2 = ChannelClose rid
+
+testSessionShell10 :: TestTree
+testSessionShell10 = testCase "shall close properly even if canceled before channel open failed" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mc    <- newEmptyMVar
+    step1 <- newEmptyMVar
+    step2 <- newEmptyMVar
+    step3 <- newEmptyMVar
+    let action = withConnection conf clientStream $ \c -> do
+            putMVar mc c
+            readMVar step1
+            let s = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+            withAsync s $ \shellThread -> do
+                readMVar step2
+                cancel shellThread
+                putMVar step3 ()
+                threadDelay 1000000 -- wait till end of test
+    withAsync action $ \_ -> do
+        c <- readMVar mc
+        assertEqual "channel count before" 0 =<< getChannelCount c
+        putMVar step1 ()
+        assertEqual "req1" req1 =<< receiveMessage serverStream
+        assertEqual "channel count (1)" 1 =<< getChannelCount c
+        putMVar step2 () -- cancel shell thread now
+        readMVar step3   -- wait for shell thread to be canceled
+        sendMessage serverStream res1
+        threadDelay 10000 -- wait for client cleanup
+        assertEqual "channel count after" 0 =<< getChannelCount c
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        res1 = ChannelOpenFailure lid ChannelOpenAdministrativelyProhibited "" ""
+
+testSessionShell11 :: TestTree
+testSessionShell11 = testCase "shall close properly when close initiated by server" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    mc    <- newEmptyMVar
+    step1 <- newEmptyMVar
+    step2 <- newEmptyMVar
+    let action = withConnection conf clientStream $ \c -> do
+            putMVar mc c
+            readMVar step1
+            let s = shell c $ SessionHandler $ \_ _ _ exitSTM -> do
+                    threadDelay 10000
+                    readMVar step2
+                    atomically exitSTM
+            withAsync s wait
+    withAsync action $ \thread -> do
+        c <- readMVar mc
+        assertEqual "channel count before" 0 =<< getChannelCount c
+        putMVar step1 ()
+        -- open / open confirmation
+        assertEqual "cs1" cs1 =<< receiveMessage serverStream
+        sendMessage serverStream sc1
+        -- shell request / success
+        assertEqual "cs2" cs2 =<< receiveMessage serverStream
+        sendMessage serverStream sc2
+        -- close / close
+        sendMessage serverStream sc3
+        assertEqual "cs3" cs3 =<< receiveMessage serverStream
+        -- wait for and check exit code
+        putMVar step2 ()
+        wait thread >>= \case
+            Left  es -> assertFailure (show es)
+            Right ec -> assertEqual "exit code" (ExitFailure (-1)) ec
+
+        threadDelay 10000 -- wait for client cleanup
+        assertEqual "channel count after" 0 =<< getChannelCount c
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        sc1  = ChannelOpenConfirmation lid rid ws ps
+        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        sc2  = ChannelSuccess lid
+        sc3  = ChannelClose lid
+        cs3  = ChannelClose rid
