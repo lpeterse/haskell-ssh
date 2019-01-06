@@ -6,6 +6,7 @@ import           Control.Concurrent          ( threadDelay )
 import           Control.Concurrent.Async
 import           Control.Concurrent.MVar
 import           Control.Exception           ( AssertionFailed (..), fromException, throw, throwIO )
+import           Control.Monad               ( void )
 import           Control.Monad.STM
 import           Crypto.Error
 import qualified Crypto.PubKey.Ed25519    as Ed25519
@@ -64,6 +65,14 @@ tests = testGroup "Network.SSH.Client.Connection"
             , testSessionShellRequest02
             , testSessionShellRequest03
             , testSessionShellRequest04
+            ]
+        , testGroup "shell (data and window adjust)"
+            [ testSessionShellData01
+            , testSessionShellData02
+            , testSessionShellData03
+            , testSessionShellData04
+            , testSessionShellData05
+            , testSessionShellData06
             ]
         ]
     ]
@@ -680,3 +689,216 @@ testSessionShellRequest04 = testCase "'exit-signal' shall be passed to the sessi
         sc3  = ChannelRequest lid "exit-signal" False $ runPut $ put sig
         sig  = ChannelRequestExitSignal "INTR" False "" ""
         es   = Left (ExitSignal "INTR" False "")
+
+testSessionShellData01 :: TestTree
+testSessionShellData01 = testCase "shall receive data on stdout" $ do
+    rcvd <- newEmptyMVar
+    (serverStream,clientStream) <- newDummyTransportPair
+    let action = withConnection conf clientStream $ \c -> do
+            let s = runShell c $ SessionHandler $ \_ stdout _ _ -> do
+                        x <- receiveAll stdout 4
+                        putMVar rcvd x
+            withAsync s wait
+    withAsync action $ \thread -> do
+        -- open / open confirmation
+        assertEqual "cs1" cs1 =<< receiveMessage serverStream
+        sendMessage serverStream sc1
+        -- shell request / response
+        assertEqual "cs2" cs2 =<< receiveMessage serverStream
+        sendMessage serverStream sc2
+        -- send data
+        sendMessage serverStream sc3
+        assertEqual "rcvd" "ABCD"  =<< readMVar rcvd
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        sc1  = ChannelOpenConfirmation lid rid ws ps
+        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        sc2  = ChannelSuccess lid
+        sc3  = ChannelData lid "ABCD"
+
+testSessionShellData02 :: TestTree
+testSessionShellData02 = testCase "shall receive data on stderr" $ do
+    rcvd <- newEmptyMVar
+    (serverStream,clientStream) <- newDummyTransportPair
+    let action = withConnection conf clientStream $ \c -> do
+            let s = runShell c $ SessionHandler $ \_ _ stderr _ -> do
+                        x <- receiveAll stderr 4
+                        putMVar rcvd x
+            withAsync s wait
+    withAsync action $ \thread -> do
+        -- open / open confirmation
+        assertEqual "cs1" cs1 =<< receiveMessage serverStream
+        sendMessage serverStream sc1
+        -- shell request / response
+        assertEqual "cs2" cs2 =<< receiveMessage serverStream
+        sendMessage serverStream sc2
+        -- send data
+        sendMessage serverStream sc3
+        assertEqual "rcvd" "ABCD"  =<< readMVar rcvd
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        sc1  = ChannelOpenConfirmation lid rid ws ps
+        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        sc2  = ChannelSuccess lid
+        sc3  = ChannelExtendedData lid 1 "ABCD"
+
+testSessionShellData03 :: TestTree
+testSessionShellData03 = testCase "shall send data when writing stdin" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let action = withConnection conf clientStream $ \c -> do
+            let s = runShell c $ SessionHandler $ \stdin _ _ _ -> do
+                        void $ sendAll stdin "ABCD" 
+                        threadDelay 1000000
+            withAsync s wait
+    withAsync action $ \thread -> do
+        -- open / open confirmation
+        assertEqual "cs1" cs1 =<< receiveMessage serverStream
+        sendMessage serverStream sc1
+        -- shell request / response
+        assertEqual "cs2" cs2 =<< receiveMessage serverStream
+        sendMessage serverStream sc2
+        -- receive data
+        assertEqual "cs3" cs3 =<< receiveMessage serverStream
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        sc1  = ChannelOpenConfirmation lid rid ws ps
+        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        sc2  = ChannelSuccess lid
+        cs3  = ChannelData rid "ABCD"
+
+testSessionShellData04 :: TestTree
+testSessionShellData04 = testCase "shall throw exception when window size exceeded" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let action = withConnection conf clientStream $ \c -> do
+            let s = runShell c $ SessionHandler $ \stdin _ _ _ ->
+                        threadDelay 1000000
+            withAsync s wait
+    withAsync action $ \thread -> do
+        -- open / open confirmation
+        assertEqual "cs1" cs1 =<< receiveMessage serverStream
+        sendMessage serverStream sc1
+        -- shell request / response
+        assertEqual "cs2" cs2 =<< receiveMessage serverStream
+        sendMessage serverStream sc2
+        -- message exceeds window size
+        sendMessage serverStream sc3
+        waitCatch thread >>= \case
+            Right () -> assertFailure "should have thrown"
+            Left e -> case fromException e of
+                Nothing -> assertFailure "wrong exception"
+                Just e' -> assertEqual "exception" exceptionWindowSizeUnderrun e'
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 3
+        ps   = 128
+        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        sc1  = ChannelOpenConfirmation lid rid ws ps
+        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        sc2  = ChannelSuccess lid
+        sc3  = ChannelData lid "ABCD"
+
+testSessionShellData05 :: TestTree
+testSessionShellData05 = testCase "shall throw exception when packet size exceeded" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let action = withConnection conf clientStream $ \c -> do
+            let s = runShell c $ SessionHandler $ \stdin _ _ _ ->
+                        threadDelay 1000000
+            withAsync s wait
+    withAsync action $ \thread -> do
+        -- open / open confirmation
+        assertEqual "cs1" cs1 =<< receiveMessage serverStream
+        sendMessage serverStream sc1
+        -- shell request / response
+        assertEqual "cs2" cs2 =<< receiveMessage serverStream
+        sendMessage serverStream sc2
+        -- message exceeds window size
+        sendMessage serverStream sc3
+        waitCatch thread >>= \case
+            Right () -> assertFailure "should have thrown"
+            Left e -> case fromException e of
+                Nothing -> assertFailure "wrong exception"
+                Just e' -> assertEqual "exception" exceptionPacketSizeExceeded e'
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 128
+        ps   = 3
+        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        sc1  = ChannelOpenConfirmation lid rid ws ps
+        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        sc2  = ChannelSuccess lid
+        sc3  = ChannelData lid "ABCD"
+
+testSessionShellData06 :: TestTree
+testSessionShellData06 = testCase "shall adjust window size when it shrinks below 50%" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let action = withConnection conf clientStream $ \c -> do
+            let s = runShell c $ SessionHandler $ \_ stdout _ _ -> do
+                        void $ receiveAll stdout 2
+                        threadDelay 1000000
+            withAsync s wait
+    withAsync action $ \thread -> do
+        -- open / open confirmation
+        assertEqual "cs1" cs1 =<< receiveMessage serverStream
+        sendMessage serverStream sc1
+        -- shell request / response
+        assertEqual "cs2" cs2 =<< receiveMessage serverStream
+        sendMessage serverStream sc2
+        -- send 2 bytes
+        sendMessage serverStream $ ChannelData lid "AB"
+        -- ping/pong to assure there is no window adjust yet
+        sendMessage serverStream sc3
+        assertEqual "cs3" cs3 =<< receiveMessage serverStream
+        -- send 1 more byte
+        sendMessage serverStream $ ChannelData lid "C"
+        -- expect window adjust now
+        assertEqual "cs4" cs4 =<< receiveMessage serverStream
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 5
+        ps   = 128
+        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        sc1  = ChannelOpenConfirmation lid rid ws ps
+        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        sc2  = ChannelSuccess lid
+        sc3  = ChannelRequest lid "req-unknown" True ""
+        cs3  = ChannelFailure rid
+        cs4  = ChannelWindowAdjust rid 3

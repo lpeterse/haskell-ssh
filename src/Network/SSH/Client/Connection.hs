@@ -359,7 +359,7 @@ runSession c mcommand (SessionHandler handler) = do
 
         checkNotClosedSTM :: Channel -> STM ()
         checkNotClosedSTM ch =
-            readTVar (chanClosed ch) >>= check
+            readTVar (chanClosed ch) >>= check . not
 
         throwWhenClosedSTM :: Channel -> STM a
         throwWhenClosedSTM ch =
@@ -464,6 +464,7 @@ dispatchChannelDataSTM c (ChannelData lid datShort) =
         ChannelOpening {} -> throwSTM exceptionInvalidChannelState
         ChannelRunning ch -> case chanApplication ch of
             ChannelApplicationSession ChannelSession { sessStdout = queue } -> do
+                when (len > chanMaxPacketSizeRemote ch) (throwSTM exceptionPacketSizeExceeded) 
                 enqueued <- Q.enqueue queue dat <|> pure 0
                 when (enqueued /= len) (throwSTM exceptionWindowSizeUnderrun)
         ChannelClosing {} -> pure ()
@@ -477,6 +478,7 @@ dispatchChannelExtendedDataSTM c (ChannelExtendedData lid _ datShort) =
         ChannelOpening {} -> throwSTM exceptionInvalidChannelState
         ChannelRunning ch -> case chanApplication ch of
             ChannelApplicationSession ChannelSession { sessStderr = queue } -> do
+                when (len > chanMaxPacketSizeRemote ch) (throwSTM exceptionPacketSizeExceeded) 
                 enqueued <- Q.enqueue queue dat <|> pure 0
                 when (enqueued /= len) (throwSTM exceptionWindowSizeUnderrun)
         ChannelClosing {} -> pure ()
