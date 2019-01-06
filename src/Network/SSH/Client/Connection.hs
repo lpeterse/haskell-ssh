@@ -1,7 +1,20 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts          #-}
 {-# LANGUAGE RankNTypes                #-}
-module Network.SSH.Client.Connection where
+module Network.SSH.Client.Connection
+    ( ConnectionConfig (..)
+    , Connection ()
+    , ChannelException (..)
+    , ChannelOpenFailureDescription (..)
+    , Environment (..)
+    , Command (..)
+    , ExitSignal (..)
+    , SessionHandler (..)
+    , withConnection
+    , getChannelCount
+    , runShell
+    , runExec
+    ) where
 
 import           Control.Applicative
 import           Control.Concurrent.Async              ( withAsync, waitSTM )

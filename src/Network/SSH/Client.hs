@@ -10,16 +10,15 @@ module Network.SSH.Client
     , ConnectionConfig (..)
     -- * Connection
     , Connection ()
+    , getChannelCount
     -- ** withClientConnection
     , withClientConnection
     -- ** runShell & runExec
     , runShell
     , runExec
-    -- ** Misc
-    , getChannelCount
     , SessionHandler (..)
+    -- ** Misc
     , Command (..)
-    -- ** Exceptions
     , ChannelException (..)
     , ChannelOpenFailureDescription (..)
     )
