@@ -51,7 +51,7 @@ main = do
         handle :: (DuplexStream stream) => Config -> stream -> IO ()
         handle config stream = withClientConnection config stream $ \c -> do
             print "connection established"
-            exec c (Command "ls") $ SessionHandler $ \stdin stdout stderr exit -> do
+            runExec c (Command "ls") $ SessionHandler $ \stdin stdout stderr exit -> do
                 receive stdout 4096 >>= print
                 atomically exit >>= print
             threadDelay 1000000

@@ -214,7 +214,7 @@ testSessionShell01 :: TestTree
 testSessionShell01 = testCase "shall send channel open request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let action = withConnection conf clientStream $ \c ->
-            shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+            runShell c $ SessionHandler $ \_ _ _ _ -> pure ()
     withAsync action $ \thread ->
         assertEqual "req1" req1 =<< receiveMessage serverStream
     where
@@ -230,7 +230,7 @@ testSessionShell02 :: TestTree
 testSessionShell02 = testCase "shall increase channel ids when requesting several channels" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let action = withConnection conf clientStream $ \c -> do
-            let x = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+            let x = runShell c $ SessionHandler $ \_ _ _ _ -> pure ()
             withAsync x $ \_ -> threadDelay 10000 >> x
     withAsync action $ \_ -> do
         assertEqual "req1" req1 =<< receiveMessage serverStream
@@ -249,7 +249,7 @@ testSessionShell03 :: TestTree
 testSessionShell03 = testCase "shall throw exception when channel open failed" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     invoked <- newEmptyMVar
-    let s c    = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+    let s c    = runShell c $ SessionHandler $ \_ _ _ _ -> pure ()
     let action = withConnection conf clientStream $ \c -> withAsync (s c) $ \sThread -> do
             failure <- waitCatch sThread
             putMVar invoked failure
@@ -273,9 +273,9 @@ testSessionShell03 = testCase "shall throw exception when channel open failed" $
         exp2 = ChannelOpenFailed ChannelOpenAdministrativelyProhibited (ChannelOpenFailureDescription "")
 
 testSessionShell04 :: TestTree
-testSessionShell04 = testCase "shall request shell when channel open confirmed" $ do
+testSessionShell04 = testCase "shall request runShell when channel open confirmed" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let s c    = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+    let s c    = runShell c $ SessionHandler $ \_ _ _ _ -> pure ()
     let action = withConnection conf clientStream s
     withAsync action $ \_ -> do
         assertEqual "req1" req1 =<< receiveMessage serverStream
@@ -294,10 +294,10 @@ testSessionShell04 = testCase "shall request shell when channel open confirmed" 
         req2 = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
 
 testSessionShell05 :: TestTree
-testSessionShell05 = testCase "shall throw exception when shell request failed" $ do
+testSessionShell05 = testCase "shall throw exception when runShell request failed" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     me <- newEmptyMVar
-    let s c = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+    let s c = runShell c $ SessionHandler $ \_ _ _ _ -> pure ()
     let a = withConnection conf clientStream $ \c ->
                 withAsync (s c) $ \sThread ->
                     putMVar me =<< waitCatch sThread
@@ -324,10 +324,10 @@ testSessionShell05 = testCase "shall throw exception when shell request failed" 
         exp3 = ChannelRequestFailed
 
 testSessionShell06 :: TestTree
-testSessionShell06 = testCase "shall invoke session handler when shell request successful" $ do
+testSessionShell06 = testCase "shall invoke session handler when runShell request successful" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     me <- newEmptyMVar
-    let s c = shell c $ SessionHandler $ \_ _ _ _ -> pure 123
+    let s c = runShell c $ SessionHandler $ \_ _ _ _ -> pure 123
     let a = withConnection conf clientStream $ \c ->
                 withAsync (s c) $ \sThread ->
                     putMVar me =<< waitCatch sThread
@@ -354,7 +354,7 @@ testSessionShell06 = testCase "shall invoke session handler when shell request s
 testSessionShell07 :: TestTree
 testSessionShell07 = testCase "shall send eof and close after session handler returned" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let s c = shell c $ SessionHandler $ \_ _ _ _ -> pure 123
+    let s c = runShell c $ SessionHandler $ \_ _ _ _ -> pure 123
     let a = withConnection conf clientStream s
     withAsync a $ \_ -> do
         assertEqual "req1" req1 =<< receiveMessage serverStream
@@ -380,7 +380,7 @@ testSessionShell07 = testCase "shall send eof and close after session handler re
 testSessionShell08 :: TestTree
 testSessionShell08 = testCase "shall send eof and close after session handler threw exception" $ do
     (serverStream,clientStream) <- newDummyTransportPair
-    let s c = shell c $ SessionHandler $ \_ _ _ _ -> throwIO (userError "ERROR")
+    let s c = runShell c $ SessionHandler $ \_ _ _ _ -> throwIO (userError "ERROR")
     let a = withConnection conf clientStream s
     withAsync a $ \_ -> do
         assertEqual "req1" req1 =<< receiveMessage serverStream
@@ -413,7 +413,7 @@ testSessionShell09 = testCase "shall close properly even if canceled before chan
     let action = withConnection conf clientStream $ \c -> do
             putMVar mc c
             readMVar step1
-            let s = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+            let s = runShell c $ SessionHandler $ \_ _ _ _ -> pure ()
             withAsync s $ \shellThread -> do
                 readMVar step2
                 cancel shellThread
@@ -425,8 +425,8 @@ testSessionShell09 = testCase "shall close properly even if canceled before chan
         putMVar step1 ()
         assertEqual "req1" req1 =<< receiveMessage serverStream
         assertEqual "channel count (1)" 1 =<< getChannelCount c
-        putMVar step2 () -- cancel shell thread now
-        readMVar step3   -- wait for shell thread to be canceled
+        putMVar step2 () -- cancel runShell thread now
+        readMVar step3   -- wait for runShell thread to be canceled
         sendMessage serverStream $ ChannelOpenConfirmation lid rid ws ps
         assertEqual "req2" req2 =<< receiveMessage serverStream
         assertEqual "channel count (1)" 1 =<< getChannelCount c
@@ -455,7 +455,7 @@ testSessionShell10 = testCase "shall close properly even if canceled before chan
     let action = withConnection conf clientStream $ \c -> do
             putMVar mc c
             readMVar step1
-            let s = shell c $ SessionHandler $ \_ _ _ _ -> pure ()
+            let s = runShell c $ SessionHandler $ \_ _ _ _ -> pure ()
             withAsync s $ \shellThread -> do
                 readMVar step2
                 cancel shellThread
@@ -467,8 +467,8 @@ testSessionShell10 = testCase "shall close properly even if canceled before chan
         putMVar step1 ()
         assertEqual "req1" req1 =<< receiveMessage serverStream
         assertEqual "channel count (1)" 1 =<< getChannelCount c
-        putMVar step2 () -- cancel shell thread now
-        readMVar step3   -- wait for shell thread to be canceled
+        putMVar step2 () -- cancel runShell thread now
+        readMVar step3   -- wait for runShell thread to be canceled
         sendMessage serverStream res1
         threadDelay 10000 -- wait for client cleanup
         assertEqual "channel count after" 0 =<< getChannelCount c
@@ -493,7 +493,7 @@ testSessionShell11 = testCase "shall close properly when close initiated by serv
     let action = withConnection conf clientStream $ \c -> do
             putMVar mc c
             readMVar step1
-            let s = shell c $ SessionHandler $ \_ _ _ exitSTM -> do
+            let s = runShell c $ SessionHandler $ \_ _ _ exitSTM -> do
                     threadDelay 10000
                     readMVar step2
                     atomically exitSTM
@@ -505,7 +505,7 @@ testSessionShell11 = testCase "shall close properly when close initiated by serv
         -- open / open confirmation
         assertEqual "cs1" cs1 =<< receiveMessage serverStream
         sendMessage serverStream sc1
-        -- shell request / success
+        -- runShell request / success
         assertEqual "cs2" cs2 =<< receiveMessage serverStream
         sendMessage serverStream sc2
         -- close / close

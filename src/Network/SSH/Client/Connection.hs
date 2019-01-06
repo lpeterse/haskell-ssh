@@ -170,10 +170,10 @@ newtype SessionHandler a = SessionHandler (forall stdin stdout stderr. (OutputSt
     => stdin -> stdout -> stderr -> STM (Either ExitSignal ExitCode) -> IO a)
 
 withConnection :: (MessageStream stream) => ConnectionConfig -> stream -> (Connection -> IO a) -> IO a
-withConnection config stream handler = do
+withConnection config stream runHandler = do
     c <- atomically $ Connection config <$> newTChan <*> newTVar mempty
-    withAsync (dispatchIncoming stream c) $ \receiverThread -> do
-        withAsync (handler c) $ \handlerThread -> fix $ \continue -> do
+    withAsync (runReceiver c) $ \receiverThread -> do
+        withAsync (runHandler c) $ \handlerThread -> fix $ \continue -> do
             let left  = Left  <$> readTChan (connOutChan c)
                 right = Right <$> waitSTM handlerThread
                 receiverThreadException = do
@@ -183,96 +183,17 @@ withConnection config stream handler = do
                 Left msg -> sendMessage stream msg >> continue
                 Right a  -> pure a
     where
-        dispatchIncoming :: (MessageStream stream) => stream -> Connection -> IO ()
-        dispatchIncoming s c = forever $ receiveMessage s >>= \case
-            I080 (GlobalRequest wantReply _) -> when wantReply
-                $ atomically $ sendMessageSTM c
-                $ O82 RequestFailure
-            I091 x@(ChannelOpenConfirmation lid rid _ _) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    ChannelOpening f  -> f (Right x)
-                    ChannelRunning {} -> throwSTM exceptionInvalidChannelState
-                    -- The channel was set to closing locally:
-                    -- It is left in closing state and a close message is sent to the
-                    -- peer. The channel will be freed when the close reponse arrives.
-                    ChannelClosing {} -> sendMessageSTM c $ O97 $ ChannelClose rid
-            I092 x@(ChannelOpenFailure lid _ _ _) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    -- The channel open request failed:
-                    -- Free the channel and call the registered handler.
-                    ChannelOpening f  -> do
-                        unregisterChannelSTM c lid
-                        f (Left x)
-                    ChannelRunning {} -> throwSTM exceptionInvalidChannelState
-                    -- The channel was set to closing locally:
-                    -- As the channel open failed a close message is not required
-                    -- and the channel can bee freed immediately.
-                    ChannelClosing {} -> unregisterChannelSTM c lid
-            I093 (ChannelWindowAdjust lid sz) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> channelAdjustWindowSTM ch sz
-                    ChannelClosing {} -> pure ()
-            I094 (ChannelData lid dat) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> channelDataSTM ch dat
-                    ChannelClosing {} -> pure ()
-            I095  (ChannelExtendedData lid typ dat) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> channelExtendedDataSTM ch typ dat
-                    ChannelClosing {} -> pure ()
-            I096 (ChannelEof lid) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> channelEofSTM ch
-                    ChannelClosing {} -> pure ()
-            I097 (ChannelClose lid) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    -- A close message must not occur unless the channel is open.
-                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    -- A running channel means that the close is initiated
-                    -- by the server. We respond and free the channel immediately.
-                    -- It is also necessary to mark the channel itself as closed
-                    -- so that the handler thread knows about the close
-                    -- (looking up the channel id in the map is unsafe as it
-                    -- might have been reused after this transaction).
-                    ChannelRunning ch -> do
-                        unregisterChannelSTM c lid
-                        writeTVar (chanClosed ch) True
-                        sendMessageSTM c $ O97 $ ChannelClose (chanIdRemote ch)
-                    -- A closing channel means that we have already sent
-                    -- a close message and this is the reponse. The channel gets
-                    -- freed and its id is ready for reuse.
-                    ChannelClosing {} -> unregisterChannelSTM c lid
-            I098 (ChannelRequest lid typ wantReply dat) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> channelRequestSTM ch typ wantReply dat
-                    ChannelClosing {} -> pure ()
-            I099 (ChannelSuccess lid) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> putTMVar (chanRequestSuccess ch) True
-                        <|> throwSTM exceptionUnexpectedChannelResponse
-                    ChannelClosing {} -> pure ()
-            I100  (ChannelFailure lid) ->
-                atomically $ getChannelStateSTM c lid >>= \case
-                    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> putTMVar (chanRequestSuccess ch) False
-                        <|> throwSTM exceptionUnexpectedChannelResponse
-                    ChannelClosing {} -> pure ()
+        runReceiver c = forever $ receiveMessage stream >>= dispatchMessage c
 
 ---------------------------------------------------------------------------------------------------
 -- PUBLIC FUNCTIONS
 ---------------------------------------------------------------------------------------------------
 
-shell :: Connection -> SessionHandler a -> IO a
-shell c = session c Nothing
+runShell :: Connection -> SessionHandler a -> IO a
+runShell c = runSession c Nothing
 
-exec :: Connection -> Command -> SessionHandler a -> IO a
-exec c command = session c (Just command)
+runExec :: Connection -> Command -> SessionHandler a -> IO a
+runExec c command = runSession c (Just command)
 
 getChannelCount :: Connection -> IO Int
 getChannelCount c = atomically do
@@ -285,8 +206,8 @@ getChannelCount c = atomically do
 sendMessageSTM :: Connection -> OutboundMessage -> STM ()
 sendMessageSTM  c = writeTChan (connOutChan c)
 
-session :: Connection -> Maybe Command -> SessionHandler a -> IO a
-session c mcommand (SessionHandler handler) = do
+runSession :: Connection -> Maybe Command -> SessionHandler a -> IO a
+runSession c mcommand (SessionHandler handler) = do
     tlws     <- newTVarIO maxQueueSize
     trws     <- newTVarIO 0
     stdin    <- atomically (Q.newTStreamingQueue maxQueueSize trws)
@@ -511,3 +432,84 @@ channelRequestSTM ch typ wantReply dat = case chanApplication ch of
             Just (ChannelRequestExitStatus status) ->
                 void $ tryPutTMVar exit $ Right status
         _ -> throwSTM exceptionInvalidChannelRequest
+
+dispatchMessage :: Connection -> InboundMessage -> IO ()
+dispatchMessage c = \case
+    I080 (GlobalRequest wantReply _) -> when wantReply
+        $ atomically $ sendMessageSTM c
+        $ O82 RequestFailure
+    I091 x@(ChannelOpenConfirmation lid rid _ _) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            ChannelOpening f  -> f (Right x)
+            ChannelRunning {} -> throwSTM exceptionInvalidChannelState
+            -- The channel was set to closing locally:
+            -- It is left in closing state and a close message is sent to the
+            -- peer. The channel will be freed when the close reponse arrives.
+            ChannelClosing {} -> sendMessageSTM c $ O97 $ ChannelClose rid
+    I092 x@(ChannelOpenFailure lid _ _ _) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            -- The channel open request failed:
+            -- Free the channel and call the registered handler.
+            ChannelOpening f  -> do
+                unregisterChannelSTM c lid
+                f (Left x)
+            ChannelRunning {} -> throwSTM exceptionInvalidChannelState
+            -- The channel was set to closing locally:
+            -- As the channel open failed a close message is not required
+            -- and the channel can bee freed immediately.
+            ChannelClosing {} -> unregisterChannelSTM c lid
+    I093 (ChannelWindowAdjust lid sz) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+            ChannelRunning ch -> channelAdjustWindowSTM ch sz
+            ChannelClosing {} -> pure ()
+    I094 (ChannelData lid dat) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+            ChannelRunning ch -> channelDataSTM ch dat
+            ChannelClosing {} -> pure ()
+    I095  (ChannelExtendedData lid typ dat) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+            ChannelRunning ch -> channelExtendedDataSTM ch typ dat
+            ChannelClosing {} -> pure ()
+    I096 (ChannelEof lid) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+            ChannelRunning ch -> channelEofSTM ch
+            ChannelClosing {} -> pure ()
+    I097 (ChannelClose lid) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            -- A close message must not occur unless the channel is open.
+            ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+            -- A running channel means that the close is initiated
+            -- by the server. We respond and free the channel immediately.
+            -- It is also necessary to mark the channel itself as closed
+            -- so that the handler thread knows about the close
+            -- (looking up the channel id in the map is unsafe as it
+            -- might have been reused after this transaction).
+            ChannelRunning ch -> do
+                unregisterChannelSTM c lid
+                writeTVar (chanClosed ch) True
+                sendMessageSTM c $ O97 $ ChannelClose (chanIdRemote ch)
+            -- A closing channel means that we have already sent
+            -- a close message and this is the reponse. The channel gets
+            -- freed and its id is ready for reuse.
+            ChannelClosing {} -> unregisterChannelSTM c lid
+    I098 (ChannelRequest lid typ wantReply dat) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+            ChannelRunning ch -> channelRequestSTM ch typ wantReply dat
+            ChannelClosing {} -> pure ()
+    I099 (ChannelSuccess lid) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+            ChannelRunning ch -> putTMVar (chanRequestSuccess ch) True
+                <|> throwSTM exceptionUnexpectedChannelResponse
+            ChannelClosing {} -> pure ()
+    I100  (ChannelFailure lid) ->
+        atomically $ getChannelStateSTM c lid >>= \case
+            ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+            ChannelRunning ch -> putTMVar (chanRequestSuccess ch) False
+                <|> throwSTM exceptionUnexpectedChannelResponse
+            ChannelClosing {} -> pure ()

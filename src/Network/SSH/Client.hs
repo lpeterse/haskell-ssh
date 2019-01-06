@@ -12,9 +12,9 @@ module Network.SSH.Client
     , Connection ()
     -- ** withClientConnection
     , withClientConnection
-    -- ** shell & exec
-    , shell
-    , exec
+    -- ** runShell & runExec
+    , runShell
+    , runExec
     -- ** Misc
     , getChannelCount
     , SessionHandler (..)
