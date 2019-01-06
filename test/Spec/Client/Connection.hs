@@ -12,6 +12,7 @@ import qualified Crypto.PubKey.RSA        as RSA
 import qualified Data.ByteString          as BS
 import           Data.Default
 import           System.Exit
+import           System.IO.Error
 
 import           Test.Tasty
 import           Test.Tasty.HUnit
@@ -52,6 +53,7 @@ tests = testGroup "Network.SSH.Client.Connection"
             , testSessionShell05
             , testSessionShell06
             , testSessionShell07
+            , testSessionShell08
             ]
         ]
     ]
@@ -349,6 +351,32 @@ testSessionShell07 :: TestTree
 testSessionShell07 = testCase "shall send eof and close after session handler returned" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let s c = shell c $ SessionHandler $ \_ _ _ _ -> pure 123
+    let a = withConnection conf clientStream s
+    withAsync a $ \_ -> do
+        assertEqual "req1" req1 =<< receiveMessage serverStream
+        sendMessage serverStream $ ChannelOpenConfirmation lid rid ws ps
+        assertEqual "req2" req2 =<< receiveMessage serverStream
+        sendMessage serverStream $ ChannelSuccess lid
+        assertEqual "req3" req3 =<< receiveMessage serverStream
+        assertEqual "req4" req4 =<< receiveMessage serverStream
+    where
+        conf = def
+            { channelMaxQueueSize  = ws
+            , channelMaxPacketSize = ps
+            }
+        lid  = ChannelId 0
+        rid  = ChannelId 1
+        ws   = 4096
+        ps   = 128
+        req1 = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        req2 = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        req3 = ChannelEof rid
+        req4 = ChannelClose rid
+
+testSessionShell08 :: TestTree
+testSessionShell08 = testCase "shall send eof and close after session handler threw exception" $ do
+    (serverStream,clientStream) <- newDummyTransportPair
+    let s c = shell c $ SessionHandler $ \_ _ _ _ -> throwIO (userError "ERROR")
     let a = withConnection conf clientStream s
     withAsync a $ \_ -> do
         assertEqual "req1" req1 =<< receiveMessage serverStream

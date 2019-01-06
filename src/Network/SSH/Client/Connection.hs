@@ -7,9 +7,10 @@ module Network.SSH.Client.Connection where
 
 import           Control.Applicative
 import           Control.Concurrent.Async              ( ExceptionInLinkedThread (..), link, withAsync, waitSTM )
+import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TMVar
-import           Control.Exception                     ( Exception, throwIO, catch )
+import           Control.Exception                     ( Exception, bracket, catch, throwIO )
 import           Control.Monad
 import           Control.Monad.STM
 import           Data.Default
@@ -57,7 +58,7 @@ instance Default ConnectionConfig where
 data Connection
     = Connection
     { connConfig    :: ConnectionConfig
-    , connOutbound  :: TMVar OutboundMessage
+    , connOutChan   :: TChan OutboundMessage
     , connChannels  :: TVar (M.Map ChannelId ChannelState)
     }
 
@@ -74,6 +75,14 @@ data Channel
     , chanMaxPacketSizeRemote :: Word32
     , chanWindowSizeLocal     :: TVar Word32
     , chanWindowSizeRemote    :: TVar Word32
+    -- ^ This variable seems redundant, but it is not!
+    --   A channel handler may outlive the channel itself
+    --   (meaning it being registered in the channels map).
+    --   In this case referring to the channel by id
+    --   is use-after-free and might have undesired effects.
+    --   In other words: The local channel id is only valid
+    --   as long as this variable is False.
+    , chanClosed              :: TVar Bool
     , chanRequestSuccess      :: TMVar Bool
     , chanApplication         :: ChannelApplication
     }
@@ -140,6 +149,7 @@ instance Encoding OutboundMessage where
 data ChannelException
     = ChannelOpenFailed ChannelOpenFailureReason ChannelOpenFailureDescription
     | ChannelRequestFailed
+    | ChannelClosed
     deriving (Eq, Show)
 
 instance Exception ChannelException where
@@ -160,12 +170,12 @@ newtype SessionHandler a = SessionHandler (forall stdin stdout stderr. (OutputSt
     => stdin -> stdout -> stderr -> STM (Either ExitSignal ExitCode) -> IO a)
 
 withConnection :: (MessageStream stream) => ConnectionConfig -> stream -> (Connection -> IO a) -> IO a
-withConnection config stream handler = withMappedLinkedExceptions $ do
-    c <- atomically $ Connection config <$> newEmptyTMVar <*> newTVar mempty
+withConnection config stream handler = withMappedLinkedExceptions do
+    c <- atomically $ Connection config <$> newTChan <*> newTVar mempty
     withAsync (dispatchIncoming stream c) $ \receiverThread -> do
-        link receiverThread -- rethrow exceptions in main thread
+        link receiverThread -- rethrow exceptions in main thread -- FIXME
         withAsync (handler c) $ \handlerThread -> fix $ \continue -> do
-            let left  = Left  <$> takeTMVar (connOutbound c)
+            let left  = Left  <$> readTChan (connOutChan c)
                 right = Right <$> waitSTM handlerThread
             atomically (left <|> right) >>= \case
                 Left msg -> sendMessage stream msg >> continue
@@ -178,7 +188,8 @@ withConnection config stream handler = withMappedLinkedExceptions $ do
         dispatchIncoming :: (MessageStream stream) => stream -> Connection -> IO ()
         dispatchIncoming s c = forever $ receiveMessage s >>= \case
             I080 (GlobalRequest wantReply _) -> when wantReply
-                $ sendOutbound c (O82 RequestFailure)
+                $ atomically $ sendMessageSTM c
+                $ O82 RequestFailure
             I091 x@(ChannelOpenConfirmation lid _ _ _) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening f  -> f (Right x)
@@ -210,12 +221,21 @@ withConnection config stream handler = withMappedLinkedExceptions $ do
             I097 (ChannelClose lid) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-                    ChannelRunning ch -> error "NOT IMPLEMENTED"
+                    -- A running channel means that the close is initiated
+                    -- by the server.
+                    -- In order to properly close the channel it is necessary to
+                    -- set the closed flag in the channel, deregister
+                    -- it from the channels map and respond with another close
+                    -- message.
+                    ChannelRunning ch -> do
+                        writeTVar (chanClosed ch) True
+                        unregisterChannelSTM c lid
+                        sendMessageSTM c $ O97 $ ChannelClose (chanIdRemote ch)
                     -- A closing channel means that we have already sent
                     -- a close message and this is either a reponse or
                     -- a coincidence. In either case, it is okay to just
                     -- free the channel.
-                    ChannelClosing {} -> void $ freeChannelSTM c lid
+                    ChannelClosing {} -> unregisterChannelSTM c lid
             I098 (ChannelRequest lid typ wantReply dat) ->
                 atomically $ getChannelStateSTM c lid >>= \case
                     ChannelOpening {} -> throwSTM exceptionInvalidChannelState
@@ -248,8 +268,8 @@ exec c command = session c (Just command)
 -- INTERNAL FUNCTIONS
 ---------------------------------------------------------------------------------------------------
 
-sendOutbound :: Connection -> OutboundMessage -> IO ()
-sendOutbound c = atomically . putTMVar (connOutbound c)
+sendMessageSTM :: Connection -> OutboundMessage -> STM ()
+sendMessageSTM  c = writeTChan (connOutChan c)
 
 session :: Connection -> Maybe Command -> SessionHandler a -> IO a
 session c mcommand (SessionHandler handler) = do
@@ -261,80 +281,114 @@ session c mcommand (SessionHandler handler) = do
     exit     <- newEmptyTMVarIO
     r        <- newEmptyTMVarIO
     rs       <- newEmptyTMVarIO
-    lid      <- atomically $ allocChannelSTM c $ \case
-        Left x@ChannelOpenFailure {} -> do
-            putTMVar r (Left x)
-        Right (ChannelOpenConfirmation lid rid rws rps) -> do
-            let session = ChannelSession
-                    { sessStdin               = stdin
-                    , sessStdout              = stdout
-                    , sessStderr              = stderr
-                    , sessExit                = exit
-                    }
-            let channel = Channel
-                    { chanIdLocal             = lid
-                    , chanIdRemote            = rid
-                    , chanMaxPacketSizeLocal  = maxPacketSize
-                    , chanMaxPacketSizeRemote = rps
-                    , chanWindowSizeLocal     = tlws
-                    , chanWindowSizeRemote    = trws
-                    , chanRequestSuccess      = rs
-                    , chanApplication         = ChannelApplicationSession session
-                    }
-            writeTVar trws rws
-            setChannelStateSTM c lid $ ChannelRunning channel
-            putTMVar r (Right channel)
-    sendOutbound c $ O90 $ ChannelOpen lid maxQueueSize maxPacketSize ChannelOpenSession
-    atomically (readTMVar r) >>= \case
-        Left (ChannelOpenFailure _ reason descr _) -> throwIO
-            $ ChannelOpenFailed reason
-            $ ChannelOpenFailureDescription $ SBS.fromShort descr
-        Right ch -> do
-            sendOutbound c $ O98 $ case mcommand of
-                Just (Command command) -> ChannelRequest
-                    { crChannel   = chanIdRemote ch
-                    , crType      = "exec"
-                    , crWantReply = True
-                    , crData      = runPut (put $ ChannelRequestExec $ SBS.toShort command)
-                    }
-                Nothing -> ChannelRequest
-                    { crChannel   = chanIdRemote ch
-                    , crType      = "shell"
-                    , crWantReply = True
-                    , crData      = runPut (put ChannelRequestShell)
-                    }
-            -- Wait for response for this request.
-            -- Throw exception in case the request failed.
-            success <- atomically $ takeTMVar (chanRequestSuccess ch)
-            unless success $ throwIO ChannelRequestFailed
-            -- Invoke the user supplied handler function.
-            withAsync (handler stdin stdout stderr (readTMVar exit)) $ \handlerAsync -> do
-                let x1 = do -- wait for channel data
-                        dat <- Q.dequeueShort stdin (chanMaxPacketSizeRemote ch)
-                        putTMVar (connOutbound c) $ O94 $ ChannelData (chanIdRemote ch) dat
-                        pure Nothing
-                    x2 = do -- wait for necessary window adjust
-                        -- FIXME: need to consider stderr as well
-                        recommended <- Q.askWindowSpaceAdjustRecommended stdout
-                        unless recommended retry
-                        increment <- Q.fillWindowSpace stdout
-                        putTMVar (connOutbound c) $ O93 $ ChannelWindowAdjust (chanIdRemote ch) increment
-                        pure Nothing
-                    x3 = do -- wait for handler thread to terminate
-                        Just <$> waitSTM handlerAsync
-                a <- fix $ \continue -> atomically (x1 <|> x2 <|> x3) >>= \case
-                        Nothing -> continue
-                        Just a  -> pure a
-                -- The session handler returned a result.
-                -- TODO: Right now, it is not attempted to drain any queues.
-                --       It is open for discussion whether it should stay this way.
-                sendClose <- atomically $ freeChannelSTM c lid
-                when sendClose do
-                    sendOutbound c $ O96 $ ChannelEof (chanIdRemote ch)
-                    sendOutbound c $ O97 $ ChannelClose (chanIdRemote ch)
-                pure a
+    clsd     <- newTVarIO False
+
+    -- This function will be executed with the server's reponse
+    -- and turn the 'opening' channel into a 'running' one.
+    -- NB: This code is executed by the receiver thread and not
+    -- by the thread that called `session`.
+    let withOpenResponse = \case
+            Left x@ChannelOpenFailure {} -> do
+                putTMVar r (Left x)
+            Right (ChannelOpenConfirmation lid rid rws rps) -> do
+                let session = ChannelSession
+                        { sessStdin               = stdin
+                        , sessStdout              = stdout
+                        , sessStderr              = stderr
+                        , sessExit                = exit
+                        }
+                let channel = Channel
+                        { chanIdLocal             = lid
+                        , chanIdRemote            = rid
+                        , chanMaxPacketSizeLocal  = maxPacketSize
+                        , chanMaxPacketSizeRemote = rps
+                        , chanWindowSizeLocal     = tlws
+                        , chanWindowSizeRemote    = trws
+                        , chanRequestSuccess      = rs
+                        , chanClosed              = clsd
+                        , chanApplication         = ChannelApplicationSession session
+                        }
+                writeTVar trws rws
+                setChannelStateSTM c lid $ ChannelRunning channel
+                putTMVar r (Right channel)
+
+    let openChannel = atomically $ do
+            lid <- registerChannelSTM c withOpenResponse
+            sendMessageSTM c $ O90 $ ChannelOpen lid maxQueueSize maxPacketSize ChannelOpenSession
+            pure lid
+
+    let closeChannel lid = atomically $ getChannelStateSTM c lid >>= \case
+            -- An opening channel means that we have sent the
+            -- channel open request but not yet got a reponse.
+            -- We cannot unregister the channel until we go a response,
+            -- but we can set it to closing state so that the
+            -- server response dispatch function will unregister it.
+            ChannelOpening {} -> setChannelStateSTM c lid ChannelClosing
+            -- In order to properly close the channel it is necessary to
+            -- set the closed flag in the channel, deregister
+            -- it from the channels map and respond with another close
+            -- message.
+            ChannelRunning ch -> do
+                writeTVar (chanClosed ch) True
+                setChannelStateSTM c lid ChannelClosing
+                sendMessageSTM c $ O96 $ ChannelEof   (chanIdRemote ch)
+                sendMessageSTM c $ O97 $ ChannelClose (chanIdRemote ch)
+            -- A closing channel means that we have already sent
+            -- a close message. The dispatch handler will unregister the
+            -- channel as soon as the close from peer arrives.
+            ChannelClosing {} -> pure ()
+
+    -- Waits for decision whether this channel could be opened or not.
+    -- The previously registered callback will fill the variable waited for.
+    let waitChannel = atomically $ readTMVar r >>= \case
+            Right ch -> pure ch
+            Left (ChannelOpenFailure _ reason descr _) -> throwSTM
+                $ ChannelOpenFailed reason
+                $ ChannelOpenFailureDescription $ SBS.fromShort descr
+
+    bracket openChannel closeChannel $ \lid -> waitChannel >>= \ch -> do
+        atomically $ sendMessageSTM c $ O98 $ case mcommand of
+            Just (Command command) -> ChannelRequest
+                { crChannel   = chanIdRemote ch
+                , crType      = "exec"
+                , crWantReply = True
+                , crData      = runPut (put $ ChannelRequestExec $ SBS.toShort command)
+                }
+            Nothing -> ChannelRequest
+                { crChannel   = chanIdRemote ch
+                , crType      = "shell"
+                , crWantReply = True
+                , crData      = runPut (put ChannelRequestShell)
+                }
+        -- Wait for response for this channel request.
+        -- Throw exception in case the request failed or the channel has been
+        -- closed in the meantime.
+        success <- atomically $ takeTMVar (chanRequestSuccess ch) <|> throwWhenClosedSTM ch
+        unless success $ throwIO ChannelRequestFailed
+        -- Invoke the user supplied handler function.
+        withAsync (handler stdin stdout stderr (readTMVar exit)) $ \handlerAsync -> do
+            let x1 = do
+                    -- Wait for channel data on stdin to be transmitted to server.
+                    checkNotClosedSTM ch
+                    dat <- Q.dequeueShort stdin (chanMaxPacketSizeRemote ch)
+                    sendMessageSTM c $ O94 $ ChannelData (chanIdRemote ch) dat
+                    pure Nothing
+                x2 = do
+                    -- Wait for necessary window adjust to be transmitted to server.
+                    checkNotClosedSTM ch
+                    -- FIXME: need to consider stderr as well
+                    recommended <- Q.askWindowSpaceAdjustRecommended stdout
+                    unless recommended retry
+                    increment <- Q.fillWindowSpace stdout
+                    sendMessageSTM c $ O93 $ ChannelWindowAdjust (chanIdRemote ch) increment
+                    pure Nothing
+                x3 = do -- wait for handler thread to terminate
+                    Just <$> waitSTM handlerAsync
+            fix $ \continue -> atomically (x1 <|> x2 <|> x3) >>= \case
+                Nothing -> continue
+                Just a  -> pure a
     where
-        -- The maxQueueSize must at least be one (even if 0 in the config)
+        -- The maxQueueSize must at least be 1 (even if 0 in the config)
         -- and lower than range of Int (might happen on 32bit systems
         -- as Int's guaranteed upper bound is only 2^29 -1).
         -- The value is adjusted silently as this won't be a problem
@@ -347,11 +401,19 @@ session c mcommand (SessionHandler handler) = do
         maxPacketSize = max 1 $ fromIntegral $ min maxBoundIntWord32
             (channelMaxPacketSize $ connConfig c)
 
-allocChannelSTM ::
+        checkNotClosedSTM :: Channel -> STM ()
+        checkNotClosedSTM ch =
+            readTVar (chanClosed ch) >>= check
+
+        throwWhenClosedSTM :: Channel -> STM a
+        throwWhenClosedSTM ch =
+            readTVar (chanClosed ch) >>= check >> throwSTM ChannelClosed
+
+registerChannelSTM ::
     Connection ->
     (Either ChannelOpenFailure ChannelOpenConfirmation -> STM ()) ->
     STM ChannelId
-allocChannelSTM c handler = do
+registerChannelSTM c handler = do
     channels <- readTVar (connChannels c)
     case findSlot channels of
         Nothing -> retry
@@ -370,24 +432,10 @@ allocChannelSTM c handler = do
                     | otherwise = Just (ChannelId i)
                 maxCount = channelMaxCount (connConfig c)
 
-freeChannelSTM :: Connection -> ChannelId -> STM Bool
-freeChannelSTM c lid = getChannelStateSTM c lid >>= \case
-    ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-    ChannelRunning ch -> do
-        case chanApplication ch of
-            ChannelApplicationSession ChannelSession { sessExit = exit } ->
-                -- In case the server did not send an exit-status message
-                -- the close message serves the same purpose (closing the session).
-                void $ tryPutTMVar exit $ Right $ ExitFailure (-1)
-        free c lid
-        pure True
-    ChannelClosing {} -> do
-        free c lid
-        pure False
-    where
-        free c lid = do
-            channels <- readTVar (connChannels c)
-            writeTVar (connChannels c) $! M.delete lid channels
+unregisterChannelSTM :: Connection -> ChannelId -> STM ()
+unregisterChannelSTM c lid = do
+    channels <- readTVar (connChannels c)
+    writeTVar (connChannels c) $! M.delete lid channels
 
 getChannelStateSTM :: Connection -> ChannelId -> STM ChannelState
 getChannelStateSTM c lid = do
