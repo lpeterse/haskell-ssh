@@ -6,11 +6,11 @@
 module Network.SSH.Client.Connection where
 
 import           Control.Applicative
-import           Control.Concurrent.Async              ( ExceptionInLinkedThread (..), link, withAsync, waitSTM )
+import           Control.Concurrent.Async              ( withAsync, waitSTM )
 import           Control.Concurrent.STM.TChan
 import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TMVar
-import           Control.Exception                     ( Exception, bracket, catch, throwIO )
+import           Control.Exception                     ( Exception, bracket, throwIO )
 import           Control.Monad
 import           Control.Monad.STM
 import           Data.Default
@@ -170,21 +170,19 @@ newtype SessionHandler a = SessionHandler (forall stdin stdout stderr. (OutputSt
     => stdin -> stdout -> stderr -> STM (Either ExitSignal ExitCode) -> IO a)
 
 withConnection :: (MessageStream stream) => ConnectionConfig -> stream -> (Connection -> IO a) -> IO a
-withConnection config stream handler = withMappedLinkedExceptions do
+withConnection config stream handler = do
     c <- atomically $ Connection config <$> newTChan <*> newTVar mempty
     withAsync (dispatchIncoming stream c) $ \receiverThread -> do
-        link receiverThread -- rethrow exceptions in main thread -- FIXME
         withAsync (handler c) $ \handlerThread -> fix $ \continue -> do
             let left  = Left  <$> readTChan (connOutChan c)
                 right = Right <$> waitSTM handlerThread
-            atomically (left <|> right) >>= \case
+                receiverThreadException = do
+                    waitSTM receiverThread -- throws exception or blocks forever
+                    throwSTM exceptionInvalidState
+            atomically (left <|> right <|> receiverThreadException) >>= \case
                 Left msg -> sendMessage stream msg >> continue
                 Right a  -> pure a
     where
-        withMappedLinkedExceptions :: IO a -> IO a
-        withMappedLinkedExceptions action =
-            action `catch` \(ExceptionInLinkedThread _ e) -> throwIO e
-
         dispatchIncoming :: (MessageStream stream) => stream -> Connection -> IO ()
         dispatchIncoming s c = forever $ receiveMessage s >>= \case
             I080 (GlobalRequest wantReply _) -> when wantReply

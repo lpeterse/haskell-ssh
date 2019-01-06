@@ -129,6 +129,10 @@ exceptionAlreadyExecuting :: Disconnect
 exceptionAlreadyExecuting =
     Disconnect Local DisconnectProtocolError "already executing"
 
+exceptionInvalidState :: Disconnect
+exceptionInvalidState =
+    Disconnect Local DisconnectProtocolError "invalid state"
+
 exceptionUnexpectedMessage :: BS.ByteString -> Disconnect
 exceptionUnexpectedMessage raw
     | BS.null raw = Disconnect Local DisconnectProtocolError "empty message"
