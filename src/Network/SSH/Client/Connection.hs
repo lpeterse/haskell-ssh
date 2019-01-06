@@ -138,24 +138,28 @@ instance Decoding InboundMessage where
         <|> I100 <$> get
 
 data OutboundMessage
-    = O81 RequestSuccess
-    | O82 RequestFailure
-    | O90 ChannelOpen
-    | O93 ChannelWindowAdjust
-    | O94 ChannelData
-    | O96 ChannelEof
-    | O97 ChannelClose
-    | O98 ChannelRequest
+    = O081 RequestSuccess
+    | O082 RequestFailure
+    | O090 ChannelOpen
+    | O093 ChannelWindowAdjust
+    | O094 ChannelData
+    | O096 ChannelEof
+    | O097 ChannelClose
+    | O098 ChannelRequest
+    | O099 ChannelSuccess
+    | O100 ChannelFailure
 
 instance Encoding OutboundMessage where
-    put (O81 x) = put x
-    put (O82 x) = put x
-    put (O90 x) = put x
-    put (O93 x) = put x
-    put (O94 x) = put x
-    put (O96 x) = put x
-    put (O97 x) = put x
-    put (O98 x) = put x
+    put (O081 x) = put x
+    put (O082 x) = put x
+    put (O090 x) = put x
+    put (O093 x) = put x
+    put (O094 x) = put x
+    put (O096 x) = put x
+    put (O097 x) = put x
+    put (O098 x) = put x
+    put (O099 x) = put x
+    put (O100 x) = put x
 
 data ChannelException
     = ChannelOpenFailed ChannelOpenFailureReason ChannelOpenFailureDescription
@@ -264,7 +268,7 @@ runSession c mcommand (SessionHandler handler) = do
 
     let openChannel = atomically do
             lid <- registerChannelSTM c withOpenResponse
-            sendMessageSTM c $ O90 $ ChannelOpen lid maxQueueSize maxPacketSize ChannelOpenSession
+            sendMessageSTM c $ O090 $ ChannelOpen lid maxQueueSize maxPacketSize ChannelOpenSession
             pure lid
 
     let closeChannel lid = atomically do
@@ -283,8 +287,8 @@ runSession c mcommand (SessionHandler handler) = do
                 -- handler will then unregister the channel when the repose arrives.
                 ChannelRunning ch -> do
                     setChannelStateSTM c lid ChannelClosing
-                    sendMessageSTM c $ O96 $ ChannelEof   (chanIdRemote ch)
-                    sendMessageSTM c $ O97 $ ChannelClose (chanIdRemote ch)
+                    sendMessageSTM c $ O096 $ ChannelEof   (chanIdRemote ch)
+                    sendMessageSTM c $ O097 $ ChannelClose (chanIdRemote ch)
                 -- Only this handler sets the channel to closing state and
                 -- it is excuted exactly once. Getting here should be impossible.
                 ChannelClosing {} -> throwSTM exceptionInvalidChannelState
@@ -298,7 +302,7 @@ runSession c mcommand (SessionHandler handler) = do
                 $ ChannelOpenFailureDescription $ SBS.fromShort descr
 
     bracket openChannel closeChannel $ const $ waitChannel >>= \ch -> do
-        atomically $ sendMessageSTM c $ O98 $ case mcommand of
+        atomically $ sendMessageSTM c $ O098 $ case mcommand of
             Just (Command command) -> ChannelRequest
                 { crChannel   = chanIdRemote ch
                 , crType      = "exec"
@@ -323,7 +327,7 @@ runSession c mcommand (SessionHandler handler) = do
                     -- Wait for channel data on stdin to be transmitted to server.
                     checkNotClosedSTM ch
                     dat <- Q.dequeueShort stdin (chanMaxPacketSizeRemote ch)
-                    sendMessageSTM c $ O94 $ ChannelData (chanIdRemote ch) dat
+                    sendMessageSTM c $ O094 $ ChannelData (chanIdRemote ch) dat
                     pure Nothing
                 x2 = do
                     -- Wait for necessary window adjust to be transmitted to server.
@@ -332,7 +336,7 @@ runSession c mcommand (SessionHandler handler) = do
                     recommended <- Q.askWindowSpaceAdjustRecommended stdout
                     unless recommended retry
                     increment <- Q.fillWindowSpace stdout
-                    sendMessageSTM c $ O93 $ ChannelWindowAdjust (chanIdRemote ch) increment
+                    sendMessageSTM c $ O093 $ ChannelWindowAdjust (chanIdRemote ch) increment
                     pure Nothing
                 x3 = do -- wait for handler thread to terminate
                     Just <$> waitSTM handlerAsync
@@ -419,7 +423,7 @@ dispatchMessage c msg = atomically $ case msg of
 
 dispatchGlobalRequestSTM :: Connection -> GlobalRequest -> STM ()
 dispatchGlobalRequestSTM c (GlobalRequest wantReply _) =
-    when wantReply $ sendMessageSTM c $ O82 RequestFailure
+    when wantReply $ sendMessageSTM c $ O082 RequestFailure
 
 dispatchChannelOpenConfirmationSTM :: Connection -> ChannelOpenConfirmation -> STM ()
 dispatchChannelOpenConfirmationSTM c x@(ChannelOpenConfirmation lid rid _ _) =
@@ -429,7 +433,7 @@ dispatchChannelOpenConfirmationSTM c x@(ChannelOpenConfirmation lid rid _ _) =
         -- The channel was set to closing locally:
         -- It is left in closing state and a close message is sent to the
         -- peer. The channel will be freed when the close reponse arrives.
-        ChannelClosing {} -> sendMessageSTM c $ O97 $ ChannelClose rid
+        ChannelClosing {} -> sendMessageSTM c $ O097 $ ChannelClose rid
 
 dispatchChannelOpenFailureSTM :: Connection -> ChannelOpenFailure -> STM ()
 dispatchChannelOpenFailureSTM c x@(ChannelOpenFailure lid _ _ _) =
@@ -504,7 +508,7 @@ dispatchChannelCloseSTM c (ChannelClose lid) =
         ChannelRunning ch -> do
             unregisterChannelSTM c lid
             writeTVar (chanClosed ch) True
-            sendMessageSTM c $ O97 $ ChannelClose (chanIdRemote ch)
+            sendMessageSTM c $ O097 $ ChannelClose (chanIdRemote ch)
         -- A closing channel means that we have already sent
         -- a close message and this is the reponse. The channel gets
         -- freed and its id is ready for reuse.
@@ -527,7 +531,7 @@ dispatchChannelRequestSTM c (ChannelRequest lid typ wantReply dat) =
                     Nothing -> throwSTM exceptionInvalidChannelRequest
                     Just (ChannelRequestExitStatus status) ->
                         void $ tryPutTMVar exit $ Right status
-                _ -> throwSTM exceptionInvalidChannelRequest
+                _ -> when wantReply $ sendMessageSTM c $ O100 $ ChannelFailure (chanIdRemote ch)
         ChannelClosing {} -> pure ()
 
 dispatchChannelSuccessSTM :: Connection -> ChannelSuccess -> STM ()
