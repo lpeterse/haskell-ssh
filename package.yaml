@@ -30,6 +30,7 @@ dependencies:
 - memory
 - stm
 - data-default
+- socket >= 0.8.2.0
 
 default-extensions:
 - LambdaCase
