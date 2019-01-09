@@ -93,6 +93,10 @@ exceptionNoMoreAuthMethodsAvailable :: Disconnect
 exceptionNoMoreAuthMethodsAvailable =
     Disconnect Local DisconnectNoMoreAuthMethodsAvailable mempty
 
+exceptionHostKeyNotVerifiable :: Disconnect
+exceptionHostKeyNotVerifiable =
+    Disconnect Local DisconnectHostKeyNotVerifiable mempty
+
 exceptionInvalidChannelId :: Disconnect
 exceptionInvalidChannelId =
     Disconnect Local DisconnectProtocolError "invalid channel id"

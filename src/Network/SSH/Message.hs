@@ -117,6 +117,7 @@ import qualified Data.ByteArray           as BA
 import qualified Data.ByteString          as BS
 import qualified Data.ByteString.Short    as SBS
 import           Data.Foldable
+import           Data.String
 import           Data.Typeable
 import           Data.Word
 import           System.Exit
@@ -401,6 +402,9 @@ newtype Version           = Version           SBS.ShortByteString
 
 newtype Password          = Password          SBS.ShortByteString
     deriving (Eq, Ord, Show)
+
+instance IsString Password where
+    fromString = Password . SBS.toShort . fromString
 
 newtype SessionId         = SessionId         SBS.ShortByteString
     deriving (Eq, Ord, Show)
