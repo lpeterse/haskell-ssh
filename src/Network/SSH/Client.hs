@@ -2,7 +2,7 @@
 {-# LANGUAGE FlexibleContexts          #-}
 {-# LANGUAGE RankNTypes                #-}
 module Network.SSH.Client
-    ( runClient
+    ( withClientConnection
     -- * Config
     , ClientConfig (..)
     , UserAuthConfig (..)
@@ -95,8 +95,8 @@ type ClientIdentity = UserAuthConfig
 
 data ClientException
     = NameResolutionFailed String
-    | ConnectFailed String
-    | ConnectionLost
+    | ConnectFailed        String
+    | ConnectionLost       String
     | AuthenticationFailed String
     deriving (Eq, Ord, Show)
 
@@ -108,8 +108,8 @@ userPassword u p = def
     , getPassword = pure (Just p)
     }
 
-runClient :: ClientConfig -> ClientIdentity -> Address -> (Connection -> IO a) -> IO a
-runClient config identity address handler = do
+withClientConnection :: ClientConfig -> ClientIdentity -> Address -> (Connection -> IO a) -> IO a
+withClientConnection config identity address handler = do
     addresses <- getAddresses
     bracket (connectAny addresses) S.close (handleStream handler)
     where
