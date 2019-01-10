@@ -38,13 +38,34 @@ default-extensions:
 - OverloadedStrings
 
 library:
-  source-dirs: src
+  source-dirs: src/hssh
   ghc-options: -Wall -fno-warn-orphans
   exposed-modules:
     - Network.SSH
-    - Network.SSH.Server
     - Network.SSH.Client
-    - Network.SSH.Internal
+    - Network.SSH.Server
+  dependencies:
+    - hssh-internal
+
+internal-libraries:
+  hssh-internal:
+    source-dirs: src/hssh-internal
+    ghc-options: -Wall -fno-warn-orphans
+    exposed-modules:
+      - Network.SSH.Algorithms
+      - Network.SSH.AuthAgent
+      - Network.SSH.Client.Connection
+      - Network.SSH.Client.UserAuth
+      - Network.SSH.Server.Connection
+      - Network.SSH.Server.UserAuth
+      - Network.SSH.Encoding
+      - Network.SSH.Exception
+      - Network.SSH.Key
+      - Network.SSH.Internal
+      - Network.SSH.Message
+      - Network.SSH.Name
+      - Network.SSH.Stream
+      - Network.SSH.Transport
 
 tests:
   hssh-test:
@@ -56,6 +77,7 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - hssh
+    - hssh-internal
     - tasty
     - tasty-hunit
     - tasty-quickcheck
