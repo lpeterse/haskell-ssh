@@ -1,14 +1,13 @@
 {-# LANGUAGE FlexibleInstances         #-}
 module Network.SSH.Stream where
 
+import           Control.Concurrent.STM
 import           Control.Exception    ( throwIO, handle )
 import           Control.Monad        ( when )
 import           Foreign.Ptr
 import qualified Data.ByteString   as BS
 import qualified Data.ByteArray    as BA
 import qualified System.Socket                  as S
-import qualified System.Socket.Family.Inet6     as S
-import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 import qualified System.Socket.Unsafe           as S
 
@@ -101,9 +100,23 @@ receiveAll stream n
                 when (received <= 0) (throwIO $ userError "receiveAll: connection lost")
                 receiveAll' (remaining - received) (plusPtr ptr received)
 
--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------
+-- STM variants
+--------------------------------------------------------------------------------------------------
+
+class (InputStreamSTM stream, OutputStreamSTM stream) => DuplexStreamSTM stream where
+
+class InputStreamSTM stream where
+    peekSTM     :: stream -> Int -> STM BS.ByteString
+    receiveSTM  :: stream -> Int -> STM BS.ByteString
+
+class OutputStreamSTM stream where
+    sendSTM     :: stream -> BS.ByteString -> STM Int
+    sendEofSTM  :: stream -> STM ()
+
+--------------------------------------------------------------------------------------------------
 -- Instances for use with the socket library
--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------
 
 instance DuplexStream (S.Socket f S.Stream p) where
 

@@ -60,17 +60,17 @@ newtype Duration = Duration Word64 -- Microseconds
 seconds :: Integral a => a -> Duration
 seconds i = Duration (1000000 * fromIntegral i)
 
-type HostKeyValidation = PublicKey -> IO Bool
+type HostKeyVerifier = PublicKey -> IO Bool
 
-acceptKnownHosts :: HostKeyValidation
-acceptKnownHosts _hostKey = pure True
+acceptKnownHosts :: HostKeyVerifier
+acceptKnownHosts _hostKey = pure True -- FIXME: stub
 
 data ClientConfig
     = ClientConfig
     { socketConfig      :: SocketConfig
     , transportConfig   :: TransportConfig
     , connectionConfig  :: ConnectionConfig
-    , hostKeyValidation :: HostKeyValidation
+    , hostKeyVerifier   :: HostKeyVerifier
     }
 
 instance Default ClientConfig where
@@ -78,7 +78,7 @@ instance Default ClientConfig where
         { socketConfig      = def
         , transportConfig   = def
         , connectionConfig  = def
-        , hostKeyValidation = acceptKnownHosts
+        , hostKeyVerifier   = acceptKnownHosts
         }
 
 data SocketConfig
@@ -97,7 +97,8 @@ data ClientException
     = NameResolutionFailed String
     | ConnectFailed        String
     | ConnectionLost       String
-    | AuthenticationFailed String
+    | DisconnectByClient   DisconnectReason DisconnectMessage
+    | DisconnectByServer   DisconnectReason DisconnectMessage
     deriving (Eq, Ord, Show)
 
 instance Exception ClientException where
@@ -142,7 +143,7 @@ withClientConnection config identity address handler = do
         handleStream h stream = do
             ea <- withClientTransport (transportConfig config) stream $ \transport sessionId hostKey -> do
                 -- Validate the host key with user supplied function
-                hostKeyAccepted <- hostKeyValidation config hostKey
+                hostKeyAccepted <- hostKeyVerifier config hostKey
                 unless hostKeyAccepted $ throwIO exceptionHostKeyNotVerifiable
                 -- Authenticate against the server
                 requestServiceWithAuthentication identity transport sessionId (Name "ssh-connection")

@@ -11,12 +11,14 @@ import qualified Spec.Server.Connection
 import qualified Spec.Server.UserAuth
 import qualified Spec.Transport
 import qualified Spec.TStreamingQueue
+import qualified Spec.TWindowBuffer
 
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH"
-    [ --Spec.Algorithms.tests
+    [ 
+    -- Spec.Algorithms.tests
     --, Spec.Client.tests
-     Spec.Client.Connection.tests
+    --, Spec.Client.Connection.tests
     --, Spec.Client.UserAuth.tests
     --, Spec.Key.tests
     --, Spec.Message.tests
@@ -25,4 +27,5 @@ main = defaultMain $ testGroup "Network.SSH"
     --, Spec.Server.UserAuth.tests
     --, Spec.Transport.tests
     --, Spec.TStreamingQueue.tests
+     Spec.TWindowBuffer.tests
     ]

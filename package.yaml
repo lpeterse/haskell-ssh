@@ -66,6 +66,7 @@ internal-libraries:
       - Network.SSH.Name
       - Network.SSH.Stream
       - Network.SSH.Transport
+      - Network.SSH.TWindowBuffer
 
 tests:
   hssh-test:
