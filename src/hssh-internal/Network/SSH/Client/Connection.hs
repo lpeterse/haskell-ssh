@@ -351,11 +351,11 @@ runSession c mcommand (SessionHandler handler) = do
                     -- to query both for their window size adjust recommendation
                     -- and take the minimum in order to never exceed either buffer limits.
                     checkNotClosedSTM ch
-                    adjust <- min <$> B.getRecommendedWindowAdjustSTM stdout
-                                  <*> B.getRecommendedWindowAdjustSTM stderr
+                    increment <- min <$> B.getRecommendedWindowAdjustSTM stdout
+                                     <*> B.getRecommendedWindowAdjustSTM stderr
                     window <- readTVar (chanWindowSizeRemote ch)
-                    writeTVar (chanWindowSizeRemote ch) $! window + adjust
-                    sendMessageSTM c $ O093 $ ChannelWindowAdjust (chanIdRemote ch) adjust
+                    writeTVar (chanWindowSizeRemote ch) $! window + increment
+                    sendMessageSTM c $ O093 $ ChannelWindowAdjust (chanIdRemote ch) increment
                     pure Nothing
                 x3 = do -- Wait for handler thread to terminate.
                     Just <$> waitSTM handlerAsync
@@ -469,14 +469,14 @@ dispatchChannelOpenFailureSTM c x@(ChannelOpenFailure lid _ _ _) =
         ChannelClosing {} -> unregisterChannelSTM c lid
 
 dispatchChannelWindowAdjustSTM :: Connection -> ChannelWindowAdjust -> STM ()
-dispatchChannelWindowAdjustSTM c (ChannelWindowAdjust lid adjust) =
+dispatchChannelWindowAdjustSTM c (ChannelWindowAdjust lid increment) =
     getChannelStateSTM c lid >>= \case
         ChannelOpening {} -> throwSTM exceptionInvalidChannelState
         ChannelRunning ch -> do
             window <- readTVar (chanWindowSizeLocal ch)
-            when ((fromIntegral window + fromIntegral adjust :: Word64) <= fromIntegral (maxBound :: Word32))
+            when ((fromIntegral window + fromIntegral increment :: Word64) <= fromIntegral (maxBound :: Word32))
                 $ throwSTM exceptionWindowSizeOverflow
-            writeTVar (chanWindowSizeRemote ch) $! window + adjust
+            writeTVar (chanWindowSizeRemote ch) $! window + increment
         ChannelClosing {} -> pure ()
 
 dispatchChannelDataSTM :: Connection -> ChannelData -> STM ()

@@ -4,7 +4,8 @@
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE RankNTypes                #-}
 module Network.SSH.Client.UserAuth
-    ( UserAuthConfig (..)
+    ( ClientIdentity (..)
+    , userPassword
     , requestServiceWithAuthentication
     )
 where
@@ -23,19 +24,25 @@ import           Network.SSH.Message
 import           Network.SSH.Key
 import           Network.SSH.Name
 
-data UserAuthConfig
-    = UserAuthConfig
+data ClientIdentity
+    = ClientIdentity
     { userName      :: UserName
     , getAgent      :: IO (Maybe KeyPair)
     , getPassword   :: IO (Maybe Password)
     }
 
-instance Default UserAuthConfig where
-    def = UserAuthConfig
+instance Default ClientIdentity where
+    def = ClientIdentity
         { userName    = Name "anonymous"
         , getAgent    = pure (Nothing :: Maybe KeyPair)
         , getPassword = pure Nothing
         }
+
+userPassword :: UserName -> Password -> ClientIdentity
+userPassword u p = def
+    { userName = u
+    , getPassword = pure (Just p)
+    }
 
 data AuthResponse
     = A1 UserAuthBanner
@@ -48,8 +55,8 @@ instance Decoding AuthResponse where
         <|> A3 <$> get
 
 requestServiceWithAuthentication :: MessageStream stream =>
-    UserAuthConfig -> stream -> SessionId -> ServiceName -> IO ()
-requestServiceWithAuthentication config@UserAuthConfig { getAgent = getAgent' } transport sessionId service = do
+    ClientIdentity -> stream -> SessionId -> ServiceName -> IO ()
+requestServiceWithAuthentication config@ClientIdentity { getAgent = getAgent' } transport sessionId service = do
     sendMessage transport $ ServiceRequest $ Name "ssh-userauth"
     ServiceAccept {} <- receiveMessage transport
     tryMethods [ methodPubkey, methodPassword ]

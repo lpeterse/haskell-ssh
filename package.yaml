@@ -54,6 +54,7 @@ internal-libraries:
     exposed-modules:
       - Network.SSH.Algorithms
       - Network.SSH.AuthAgent
+      - Network.SSH.Client.Client
       - Network.SSH.Client.Connection
       - Network.SSH.Client.UserAuth
       - Network.SSH.Server.Connection
@@ -77,7 +78,6 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - hssh
     - hssh-internal
     - tasty
     - tasty-hunit

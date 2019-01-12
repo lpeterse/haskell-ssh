@@ -11,8 +11,7 @@ import           Data.Default
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
-import           Network.SSH
-import           Network.SSH.Client
+import           Network.SSH.Client.UserAuth
 import           Network.SSH.Internal
 
 import           Spec.Util

@@ -19,7 +19,6 @@ import           System.IO.Error
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
-import           Network.SSH.Client
 import           Network.SSH.Client.Connection
 import           Network.SSH.Encoding
 import           Network.SSH.Exception

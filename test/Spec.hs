@@ -27,5 +27,5 @@ main = defaultMain $ testGroup "Network.SSH"
     --, Spec.Server.UserAuth.tests
     --, Spec.Transport.tests
     --, Spec.TStreamingQueue.tests
-    --, Spec.TWindowBuffer.tests
+    , Spec.TWindowBuffer.tests
     ]
