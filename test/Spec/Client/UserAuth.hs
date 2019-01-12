@@ -71,7 +71,7 @@ testPubkey01 = testCase "should try pubkey authentication (when configured)" $ d
         CryptoPassed sig = Ed25519.signature ("\178\RSJi\245\163\141\159V\242`\218\231bE\SOH\DC2\220M\214\221\217Y\195\203X\173\215\232\186\196\204\DC1v\236\239k\SO\243\CAN\241O\169\133\178W\194\DC4\NUL;K\154$N$\FS\224\244r\136\182\NAK\159\t" :: BS.ByteString)
         pk               = Ed25519.toPublic sk
         keypair          = KeyPairEd25519 pk sk
-        conf = def { userName = user, getAgent = pure (Just keypair) }
+        conf = def { getUserName = pure user, getAgent = pure (Just keypair) }
         user = Name "USER"
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
@@ -93,7 +93,7 @@ testPubkey02 = testCase "should return when public key accepted" $ do
         CryptoPassed sig = Ed25519.signature ("\178\RSJi\245\163\141\159V\242`\218\231bE\SOH\DC2\220M\214\221\217Y\195\203X\173\215\232\186\196\204\DC1v\236\239k\SO\243\CAN\241O\169\133\178W\194\DC4\NUL;K\154$N$\FS\224\244r\136\182\NAK\159\t" :: BS.ByteString)
         pk               = Ed25519.toPublic sk
         keypair          = KeyPairEd25519 pk sk
-        conf = def { userName = user, getAgent = pure (Just keypair) }
+        conf = def { getUserName = pure user, getAgent = pure (Just keypair) }
         user = Name "USER"
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
@@ -112,7 +112,7 @@ testPassword01 = testCase "should try password authentication (when configured)"
         sid  = undefined
         user = Name "USER"
         pass = Password "PASSWORD"
-        conf = def { userName = user, getPassword = pure (Just pass) }
+        conf = def { getUserName = pure user, getPassword = pure (Just pass) }
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
         res0 = ServiceAccept (Name "ssh-userauth")
@@ -131,7 +131,7 @@ testPassword02 = testCase "should return when password accepted" $ do
         sid  = undefined
         user = Name "USER"
         pass = Password "PASSWORD"
-        conf = def { userName = user, getPassword = pure (Just pass) }
+        conf = def { getUserName = pure user, getPassword = pure (Just pass) }
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
         res0 = ServiceAccept (Name "ssh-userauth")
@@ -151,7 +151,7 @@ testPassword03 = testCase "should throw exception when password rejected" $ do
         sid  = undefined
         user = Name "USER"
         pass = Password "PASSWORD"
-        conf = def { userName = user, getPassword = pure (Just pass) }
+        conf = def { getUserName = pure user, getPassword = pure (Just pass) }
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
         res0 = ServiceAccept (Name "ssh-userauth")
@@ -173,7 +173,7 @@ testPassword04 = testCase "should expect a banner in this state" $ do
         sid   = undefined
         user  = Name "USER"
         pass  = Password "PASSWORD"
-        conf  = def { userName = user, getPassword = pure (Just pass) }
+        conf  = def { getUserName = pure user, getPassword = pure (Just pass) }
         srvc  = Name "ssh-connection"
         req0  = ServiceRequest (Name "ssh-userauth")
         res0  = ServiceAccept (Name "ssh-userauth")

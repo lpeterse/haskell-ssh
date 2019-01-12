@@ -44,7 +44,7 @@ import qualified Data.List.NonEmpty            as NEL
 
 import           Network.SSH.Algorithms
 import qualified Network.SSH.Builder           as B
-import           Network.SSH.AuthAgent
+import           Network.SSH.Agent
 import           Network.SSH.Constants
 import           Network.SSH.Transport.Crypto
 import           Network.SSH.Encoding
@@ -155,7 +155,7 @@ withClientTransport config stream runWith = withFinalExceptionHandler $ do
         pure a
 
 withServerTransport ::
-    (DuplexStream stream, AuthAgent agent) =>
+    (DuplexStream stream, Agent agent) =>
     TransportConfig -> stream -> agent ->
     (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
 withServerTransport config stream agent runWith = withFinalExceptionHandler $ do
@@ -234,7 +234,7 @@ transportReceiveMessageMaybe env =
 -- KEY EXCHANGE (SERVER)
 -------------------------------------------------------------------------------
 
-kexServerInitialize :: (DuplexStream stream, AuthAgent agent) => stream -> Transport -> agent -> IO SessionId
+kexServerInitialize :: (DuplexStream stream, Agent agent) => stream -> Transport -> agent -> IO SessionId
 kexServerInitialize stream env agent = do
     cookie <- newCookie
     putMVar (tKexContinuation env) $ kexServerContinuation stream env cookie agent
@@ -248,8 +248,8 @@ kexServerInitialize stream env agent = do
                 Just sid -> pure sid
 
 -- NB: Uses transportSendMessage to avoid rekeying-loop
-kexServerContinuation :: (DuplexStream stream, AuthAgent agent) => stream -> Transport -> Cookie -> agent -> KexContinuation
-kexServerContinuation stream env cookie authAgent = serverKex0
+kexServerContinuation :: (DuplexStream stream, Agent agent) => stream -> Transport -> Cookie -> agent -> KexContinuation
+kexServerContinuation stream env cookie agent = serverKex0
     where
         -- Being in this state means no kex is currently in progress.
         -- Kex may be started by either passing Nothing which means
@@ -295,9 +295,9 @@ kexServerContinuation stream env cookie authAgent = serverKex0
             kexAlgorithm     <- kexCommonKexAlgorithm ski cki
             encAlgorithmCS   <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsClientToServer
             encAlgorithmSC   <- kexCommonEncAlgorithm ski cki kexEncryptionAlgorithmsServerToClient
-            getPublicKeys authAgent >>= \case
+            getIdentities agent >>= \case
                 []    -> throwIO exceptionKexNoSignature
-                shk:_ -> case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
+                (shk,_):_ -> case (kexAlgorithm, encAlgorithmCS, encAlgorithmSC) of
                     (Curve25519Sha256AtLibsshDotOrg, Chacha20Poly1305AtOpensshDotCom, Chacha20Poly1305AtOpensshDotCom) -> do
                         sekSecret <- Curve25519.generateSecretKey
                         let cv   = tClientVersion env
@@ -305,7 +305,7 @@ kexServerContinuation stream env cookie authAgent = serverKex0
                             sek  = Curve25519.toPublic sekSecret
                             sec  = Curve25519.dh cek sekSecret
                             hash = kexHash cv sv cki ski shk cek sek sec
-                        sig <- maybe (throwIO exceptionKexNoSignature) pure =<< sign authAgent shk hash
+                        sig <- maybe (throwIO exceptionKexNoSignature) pure =<< signDigest agent shk hash def
                         sid <- trySetSessionId env (SessionId $ SBS.toShort $ BA.convert hash)
                         setChaCha20Poly1305Context $ kexKeys sec hash sid
                         transportSendMessage env (KexEcdhReply shk sek sig)

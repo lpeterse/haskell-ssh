@@ -26,7 +26,7 @@ module Network.SSH.Server (
 
 import           Data.Default
 
-import           Network.SSH.AuthAgent
+import           Network.SSH.Agent
 import           Network.SSH.Exception
 import           Network.SSH.Name
 import           Network.SSH.Server.Connection
@@ -39,7 +39,7 @@ import           Network.SSH.Transport
 --   (1) The actual server behaviour is only determined by its configuration.
 --       The default configuration rejects all authentication and service requests,
 --       so you will need to adapt it to your use-case.
---   (2) The `AuthAgent` will be used to authenticate to the client.
+--   (2) The `Agent` will be used to authenticate to the client.
 --       It is usually sufficient to use a `Network.SSH.KeyPair` as agent.
 --   (3) This operation does not return unless the other side either gracefully
 --       closes the connection or an error occurs (like connection loss).
@@ -87,7 +87,7 @@ import           Network.SSH.Transport
 --           pure ()
 --     | otherwise = pure Nothing
 -- @
-serve :: (DuplexStream stream, AuthAgent agent) => Config identity -> agent -> stream -> IO Disconnect
+serve :: (DuplexStream stream, Agent agent) => Config identity -> agent -> stream -> IO Disconnect
 serve config agent stream = run >>= \case
     Left  d  -> pure d
     Right () -> pure $ Disconnect Local DisconnectByApplication mempty

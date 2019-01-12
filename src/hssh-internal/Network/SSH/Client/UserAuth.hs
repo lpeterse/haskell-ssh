@@ -1,7 +1,5 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts          #-}
-{-# LANGUAGE LambdaCase                #-}
-{-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE RankNTypes                #-}
 module Network.SSH.Client.UserAuth
     ( ClientIdentity (..)
@@ -12,37 +10,45 @@ where
 
 import           Control.Applicative
 import           Control.Exception                     ( throwIO )
+import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Char8                 as BS8
+import qualified Data.ByteString.Short                 as SBS
 import           Data.Default
 import           Data.Function                         ( fix )
+import           Data.Maybe
 import           Data.List                             ( intersect )
-import qualified Data.ByteString                       as BS
+import           System.Environment
 
-import           Network.SSH.AuthAgent
+import           Network.SSH.Agent
 import           Network.SSH.Exception
 import           Network.SSH.Encoding
 import           Network.SSH.Message
-import           Network.SSH.Key
 import           Network.SSH.Name
 
 data ClientIdentity
-    = ClientIdentity
-    { userName      :: UserName
-    , getAgent      :: IO (Maybe KeyPair)
+    = forall agent. Agent agent => ClientIdentity
+    { getUserName   :: IO UserName
+    , getAgent      :: IO (Maybe agent)
     , getPassword   :: IO (Maybe Password)
     }
 
 instance Default ClientIdentity where
     def = ClientIdentity
-        { userName    = Name "anonymous"
-        , getAgent    = pure (Nothing :: Maybe KeyPair)
+        { getUserName = getLocalUserName
+        , getAgent    = pure (Just LocalAgent)
         , getPassword = pure Nothing
         }
 
 userPassword :: UserName -> Password -> ClientIdentity
 userPassword u p = def
-    { userName = u
+    { getUserName = pure u
     , getPassword = pure (Just p)
     }
+
+getLocalUserName :: IO UserName
+getLocalUserName  = do
+    user <- fromMaybe "root" <$> lookupEnv "USER"
+    pure $ Name $ SBS.toShort $ BS8.pack user
 
 data AuthResponse
     = A1 UserAuthBanner
@@ -59,20 +65,20 @@ requestServiceWithAuthentication :: MessageStream stream =>
 requestServiceWithAuthentication config@ClientIdentity { getAgent = getAgent' } transport sessionId service = do
     sendMessage transport $ ServiceRequest $ Name "ssh-userauth"
     ServiceAccept {} <- receiveMessage transport
-    tryMethods [ methodPubkey, methodPassword ]
+    user <- getUserName config
+    tryMethods user [ methodPubkey, methodPassword ]
     where
-        user           = userName config
         methodPassword = Name "password"
         methodPubkey   = Name "publickey"
 
-        tryMethods []
+        tryMethods _ []
             = throwIO exceptionNoMoreAuthMethodsAvailable
-        tryMethods (m:ms)
+        tryMethods user (m:ms)
             | m == methodPubkey = getAgent' >>= \case
-                Nothing    -> tryMethods ms
-                Just agent -> tryPubkeys ms (sign agent) =<< getPublicKeys agent
+                Nothing    -> tryMethods user ms
+                Just agent -> tryPubkeys user ms (signDigest agent) =<< getIdentities agent
             | m == methodPassword = getPassword config >>= \case
-                Nothing -> tryMethods ms
+                Nothing -> tryMethods user ms
                 Just pw -> do
                     sendMessage transport
                         $ UserAuthRequest user service
@@ -81,14 +87,14 @@ requestServiceWithAuthentication config@ClientIdentity { getAgent = getAgent' } 
                         A1 UserAuthBanner  {} -> continue
                         A2 UserAuthSuccess {} -> pure ()
                         -- Try the next method (if there is any in the intersection).
-                        A3 (UserAuthFailure ms' _) -> tryMethods (ms `intersect` ms')
+                        A3 (UserAuthFailure ms' _) -> tryMethods user (ms `intersect` ms')
             -- Ignore method and try the next one.
-            | otherwise = tryMethods ms
+            | otherwise = tryMethods user ms
 
-        tryPubkeys ms trySign = \case
-            []       -> tryMethods ms -- no more keys to try
-            (pk:pks) -> trySign pk (signatureData sessionId user service pk) >>= \case
-                Nothing -> tryPubkeys ms trySign pks
+        tryPubkeys user ms trySign = \case
+            []       -> tryMethods user ms -- no more keys to try
+            ((pk,_):pks) -> trySign pk (signatureData sessionId user service pk) def >>= \case
+                Nothing -> tryPubkeys user ms trySign pks
                 Just signature -> do
                     sendMessage transport
                         $ UserAuthRequest user service
@@ -98,10 +104,10 @@ requestServiceWithAuthentication config@ClientIdentity { getAgent = getAgent' } 
                         A2 UserAuthSuccess {} -> pure ()
                         A3 (UserAuthFailure ms' _)
                             -- Try the next pubkey. Eventually reduce the methods to try.
-                            | methodPubkey `elem` ms' -> tryPubkeys (ms `intersect` ms') trySign pks
+                            | methodPubkey `elem` ms' -> tryPubkeys user (ms `intersect` ms') trySign pks
                             -- Do not try any more pubkeys if the server indicates it won't
                             -- accept any. Try another method instead (if any).
-                            | otherwise               -> tryMethods (ms `intersect` ms')
+                            | otherwise               -> tryMethods user (ms `intersect` ms')
 
 signatureData :: SessionId -> UserName -> ServiceName -> PublicKey -> BS.ByteString
 signatureData sessionIdentifier user service publicKey = runPut $

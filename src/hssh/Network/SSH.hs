@@ -1,7 +1,7 @@
 module Network.SSH 
     ( -- * Authentication & Identity
-      -- ** AuthAgent
-      AuthAgent (..)
+      -- ** Agent
+      Agent (..)
     , KeyPair (..)
       -- ** newKeyPair
     , newKeyPair
@@ -45,7 +45,7 @@ module Network.SSH
     ) where
 
 import Network.SSH.Algorithms
-import Network.SSH.AuthAgent
+import Network.SSH.Agent
 import Network.SSH.Exception
 import Network.SSH.HostAddress
 import Network.SSH.Key

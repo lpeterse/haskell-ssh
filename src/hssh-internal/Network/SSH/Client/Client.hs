@@ -6,12 +6,9 @@ module Network.SSH.Client.Client where
 import           Control.Concurrent             ( threadDelay )
 import           Control.Concurrent.Async       ( withAsync, waitCatch, race )
 import           Control.Exception              ( Exception, bracket, bracketOnError, catch, throwIO )
-import           Control.Monad                  ( unless )
-import qualified Data.ByteString                as BS
 import qualified Data.ByteString.Char8          as BS8
 import           Data.Default
 import           Data.List.NonEmpty             ( NonEmpty (..) )
-import           Data.Word
 import qualified System.Socket                  as S
 import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
@@ -23,8 +20,6 @@ import           Network.SSH.Client.UserAuth
 import           Network.SSH.Duration
 import           Network.SSH.Exception
 import           Network.SSH.HostAddress
-import           Network.SSH.Key
-import           Network.SSH.Message
 import           Network.SSH.Name
 import           Network.SSH.Stream
 import           Network.SSH.Transport

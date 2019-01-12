@@ -29,7 +29,6 @@ data VerificationResult
 
 acceptKnownHostsFromFile :: FilePath -> HostKeyVerifier
 acceptKnownHostsFromFile path host key = do
-    print (splitPath path)
     absolutePath <- getAbsolutePath
     bs <- BS.readFile absolutePath
     pure if any match (parseKnownHostsFile bs)

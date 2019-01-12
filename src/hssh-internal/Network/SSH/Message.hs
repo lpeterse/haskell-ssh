@@ -92,7 +92,7 @@ module Network.SSH.Message
   , Signature (..)
   , Version (..)
   , ServiceName
-  , UserName
+  , UserName (..)
   , getPublicKey
   , putPublicKey
   , getSignature

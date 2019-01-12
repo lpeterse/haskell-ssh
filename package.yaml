@@ -33,6 +33,7 @@ dependencies:
 - directory
 - data-default
 - socket >= 0.8.2.0
+- socket-unix
 
 default-extensions:
 - LambdaCase
@@ -55,8 +56,8 @@ internal-libraries:
     source-dirs: src/hssh-internal
     ghc-options: -Wall -fno-warn-orphans
     exposed-modules:
+      - Network.SSH.Agent
       - Network.SSH.Algorithms
-      - Network.SSH.AuthAgent
       - Network.SSH.Client.Client
       - Network.SSH.Client.Connection
       - Network.SSH.Client.HostKeyVerifier
