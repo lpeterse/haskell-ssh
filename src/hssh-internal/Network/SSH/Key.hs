@@ -2,11 +2,13 @@
 {-# LANGUAGE OverloadedStrings           #-}
 {-# LANGUAGE TypeFamilies                #-}
 module Network.SSH.Key
-    (   KeyPair (..)
-    ,   newKeyPair
-    ,   PublicKey (..)
-    ,   decodePrivateKeyFile
-    ,   toPublicKey
+    ( KeyPair (..)
+    , newKeyPair
+    , PublicKey (..)
+    , decodePrivateKeyFile
+    , toPublicKey
+    -- * Internal
+    , parseBase64
     ) where
 
 import           Control.Applicative    (many, (<|>))
@@ -76,60 +78,6 @@ parsePrivateKeyFile _passphrase = do
   where
     syntaxError :: BP.Parser ba a
     syntaxError = fail "Syntax error"
-
-    parseBase64 :: (BA.ByteArray ba) => BP.Parser ba ba
-    parseBase64 = s0 []
-      where
-        -- Initial state and final state.
-        s0 xs         =                 (char >>= s1 xs)       <|> (space1 >> s0 xs)
-                                                               <|> pure (BA.pack $ reverse xs)
-        -- One character read (i). Three more characters or whitespace expected.
-        s1 xs i       =                 (char >>= s2 xs i)     <|> (space1 >> s1 xs i)
-        -- Two characters read (i and j). Either '==' or space or two more character expected.
-        s2 xs i j     = r2 xs i j   <|> (char >>= s3 xs i j)   <|> (space1 >> s2 xs i j)
-        -- Three characters read (i, j and k). Either a '=' or space or one more character expected.
-        s3 xs i j k   = r3 xs i j k <|> (char >>= s4 xs i j k) <|> (space1 >> s3 xs i j k)
-        -- Four characters read (i, j, k and l). Computation of result and transition back to s0.
-        s4 xs i j k l = s0 $ byte3 : byte2 : byte1: xs
-          where
-            byte1 = ( i         `shiftL` 2) + (j `shiftR` 4)
-            byte2 = ((j .&. 15) `shiftL` 4) + (k `shiftR` 2)
-            byte3 = ((k .&.  3) `shiftL` 6) + l
-        -- Read two '=' chars as finalizer. Only valid from state s2.
-        r2 xs i j     = padding >> padding >> pure (BA.pack $ reverse $ byte1 : xs)
-          where
-            byte1 = (i `shiftL` 2) + (j `shiftR` 4)
-        -- Read one '=' char as finalizer. Only valid from state s1.
-        r3 xs i j k   = padding >> pure (BA.pack $ reverse $ byte2 : byte1 : xs)
-          where
-            byte1 = (i          `shiftL` 2) + (j `shiftR` 4)
-            byte2 = ((j .&. 15) `shiftL` 4) + (k `shiftR` 2)
-
-        char :: (BA.ByteArray ba) => BP.Parser ba Word8
-        char = BP.anyByte >>= \c-> if
-            | c >= fe 'A' && c <= fe 'Z' -> pure (c - fe 'A')
-            | c >= fe 'a' && c <= fe 'z' -> pure (c - fe 'a' + 26)
-            | c >= fe '0' && c <= fe '9' -> pure (c - fe '0' + 52)
-            | c == fe '+'                -> pure 62
-            | c == fe '/'                -> pure 63
-            | otherwise                  -> fail ""
-
-        padding :: (BA.ByteArray ba) => BP.Parser ba ()
-        padding = BP.byte 61 -- 61 == fromEnum '='
-
-    fe :: Char -> Word8
-    fe = fromIntegral . fromEnum
-
-    space :: (BA.ByteArray ba) => BP.Parser ba ()
-    space = BP.anyByte >>= \c-> if
-      | c == fe ' '  -> pure ()
-      | c == fe '\n' -> pure ()
-      | c == fe '\r' -> pure ()
-      | c == fe '\t' -> pure ()
-      | otherwise    -> fail ""
-
-    space1 :: (BA.ByteArray ba) => BP.Parser ba ()
-    space1 = space >> many space >> pure ()
 
     getWord32be :: BA.ByteArray ba => BP.Parser ba Word32
     getWord32be = do
@@ -228,3 +176,59 @@ parsePrivateKeyFile _passphrase = do
                 _ -> fail $ "Unsupported algorithm " ++ show (BA.convert algo :: BA.Bytes)
             comment <- BA.convert <$> getString
             pure (key, comment)
+
+
+parseBase64 :: (BA.ByteArray ba) => BP.Parser ba ba
+parseBase64 = s0 []
+    where
+    -- Initial state and final state.
+    s0 xs = BP.hasMore >>= \case
+                False -> pure (BA.pack $ reverse xs)
+                True  -> (char >>= s1 xs) <|> (space1 >> s0 xs)
+    -- One character read (i). Three more characters or whitespace expected.
+    s1 xs i       =                 (char >>= s2 xs i)     <|> (space1 >> s1 xs i)
+    -- Two characters read (i and j). Either '==' or space or two more character expected.
+    s2 xs i j     = r2 xs i j   <|> (char >>= s3 xs i j)   <|> (space1 >> s2 xs i j)
+    -- Three characters read (i, j and k). Either a '=' or space or one more character expected.
+    s3 xs i j k   = r3 xs i j k <|> (char >>= s4 xs i j k) <|> (space1 >> s3 xs i j k)
+    -- Four characters read (i, j, k and l). Computation of result and transition back to s0.
+    s4 xs i j k l = s0 $ byte3 : byte2 : byte1: xs
+        where
+        byte1 = ( i         `shiftL` 2) + (j `shiftR` 4)
+        byte2 = ((j .&. 15) `shiftL` 4) + (k `shiftR` 2)
+        byte3 = ((k .&.  3) `shiftL` 6) + l
+    -- Read two '=' chars as finalizer. Only valid from state s2.
+    r2 xs i j     = padding >> padding >> pure (BA.pack $ reverse $ byte1 : xs)
+        where
+        byte1 = (i `shiftL` 2) + (j `shiftR` 4)
+    -- Read one '=' char as finalizer. Only valid from state s1.
+    r3 xs i j k   = padding >> pure (BA.pack $ reverse $ byte2 : byte1 : xs)
+        where
+        byte1 = (i          `shiftL` 2) + (j `shiftR` 4)
+        byte2 = ((j .&. 15) `shiftL` 4) + (k `shiftR` 2)
+
+    char :: (BA.ByteArray ba) => BP.Parser ba Word8
+    char = BP.anyByte >>= \c-> if
+        | c >= fe 'A' && c <= fe 'Z' -> pure (c - fe 'A')
+        | c >= fe 'a' && c <= fe 'z' -> pure (c - fe 'a' + 26)
+        | c >= fe '0' && c <= fe '9' -> pure (c - fe '0' + 52)
+        | c == fe '+'                -> pure 62
+        | c == fe '/'                -> pure 63
+        | otherwise                  -> fail ""
+
+    padding :: (BA.ByteArray ba) => BP.Parser ba ()
+    padding = BP.byte 61 -- 61 == fromEnum '='
+
+    space1 :: (BA.ByteArray ba) => BP.Parser ba ()
+    space1 = space >> many space >> pure ()
+
+fe :: Char -> Word8
+fe = fromIntegral . fromEnum
+
+space :: (BA.ByteArray ba) => BP.Parser ba ()
+space = BP.anyByte >>= \c-> if
+    | c == fe ' '  -> pure ()
+    | c == fe '\n' -> pure ()
+    | c == fe '\r' -> pure ()
+    | c == fe '\t' -> pure ()
+    | otherwise    -> fail ""

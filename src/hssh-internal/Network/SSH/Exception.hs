@@ -93,9 +93,9 @@ exceptionNoMoreAuthMethodsAvailable :: Disconnect
 exceptionNoMoreAuthMethodsAvailable =
     Disconnect Local DisconnectNoMoreAuthMethodsAvailable mempty
 
-exceptionHostKeyNotVerifiable :: Disconnect
-exceptionHostKeyNotVerifiable =
-    Disconnect Local DisconnectHostKeyNotVerifiable mempty
+exceptionHostKeyNotVerifiable :: DisconnectMessage -> Disconnect
+exceptionHostKeyNotVerifiable message =
+    Disconnect Local DisconnectHostKeyNotVerifiable message
 
 exceptionInvalidChannelId :: Disconnect
 exceptionInvalidChannelId =

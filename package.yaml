@@ -29,6 +29,8 @@ dependencies:
 - cryptonite
 - memory
 - stm
+- filepath
+- directory
 - data-default
 - socket >= 0.8.2.0
 

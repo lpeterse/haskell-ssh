@@ -3,7 +3,6 @@ module Network.SSH.Encoding where
 
 import           Control.Applicative
 import           Control.Monad                  ( when )
-import qualified Control.Monad.Fail            as Fail
 import qualified Data.ByteArray                as BA
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Short         as SBS
@@ -26,15 +25,15 @@ runPut :: B.ByteArrayBuilder -> BS.ByteString
 runPut = B.toByteArray
 {-# INLINEABLE runPut #-}
 
-runGet :: (Fail.MonadFail m, Decoding a) => BS.ByteString -> m a
+runGet :: (Monad m, Decoding a) => BS.ByteString -> m a
 runGet bs = case G.runGet get bs of
-    Left  e -> Fail.fail e
+    Left  e -> fail e
     Right a -> pure a
 {-# INLINEABLE runGet #-}
 
-runGetter :: (Fail.MonadFail m) => BS.ByteString -> Get a -> m a
+runGetter :: Monad m => BS.ByteString -> Get a -> m a
 runGetter bs getter = case G.runGet getter bs of
-    Left  e -> Fail.fail e
+    Left  e -> fail e
     Right a -> pure a
 {-# INLINEABLE runGetter #-}
 

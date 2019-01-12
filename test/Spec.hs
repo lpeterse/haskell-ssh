@@ -3,6 +3,7 @@ import           Test.Tasty
 import qualified Spec.Algorithms
 import qualified Spec.Client
 import qualified Spec.Client.Connection
+import qualified Spec.Client.HostKeyVerifier
 import qualified Spec.Client.UserAuth
 import qualified Spec.Key
 import qualified Spec.Message
@@ -18,12 +19,13 @@ main = defaultMain $ testGroup "Network.SSH"
      Spec.Algorithms.tests
     --, Spec.Client.tests
     --, Spec.Client.Connection.tests
+    , Spec.Client.HostKeyVerifier.tests
     --, Spec.Client.UserAuth.tests
-    --, Spec.Key.tests
+    , Spec.Key.tests
     --, Spec.Message.tests
     --, Spec.Server.tests
-    , Spec.Server.Connection.tests
+    --, Spec.Server.Connection.tests
     --, Spec.Server.UserAuth.tests
     --, Spec.Transport.tests
-    , Spec.TWindowBuffer.tests
+    --, Spec.TWindowBuffer.tests
     ]

@@ -4,7 +4,7 @@
 module Network.SSH.Client.Client where
 
 import           Control.Concurrent             ( threadDelay )
-import           Control.Concurrent.Async       ( race )
+import           Control.Concurrent.Async       ( withAsync, waitCatch, race )
 import           Control.Exception              ( Exception, bracket, bracketOnError, catch, throwIO )
 import           Control.Monad                  ( unless )
 import qualified Data.ByteString                as BS
@@ -42,7 +42,7 @@ instance Default ClientConfig where
         { socketConfig      = def
         , transportConfig   = def
         , connectionConfig  = def
-        , hostKeyVerifier   = acceptKnownHosts
+        , hostKeyVerifier   = acceptKnownHostsFromFile "~/.ssh/known_hosts"
         }
 
 data SocketConfig
@@ -66,7 +66,7 @@ data ClientException
 instance Exception ClientException where
 
 withClientConnection :: ClientConfig -> ClientIdentity -> HostAddress -> (Connection -> IO a) -> IO a
-withClientConnection config identity (HostAddress (Host host) (Port port)) handler = do
+withClientConnection config identity addr@(HostAddress (Host host) (Port port)) handler = do
     addresses <- getAddresses
     bracket (connectAny addresses) S.close (handleStream handler)
     where
@@ -98,9 +98,13 @@ withClientConnection config identity (HostAddress (Host host) (Port port)) handl
         handleStream :: DuplexStream stream => (Connection -> IO a) -> stream -> IO a
         handleStream h stream = do
             ea <- withClientTransport (transportConfig config) stream $ \transport sessionId hostKey -> do
-                -- Validate the host key with user supplied function
-                hostKeyAccepted <- hostKeyVerifier config (Host host) hostKey
-                unless hostKeyAccepted $ throwIO exceptionHostKeyNotVerifiable
+                -- Validate the host key with user supplied function.
+                -- Run this as an async in order not to loose control.
+                withAsync (hostKeyVerifier config addr hostKey) $ \thread ->
+                    waitCatch thread >>= \case
+                        Right VerificationPassed -> pure () -- host key verified
+                        Right (VerificationFailed e) -> throwIO (exceptionHostKeyNotVerifiable $ DisconnectMessage e)
+                        Left e -> throwIO (exceptionHostKeyNotVerifiable $ DisconnectMessage $ BS8.pack $ show e)
                 -- Authenticate against the server
                 requestServiceWithAuthentication identity transport sessionId (Name "ssh-connection")
                 -- Start the connection layer protocol
