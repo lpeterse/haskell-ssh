@@ -11,7 +11,6 @@ module Network.SSH.Internal
     , module Network.SSH.Server.UserAuth
     , module Network.SSH.Stream
     , module Network.SSH.Transport
-    , module Network.SSH.TStreamingQueue
     ) where
 
 import Network.SSH.Algorithms
@@ -26,4 +25,3 @@ import Network.SSH.Server.Connection hiding ( SessionHandler)
 import Network.SSH.Server.UserAuth
 import Network.SSH.Stream
 import Network.SSH.Transport
-import Network.SSH.TStreamingQueue

@@ -474,9 +474,9 @@ dispatchChannelWindowAdjustSTM c (ChannelWindowAdjust lid increment) =
         ChannelOpening {} -> throwSTM exceptionInvalidChannelState
         ChannelRunning ch -> do
             window <- readTVar (chanWindowSizeLocal ch)
-            when ((fromIntegral window + fromIntegral increment :: Word64) <= fromIntegral (maxBound :: Word32))
+            unless ((fromIntegral window + fromIntegral increment :: Word64) <= fromIntegral (maxBound :: Word32))
                 $ throwSTM exceptionWindowSizeOverflow
-            writeTVar (chanWindowSizeRemote ch) $! window + increment
+            writeTVar (chanWindowSizeLocal ch) $! window + increment
         ChannelClosing {} -> pure ()
 
 dispatchChannelDataSTM :: Connection -> ChannelData -> STM ()

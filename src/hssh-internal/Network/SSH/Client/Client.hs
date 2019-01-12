@@ -16,6 +16,7 @@ import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 
+import           Network.SSH.Address
 import           Network.SSH.Client.Connection
 import           Network.SSH.Client.UserAuth
 import           Network.SSH.Exception
@@ -24,12 +25,6 @@ import           Network.SSH.Message
 import           Network.SSH.Name
 import           Network.SSH.Stream
 import           Network.SSH.Transport
-
-data Address
-    = Address
-    { host :: BS.ByteString
-    , port :: BS.ByteString
-    } deriving (Eq, Ord, Show)
 
 newtype Duration = Duration Word64 -- Microseconds
     deriving (Eq, Ord, Show)

@@ -16,7 +16,6 @@ module Network.SSH.Client
     , runExec
     , SessionHandler (..)
     -- ** Misc
-    , Address (..)
     , Command (..)
     , Duration (..)
     , ExitSignal (..)

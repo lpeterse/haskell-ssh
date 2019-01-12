@@ -18,6 +18,8 @@ module Network.SSH
       -- * Transport
     , TransportConfig (..)
       -- * Misc
+      -- ** Address
+    , Address (..)
       -- ** Disconnect
     , Disconnect (..)
     , DisconnectParty (..)
@@ -39,6 +41,7 @@ module Network.SSH
     , Signature (..)
     ) where
 
+import Network.SSH.Address
 import Network.SSH.Algorithms
 import Network.SSH.AuthAgent
 import Network.SSH.Exception

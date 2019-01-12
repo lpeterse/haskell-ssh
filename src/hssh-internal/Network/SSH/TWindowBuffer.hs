@@ -40,6 +40,9 @@ getAvailableCapacitySTM b = (bCapacity b -) <$> getSizeSTM b
 getAvailableWindowSTM :: TWindowBuffer -> STM Word32
 getAvailableWindowSTM b = readTVar (bWindow b)
 
+askEofSTM :: TWindowBuffer -> STM Bool
+askEofSTM b = qEof <$> readTVar (bQueue b)
+
 -- | Returns number of bytes that may be added to the window.
 --
 -- The transaction blocks unless an adjustment is
@@ -59,7 +62,7 @@ getRecommendedWindowAdjustSTM b = do
     size <- getSizeSTM b
     availableWindow <- getAvailableWindowSTM b
     -- Condition: Window adjust must be > 50 % of capacity.
-    check $ size + availableWindow < threshold
+    check $ size + availableWindow <= threshold
     -- Recommend adjusting the window up to full buffer capacity.
     pure $ capacity - size - availableWindow
 

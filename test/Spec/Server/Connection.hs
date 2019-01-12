@@ -742,14 +742,18 @@ testSessionData03 = testCase "throw exception if remote sends data after eof" $ 
         exp3  = exceptionDataAfterEof
 
 testSessionFlowControl01 :: TestTree
-testSessionFlowControl01 = testCase "adjust inbound window when < 50% and capacity available" $ do
+testSessionFlowControl01 = testCase "adjust inbound window when buffer size + available window <= 50% capacity" do
     (serverStream,clientStream) <- newDummyTransportPair
-    mvar0 <- newEmptyMVar
-    mvar1 <- newEmptyMVar
-    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ stdin _ _ -> do
-            void $ takeMVar mvar0
-            putMVar mvar1 =<< receive stdin 1
-            void $ takeMVar mvar0
+    step1 <- newEmptyMVar
+    step2 <- newEmptyMVar
+    let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ stdin stdout _ -> do
+            -- echo 4 bytes
+            void $ sendAll stdout =<< receiveAll stdin 4
+            readMVar step1
+            -- echo 1 more byte
+            void $ sendAll stdout =<< receiveAll stdin 1
+            -- wait here for test to finish
+            readMVar step2
             pure ExitSuccess
     let config = def {
             channelMaxQueueSize = lws,
@@ -761,30 +765,38 @@ testSessionFlowControl01 = testCase "adjust inbound window when < 50% and capaci
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
         receiveMessage clientStream >>= assertEqual "res1" res1
-        -- Initial window (lws) is 5.
-        -- Send 3 bytes ("ABC"). Remaining window is then < 50%.
+        -- Initial window (lws) is 10.
+        -- Send 7 bytes. Remaining window is then 3.
         sendMessage clientStream req2
-        -- Window adjust not yet possible due to lack of free capacity.
-        -- Handler shall consume 1 byte to increase capacity to > 50%.
-        putMVar mvar0 ()
-        assertEqual "first byte" "A" =<< takeMVar mvar1
-        -- Now expecting window adjust..
+        -- Client responds after having consumed 4 bytes.
+        -- Buffer size is then 3.
+        -- 3 + 3 > 5 (threshold): no window adjust yet.
         receiveMessage clientStream >>= assertEqual "res2" res2
-        -- Let handler finish.
-        putMVar mvar0 ()
+        -- Make the client echo one more byte.
+        -- Buffer size is then 2.
+        -- 3 + 2 <= 5 (threshold): window adjust now.
+        putMVar step1 ()
+        receiveMessage clientStream >>= assertEqual "res3" res3
+        -- Expect window adjust now.
+        -- Increment should be 8 - 3 = 2 (available capacity - available window).
+        receiveMessage clientStream >>= assertEqual "res4" res4
+        -- Unblock handler.
+        putMVar step2 ()
     where
         lid   = ChannelId 0
         rid   = ChannelId 23
-        rws   = 0
-        rps   = 0
-        lws   = 5
-        lps   = 5
+        rws   = 100
+        rps   = 100
+        lws   = 10
+        lps   = 100
         req0  = ChannelOpen rid rws rps ChannelOpenSession
         res0  = ChannelOpenConfirmation rid lid lws lps
         req1  = ChannelRequest lid "shell" True mempty
         res1  = ChannelSuccess rid
-        req2  = ChannelData lid "ABC"
-        res2  = ChannelWindowAdjust rid 3
+        req2  = ChannelData lid "1234567"
+        res2  = ChannelData rid "1234"
+        res3  = ChannelData rid "5"
+        res4  = ChannelWindowAdjust rid 5
 
 testSessionFlowControl02 :: TestTree
 testSessionFlowControl02 = testCase "throw exception on inbound window size underrun" $ do
@@ -825,9 +837,11 @@ testSessionFlowControl02 = testCase "throw exception on inbound window size unde
 
 testSessionFlowControl03 :: TestTree
 testSessionFlowControl03 = testCase "honor outbound window size and adjustment" $ do
+    step1 <- newEmptyMVar
     (serverStream,clientStream) <- newDummyTransportPair
     let handler _ _ = pure $ Just $ SessionHandler $ \_ _ _ _ stdout _ -> do
             sendAll stdout msg
+            readMVar step1
             pure ExitSuccess
     let config = def {
             channelMaxQueueSize = lws,
@@ -842,9 +856,11 @@ testSessionFlowControl03 = testCase "honor outbound window size and adjustment" 
         receiveMessage clientStream >>= assertEqual "res12" res12
         sendMessage clientStream req2
         receiveMessage clientStream >>= assertEqual "res2" res2
-        sendMessage clientStream req3
-        receiveMessage clientStream >>= assertEqual "res31" res31
-        receiveMessage clientStream >>= assertEqual "res32" res32
+        --sendMessage clientStream req3
+        --receiveMessage clientStream >>= assertEqual "res31" res31
+        --receiveMessage clientStream >>= assertEqual "res32" res32
+        -- Unblock handler.
+        putMVar step1 ()
     where
         msg   = "ABCDEF"
         lid   = ChannelId 0

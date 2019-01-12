@@ -116,23 +116,23 @@ testGetRecommendedWindowAdjustSTM01 = testCase "shall block when window > 50% ca
     recommended <- atomically $ (getRecommendedWindowAdjustSTM q >> pure True) <|> pure False
     assertEqual "adjust recommended" False recommended
     where
-        window   = 5
+        window   = 6
         capacity = 10
 
 testGetRecommendedWindowAdjustSTM02 :: TestTree
 testGetRecommendedWindowAdjustSTM02 = testCase "shall block when size > 50% capacity" do
     tWindow <- newTVarIO window
     q <- atomically $ newTWindowBufferSTM capacity tWindow
-    atomically $ enqueueSTM q five
+    atomically $ enqueueSTM q six
     recommended <- atomically $ (getRecommendedWindowAdjustSTM q >> pure True) <|> pure False
     assertEqual "adjust recommended" False recommended
     where
-        five     = "12345"
-        window   = 5
+        six      = "123456"
+        window   = 6
         capacity = 10
 
 testGetRecommendedWindowAdjustSTM03 :: TestTree
-testGetRecommendedWindowAdjustSTM03 = testCase "shall block when size and window < 50% capacity but adjust would be too small" do
+testGetRecommendedWindowAdjustSTM03 = testCase "shall block when size and window <= 50% capacity but adjust would be too small" do
     tWindow <- newTVarIO window
     q <- atomically $ newTWindowBufferSTM capacity tWindow
     atomically $ enqueueSTM q six
@@ -148,7 +148,7 @@ testGetRecommendedWindowAdjustSTM03 = testCase "shall block when size and window
         capacity = 10
 
 testGetRecommendedWindowAdjustSTM04 :: TestTree
-testGetRecommendedWindowAdjustSTM04 = testCase "shall recommend adjust when size + available window < 50% capacity" do
+testGetRecommendedWindowAdjustSTM04 = testCase "shall recommend adjust when size + available window <= 50% capacity" do
     tWindow <- newTVarIO window
     q <- atomically $ newTWindowBufferSTM capacity tWindow
     atomically $ enqueueSTM q seven

@@ -1,7 +1,5 @@
 {-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE MultiWayIf                 #-}
-{-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
 {-# LANGUAGE ExistentialQuantification  #-}
@@ -41,7 +39,7 @@ import           Network.SSH.Exception
 import           Network.SSH.Constants
 import           Network.SSH.Message
 import qualified Network.SSH.Stream as S
-import qualified Network.SSH.TStreamingQueue as Q
+import qualified Network.SSH.TWindowBuffer as B
 
 data ConnectionConfig identity
     = ConnectionConfig
@@ -176,6 +174,8 @@ data Channel
     { chanApplication         :: ChannelApplication
     , chanIdLocal             :: ChannelId
     , chanIdRemote            :: ChannelId
+    , chanWindowSizeLocal     :: TVar Word32
+    , chanWindowSizeRemote    :: TVar Word32
     , chanMaxPacketSizeRemote :: Word32
     , chanClosed              :: TVar Bool
     , chanThread              :: TMVar (Async.Async ())
@@ -190,15 +190,15 @@ data SessionState
     { sessHandler     :: SessionHandler
     , sessEnvironment :: TVar Environment
     , sessPtySettings :: TVar (Maybe PtySettings)
-    , sessStdin       :: Q.TStreamingQueue
-    , sessStdout      :: Q.TStreamingQueue
-    , sessStderr      :: Q.TStreamingQueue
+    , sessStdin       :: B.TWindowBuffer
+    , sessStdout      :: B.TWindowBuffer
+    , sessStderr      :: B.TWindowBuffer
     }
 
 data DirectTcpIpState
     = DirectTcpIpState
-    { dtiStreamIn     :: Q.TStreamingQueue
-    , dtiStreamOut    :: Q.TStreamingQueue
+    { dtiStreamIn     :: B.TWindowBuffer
+    , dtiStreamOut    :: B.TWindowBuffer
     }
 
 instance S.InputStream DirectTcpIpState where
@@ -265,9 +265,9 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
                     pty      <- newTVarIO Nothing
                     wsLocal  <- newTVarIO maxQueueSize
                     wsRemote <- newTVarIO remoteWindowSize
-                    stdIn    <- atomically $ Q.newTStreamingQueue maxQueueSize wsLocal
-                    stdOut   <- atomically $ Q.newTStreamingQueue maxQueueSize wsRemote
-                    stdErr   <- atomically $ Q.newTStreamingQueue maxQueueSize wsRemote
+                    stdIn    <- atomically $ B.newTWindowBufferSTM maxQueueSize wsLocal
+                    stdOut   <- atomically $ B.newTWindowBufferSTM maxQueueSize wsRemote
+                    stdErr   <- atomically $ B.newTWindowBufferSTM maxQueueSize wsRemote
                     let app = ChannelApplicationSession SessionState
                             { sessHandler     = handler
                             , sessEnvironment = env
@@ -276,7 +276,7 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
                             , sessStdout      = stdOut
                             , sessStderr      = stdErr
                             }
-                    atomically (openApplicationChannel app) >>= \case
+                    atomically (openApplicationChannel wsLocal wsRemote app) >>= \case
                         Left failure           -> sendMessage stream failure
                         Right (_,confirmation) -> sendMessage stream confirmation
         ChannelOpenDirectTcpIp da dp oa op -> do
@@ -287,14 +287,14 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
                 Just (DirectTcpIpHandler handler) -> do
                     wsLocal   <- newTVarIO maxQueueSize
                     wsRemote  <- newTVarIO remoteWindowSize
-                    streamIn  <- atomically $ Q.newTStreamingQueue maxQueueSize wsLocal
-                    streamOut <- atomically $ Q.newTStreamingQueue maxQueueSize wsRemote
+                    streamIn  <- atomically $ B.newTWindowBufferSTM maxQueueSize wsLocal
+                    streamOut <- atomically $ B.newTWindowBufferSTM maxQueueSize wsRemote
                     let st = DirectTcpIpState
                             { dtiStreamIn  = streamIn
                             , dtiStreamOut = streamOut
                             }
                     let app = ChannelApplicationDirectTcpIp st
-                    atomically (openApplicationChannel app) >>= \case
+                    atomically (openApplicationChannel wsLocal wsRemote app) >>= \case
                         Left failure -> sendMessage stream failure
                         Right (c,confirmation) -> do
                             forkDirectTcpIpHandler stream c st (handler st)
@@ -305,14 +305,18 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
         openFailure :: ChannelOpenFailureReason -> ChannelOpenFailure
         openFailure reason = ChannelOpenFailure remoteChannelId reason mempty mempty
 
-        openApplicationChannel :: ChannelApplication -> STM (Either ChannelOpenFailure (Channel, ChannelOpenConfirmation))
-        openApplicationChannel application = tryRegisterChannel $ \localChannelId -> do
+        openApplicationChannel ::
+            TVar Word32 -> TVar Word32 -> ChannelApplication
+             -> STM (Either ChannelOpenFailure (Channel, ChannelOpenConfirmation))
+        openApplicationChannel wsLocal wsRemote application = tryRegisterChannel $ \localChannelId -> do
             closed <- newTVar False
             thread <- newEmptyTMVar
             pure Channel
                 { chanApplication         = application
                 , chanIdLocal             = localChannelId
                 , chanIdRemote            = remoteChannelId
+                , chanWindowSizeLocal     = wsLocal
+                , chanWindowSizeRemote    = wsRemote
                 , chanMaxPacketSizeRemote = remotePacketSize
                 , chanClosed              = closed
                 , chanThread              = thread
@@ -358,19 +362,19 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
 
 connectionChannelEof ::
     Connection identity -> ChannelEof -> IO ()
-connectionChannelEof connection (ChannelEof localChannelId) = atomically $ do
+connectionChannelEof connection (ChannelEof localChannelId) = atomically do
     channel <- getChannelSTM connection localChannelId
     let queue = case chanApplication channel of
             ChannelApplicationSession     st -> sessStdin   st
             ChannelApplicationDirectTcpIp st -> dtiStreamIn st
-    Q.terminate queue
+    S.sendEofSTM queue
 
 connectionChannelClose :: forall stream identity. MessageStream stream =>
     Connection identity -> stream -> ChannelClose -> IO ()
 connectionChannelClose connection stream (ChannelClose localChannelId) = do
     channel <- atomically $ getChannelSTM connection localChannelId
     maybe (pure ()) Async.cancel =<< atomically (tryReadTMVar $ chanThread channel)
-    atomically $ do
+    atomically do
         channels <- readTVar (connChannels connection)
         writeTVar (connChannels connection) $! M.delete localChannelId channels
     -- When the channel is not marked as already closed then the close
@@ -383,14 +387,15 @@ connectionChannelClose connection stream (ChannelClose localChannelId) = do
 
 connectionChannelData ::
     Connection identity -> ChannelData -> IO ()
-connectionChannelData connection (ChannelData localChannelId packet) = atomically $ do
+connectionChannelData connection (ChannelData localChannelId packet) = atomically do
     when (packetSize > maxPacketSize) (throwSTM exceptionPacketSizeExceeded)
     channel <- getChannelSTM connection localChannelId
     let queue = case chanApplication channel of
             ChannelApplicationSession     st -> sessStdin   st
             ChannelApplicationDirectTcpIp st -> dtiStreamIn st
-    i <- Q.enqueue queue (SBS.fromShort packet) <|> throwSTM exceptionWindowSizeUnderrun
-    when (i == 0) (throwSTM exceptionDataAfterEof)
+    eof <- B.askEofSTM queue
+    when eof (throwSTM exceptionDataAfterEof)
+    i <- B.enqueueShortSTM queue packet <|> throwSTM exceptionWindowSizeUnderrun
     when (i /= packetSize) (throwSTM exceptionWindowSizeUnderrun)
     where
         packetSize :: Word32
@@ -404,10 +409,10 @@ connectionChannelWindowAdjust ::
     Connection identity -> ChannelWindowAdjust -> IO ()
 connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId increment) = atomically $ do
     channel <- getChannelSTM connection channelId
-    let queue = case chanApplication channel of
-            ChannelApplicationSession     st -> sessStdout   st
-            ChannelApplicationDirectTcpIp st -> dtiStreamOut st
-    Q.addWindowSpace queue increment <|> throwSTM exceptionWindowSizeOverflow
+    window <- readTVar (chanWindowSizeRemote channel)
+    unless ((fromIntegral window + fromIntegral increment :: Word64) <= fromIntegral (maxBound :: Word32))
+        $ throwSTM exceptionWindowSizeOverflow
+    writeTVar (chanWindowSizeRemote channel) $! window + increment
 
 connectionChannelRequest :: forall identity stream. MessageStream stream =>
     Connection identity -> stream -> ChannelRequest -> IO ()
@@ -429,7 +434,7 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
                 stdout <- pure (sessStdout sessionState)
                 stderr <- pure (sessStderr sessionState)
                 let SessionHandler handler = sessHandler sessionState
-                pure $ do
+                pure do
                     forkSessionHandler stream channel stdin stdout stderr $
                         handler env (TermInfo <$> pty) Nothing stdin stdout stderr
                     success channel
@@ -440,7 +445,7 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
                 stdout <- pure (sessStdout sessionState)
                 stderr <- pure (sessStderr sessionState)
                 let SessionHandler handler = sessHandler sessionState
-                pure $ do
+                pure do
                     forkSessionHandler stream channel stdin stdout stderr $
                         handler env (TermInfo <$> pty) (Just (Command $ SBS.fromShort command)) stdin stdout stderr
                     success channel
@@ -478,28 +483,29 @@ forkDirectTcpIpHandler stream channel st handle = do
                 Right _ -> pure True
                 Left  _ -> pure False
             writeTVar (chanClosed channel) True
-            pure $ do
+            pure do
                 when eof $ sendMessage stream $ ChannelEof (chanIdRemote channel)
                 sendMessage stream $ ChannelClose (chanIdRemote channel)
                 pure False
 
         waitOutput :: STM (IO Bool)
         waitOutput = do
-            bs <- Q.dequeueShort (dtiStreamOut st) (chanMaxPacketSizeRemote channel)
-            pure $ do
+            bs <- B.dequeueShortSTM (dtiStreamOut st) (chanMaxPacketSizeRemote channel)
+            pure do
                 sendMessage stream $ ChannelData (chanIdRemote channel) bs
                 pure True
 
         waitLocalWindowAdjust :: STM (IO Bool)
         waitLocalWindowAdjust = do
-            check =<< Q.askWindowSpaceAdjustRecommended (dtiStreamIn st)
-            increaseBy <- Q.fillWindowSpace (dtiStreamIn st)
-            pure $ do
-                sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increaseBy
+            increment <- B.getRecommendedWindowAdjustSTM (dtiStreamIn st)
+            window <- readTVar (chanWindowSizeLocal channel)
+            writeTVar (chanWindowSizeLocal channel) $! window + increment
+            pure do
+                sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increment
                 pure True
 
 forkSessionHandler :: forall stream. MessageStream stream =>
-    stream -> Channel -> Q.TStreamingQueue -> Q.TStreamingQueue -> Q.TStreamingQueue -> IO ExitCode -> IO ()
+    stream -> Channel -> B.TWindowBuffer -> B.TWindowBuffer -> B.TWindowBuffer -> IO ExitCode -> IO ()
 forkSessionHandler stream channel stdin stdout stderr run = do
     registerThread channel run supervise
     where
@@ -523,7 +529,7 @@ forkSessionHandler stream channel stdin stdout stderr run = do
                 Right c -> pure $ req "exit-status" $ runPut $ put $ ChannelRequestExitStatus c
                 Left  _ -> pure $ req "exit-signal" $ runPut $ put $ ChannelRequestExitSignal "ILL" False "" ""
             writeTVar (chanClosed channel) True
-            pure $ do
+            pure do
                 sendMessage stream eofMessage
                 sendMessage stream exitMessage
                 sendMessage stream closeMessage
@@ -535,24 +541,25 @@ forkSessionHandler stream channel stdin stdout stderr run = do
 
         waitStdout :: STM (IO Bool)
         waitStdout = do
-            bs <- Q.dequeueShort stdout (chanMaxPacketSizeRemote channel)
-            pure $ do
+            bs <- B.dequeueShortSTM stdout (chanMaxPacketSizeRemote channel)
+            pure do
                 sendMessage stream $ ChannelData (chanIdRemote channel) bs
                 pure True
 
         waitStderr :: STM (IO Bool)
         waitStderr = do
-            bs <- Q.dequeueShort stderr (chanMaxPacketSizeRemote channel)
-            pure $ do
+            bs <- B.dequeueShortSTM stderr (chanMaxPacketSizeRemote channel)
+            pure do
                 sendMessage stream $ ChannelExtendedData (chanIdRemote channel) 1 bs
                 pure True
 
         waitLocalWindowAdjust :: STM (IO Bool)
         waitLocalWindowAdjust = do
-            check =<< Q.askWindowSpaceAdjustRecommended stdin
-            increaseBy <- Q.fillWindowSpace stdin
-            pure $ do
-                sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increaseBy
+            increment <- B.getRecommendedWindowAdjustSTM stdin
+            window <- readTVar (chanWindowSizeLocal channel)
+            writeTVar (chanWindowSizeLocal channel) $! window + increment
+            pure do
+                sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increment
                 pure True
 
 getChannelSTM :: Connection identity -> ChannelId -> STM Channel
@@ -575,7 +582,7 @@ getChannelSTM connection channelId = do
 registerThread :: Channel -> IO a -> (Async.Async a -> IO ()) -> IO ()
 registerThread channel run supervise = do
     barrier <- newTVarIO False
-    let prepare = Async.async $ do
+    let prepare = Async.async do
             atomically $ readTVar barrier >>= check
             Async.withAsync run supervise
     let abort = Async.cancel
