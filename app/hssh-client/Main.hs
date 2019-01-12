@@ -26,7 +26,7 @@ main = do
     let config = def
             { transportConfig = def { onReceive = print, onSend = print }
             }
-    withClientConnection config (userPassword "lpetersen" "foobar") (Address "localhost" "22")  handleConnection
+    withClientConnection config (userPassword "lpetersen" "foobar") (HostAddress "localhost" 22)  handleConnection
     where
         getAgent :: IO KeyPair
         getAgent = do

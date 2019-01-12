@@ -8,6 +8,7 @@ import           Control.Concurrent.Async       ( race )
 import           Control.Exception              ( Exception, bracket, bracketOnError, catch, throwIO )
 import           Control.Monad                  ( unless )
 import qualified Data.ByteString                as BS
+import qualified Data.ByteString.Char8          as BS8
 import           Data.Default
 import           Data.List.NonEmpty             ( NonEmpty (..) )
 import           Data.Word
@@ -16,26 +17,17 @@ import qualified System.Socket.Family.Inet6     as S
 import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 
-import           Network.SSH.Address
 import           Network.SSH.Client.Connection
+import           Network.SSH.Client.HostKeyVerifier
 import           Network.SSH.Client.UserAuth
+import           Network.SSH.Duration
 import           Network.SSH.Exception
+import           Network.SSH.HostAddress
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Name
 import           Network.SSH.Stream
 import           Network.SSH.Transport
-
-newtype Duration = Duration Word64 -- Microseconds
-    deriving (Eq, Ord, Show)
-
-seconds :: Integral a => a -> Duration
-seconds i = Duration (1000000 * fromIntegral i)
-
-type HostKeyVerifier = PublicKey -> IO Bool
-
-acceptKnownHosts :: HostKeyVerifier
-acceptKnownHosts _hostKey = pure True -- FIXME: stub
 
 data ClientConfig
     = ClientConfig
@@ -73,8 +65,8 @@ data ClientException
 
 instance Exception ClientException where
 
-withClientConnection :: ClientConfig -> ClientIdentity -> Address -> (Connection -> IO a) -> IO a
-withClientConnection config identity address handler = do
+withClientConnection :: ClientConfig -> ClientIdentity -> HostAddress -> (Connection -> IO a) -> IO a
+withClientConnection config identity (HostAddress (Host host) (Port port)) handler = do
     addresses <- getAddresses
     bracket (connectAny addresses) S.close (handleStream handler)
     where
@@ -85,8 +77,8 @@ withClientConnection config identity address handler = do
                    :: IO [S.AddressInfo S.Inet6 S.Stream S.Default]
             pure (S.socketAddress a :| fmap S.socketAddress as)
             where
-                hostName = Just (host address)
-                portName = Just (port address)
+                hostName = Just host
+                portName = Just (BS8.pack $ show port)
                 flags    = S.aiAddressConfig <> S.aiV4Mapped <> S.aiAll
 
         connectAny :: NonEmpty (S.SocketAddress S.Inet6) -> IO (S.Socket S.Inet6 S.Stream S.Default)
@@ -107,7 +99,7 @@ withClientConnection config identity address handler = do
         handleStream h stream = do
             ea <- withClientTransport (transportConfig config) stream $ \transport sessionId hostKey -> do
                 -- Validate the host key with user supplied function
-                hostKeyAccepted <- hostKeyVerifier config hostKey
+                hostKeyAccepted <- hostKeyVerifier config (Host host) hostKey
                 unless hostKeyAccepted $ throwIO exceptionHostKeyNotVerifiable
                 -- Authenticate against the server
                 requestServiceWithAuthentication identity transport sessionId (Name "ssh-connection")

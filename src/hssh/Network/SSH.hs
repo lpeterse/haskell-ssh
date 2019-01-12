@@ -18,8 +18,11 @@ module Network.SSH
       -- * Transport
     , TransportConfig (..)
       -- * Misc
-      -- ** Address
-    , Address (..)
+      -- ** Duration
+    , Duration (..)
+    , seconds
+      -- ** HostAddress
+    , HostAddress (..)
       -- ** Disconnect
     , Disconnect (..)
     , DisconnectParty (..)
@@ -41,12 +44,13 @@ module Network.SSH
     , Signature (..)
     ) where
 
-import Network.SSH.Address
 import Network.SSH.Algorithms
 import Network.SSH.AuthAgent
 import Network.SSH.Exception
+import Network.SSH.HostAddress
 import Network.SSH.Key
 import Network.SSH.Message
 import Network.SSH.Name
 import Network.SSH.Stream
 import Network.SSH.Transport
+import Network.SSH.Duration
