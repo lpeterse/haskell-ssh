@@ -20,7 +20,11 @@ import           Test.Tasty
 import           Test.Tasty.HUnit
 
 import           Network.SSH.Client
-import           Network.SSH.Internal hiding ( ConnectionConfig (..) )
+import           Network.SSH.Client.Connection
+import           Network.SSH.Encoding
+import           Network.SSH.Exception
+import           Network.SSH.Message
+import           Network.SSH.Stream
 
 import           Spec.Util
 
@@ -863,12 +867,17 @@ testSessionShellData05 = testCase "shall throw exception when packet size exceed
         sc3  = ChannelData lid "ABCD"
 
 testSessionShellData06 :: TestTree
-testSessionShellData06 = testCase "shall adjust window size when it shrinks below 50%" $ do
+testSessionShellData06 = testCase "shall adjust window size when necessary" $ do
+    step1 <- newEmptyMVar
     (serverStream,clientStream) <- newDummyTransportPair
     let action = withConnection conf clientStream $ \c -> do
-            let s = runShell c $ SessionHandler $ \_ stdout _ _ -> do
+            let s = runShell c $ SessionHandler $ \stdin stdout _ _ -> do
                         void $ receiveAll stdout 2
-                        threadDelay 1000000
+                        void $ sendAll stdin "CD"
+                        void $ receiveAll stdout 2
+                        -- stdout size should now be 0
+                        -- stdout window should now be 1
+                        readMVar step1
             withAsync s wait
     withAsync action $ \thread -> do
         -- open / open confirmation
@@ -877,15 +886,14 @@ testSessionShellData06 = testCase "shall adjust window size when it shrinks belo
         -- shell request / response
         assertEqual "cs2" cs2 =<< receiveMessage serverStream
         sendMessage serverStream sc2
-        -- send 2 bytes
-        sendMessage serverStream $ ChannelData lid "AB"
-        -- ping/pong to assure there is no window adjust yet
+        -- send 2 bytes / receive 2 bytes (no window adjust yet)
         sendMessage serverStream sc3
         assertEqual "cs3" cs3 =<< receiveMessage serverStream
-        -- send 1 more byte
-        sendMessage serverStream $ ChannelData lid "C"
-        -- expect window adjust now
+        -- send 2 more bytes (window adjust now)
+        sendMessage serverStream sc4
         assertEqual "cs4" cs4 =<< receiveMessage serverStream
+        -- unblock handler
+        putMVar step1 ()
     where
         conf = def
             { channelMaxQueueSize  = ws
@@ -895,10 +903,11 @@ testSessionShellData06 = testCase "shall adjust window size when it shrinks belo
         rid  = ChannelId 1
         ws   = 5
         ps   = 128
-        cs1  = ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
+        cs1  = O090 $ ChannelOpen (ChannelId 0) ws ps ChannelOpenSession
         sc1  = ChannelOpenConfirmation lid rid ws ps
-        cs2  = ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
+        cs2  = O098 $ ChannelRequest rid "shell" True $ runPut (put ChannelRequestShell)
         sc2  = ChannelSuccess lid
-        sc3  = ChannelRequest lid "req-unknown" True ""
-        cs3  = ChannelFailure rid
-        cs4  = ChannelWindowAdjust rid 3
+        sc3  = ChannelData lid "AB"
+        cs3  = O094 $ ChannelData rid "CD"
+        sc4  = ChannelData lid "EF"
+        cs4  = O093 $ ChannelWindowAdjust rid 4

@@ -16,9 +16,9 @@ import qualified Spec.TWindowBuffer
 main :: IO ()
 main = defaultMain $ testGroup "Network.SSH"
     [ 
-    -- Spec.Algorithms.tests
+     Spec.Algorithms.tests
     --, Spec.Client.tests
-    --, Spec.Client.Connection.tests
+    , Spec.Client.Connection.tests
     --, Spec.Client.UserAuth.tests
     --, Spec.Key.tests
     --, Spec.Message.tests
@@ -27,5 +27,5 @@ main = defaultMain $ testGroup "Network.SSH"
     --, Spec.Server.UserAuth.tests
     --, Spec.Transport.tests
     --, Spec.TStreamingQueue.tests
-     Spec.TWindowBuffer.tests
+    --, Spec.TWindowBuffer.tests
     ]

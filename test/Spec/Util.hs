@@ -11,6 +11,7 @@ import           Control.Monad
 import           Test.Tasty.HUnit
 
 import           Network.SSH.Internal
+import           Network.SSH.TWindowBuffer
 
 assertThrows :: (Eq e, Exception e) => String -> e -> IO a -> Assertion
 assertThrows label e action = (action >> failure0) `catch` \e'-> when (e /= e') (failure1 e')
@@ -18,13 +19,13 @@ assertThrows label e action = (action >> failure0) `catch` \e'-> when (e /= e') 
         failure0 = assertFailure (label ++ ": should have thrown " ++ show e)
         failure1 e' = assertFailure (label ++ ": should have thrown " ++ show e ++ " (saw " ++ show e' ++ " instead)")
 
-data DummySocket = DummySocket TStreamingQueue TStreamingQueue
+data DummySocket = DummySocket TWindowBuffer TWindowBuffer
 
 newSocketPair :: IO (DummySocket, DummySocket)
 newSocketPair = atomically $ do
     window <- newTVar 1000000000
-    x <- newTStreamingQueue 1000000000 window
-    y <- newTStreamingQueue 1000000000 window
+    x <- newTWindowBufferSTM 1000000000 window
+    y <- newTWindowBufferSTM 1000000000 window
     pure (DummySocket x y, DummySocket y x)
 
 instance DuplexStream DummySocket
@@ -38,7 +39,7 @@ instance InputStream DummySocket where
     receiveUnsafe (DummySocket _ q) = receiveUnsafe q
 
 close :: DummySocket -> IO ()
-close (DummySocket q _) = atomically $ terminate q
+close (DummySocket q _) = atomically $ sendEofSTM q
 
 newtype DummyTransport = DummyTransport (TChan BS.ByteString, TChan BS.ByteString)
 

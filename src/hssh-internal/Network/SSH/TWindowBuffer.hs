@@ -13,10 +13,9 @@ import           Network.SSH.Constants ( maxBoundIntWord32 )
 
 data TWindowBuffer
     = TWindowBuffer
-    { bCapacity :: Word32
-    , bWindow   :: TVar Word32
-    , bEof      :: TVar Bool
-    , bQueue    :: TVar Queue
+    { bCapacity :: !Word32
+    , bWindow   :: !(TVar Word32)
+    , bQueue    :: !(TVar Queue)
     }
 
 data TWindowBufferException
@@ -27,8 +26,7 @@ instance Exception TWindowBufferException where
 
 newTWindowBufferSTM :: Word32 -> TVar Word32 -> STM TWindowBuffer
 newTWindowBufferSTM capacity window = TWindowBuffer capacity window
-    <$> newTVar False
-    <*> newTVar (Queue 0 [] [])
+    <$> newTVar (Queue 0 False [] [])
 
 getSizeSTM :: TWindowBuffer -> STM Word32
 getSizeSTM b = fromIntegral . qSize <$> readTVar (bQueue b)
@@ -41,12 +39,6 @@ getAvailableCapacitySTM b = (bCapacity b -) <$> getSizeSTM b
 
 getAvailableWindowSTM :: TWindowBuffer -> STM Word32
 getAvailableWindowSTM b = readTVar (bWindow b)
-
-adjustWindowSTM :: TWindowBuffer -> Word32 -> STM ()
-adjustWindowSTM b incr = do
-    window <- getAvailableWindowSTM b :: STM Word32
-    check $ (fromIntegral window + fromIntegral incr :: Word64) <= fromIntegral (maxBound :: Word32)
-    writeTVar (bWindow b) $! window + incr
 
 -- | Returns number of bytes that may be added to the window.
 --
@@ -72,7 +64,7 @@ getRecommendedWindowAdjustSTM b = do
     pure $ capacity - size - availableWindow
 
 throwWhenEofSTM :: Exception e => TWindowBuffer -> e -> STM a
-throwWhenEofSTM b e = readTVar (bEof b) >>= check >> throwSTM e
+throwWhenEofSTM b e = readTVar (bQueue b) >>= check . qEof >> throwSTM e
 
 enqueueSTM :: TWindowBuffer -> BS.ByteString -> STM Word32
 enqueueSTM b bs = do
@@ -108,10 +100,10 @@ dequeueSTM b n = SBS.fromShort <$> dequeueShortSTM b n
 dequeueShortSTM :: TWindowBuffer -> Word32 -> STM SBS.ShortByteString
 dequeueShortSTM b n = do
     q <- readTVar (bQueue b)
-    deq q <|> eof
+    dequeue q <|> eof q
     where
-        eof = readTVar (bEof b) >>= check >> pure mempty
-        deq q = do 
+        eof q = check (qEof q) >> pure mempty
+        dequeue q = do 
             check $ qSize q > 0
             let (sbs, q') = qDequeueShort (fromIntegral n) q
             writeTVar (bQueue b) $! q'
@@ -121,7 +113,14 @@ lookAheadSTM :: TWindowBuffer -> Word32 -> STM BS.ByteString
 lookAheadSTM b n = SBS.fromShort <$> lookAheadShortSTM b n
 
 lookAheadShortSTM :: TWindowBuffer -> Word32 -> STM SBS.ShortByteString
-lookAheadShortSTM b n = fst . qDequeueShort (fromIntegral n) <$> readTVar (bQueue b)
+lookAheadShortSTM b n = do
+    q <- readTVar (bQueue b)
+    lookAhead q <|> eof q
+    where
+        eof q = check (qEof q) >> pure mempty
+        lookAhead q = do
+            check $ qSize q > 0
+            pure $ fst $ qDequeueShort (fromIntegral n) q
 
 ---------------------------------------------------------------------------------------------------
 -- STREAM INSTANCES
@@ -144,7 +143,9 @@ instance S.InputStreamSTM TWindowBuffer where
 
 instance S.OutputStreamSTM TWindowBuffer where
     sendSTM b bs = fromIntegral <$> enqueueSTM b bs
-    sendEofSTM b = writeTVar (bEof b) True
+    sendEofSTM b = do
+        q <- readTVar (bQueue b)
+        writeTVar (bQueue b) $! q { qEof = True }
 
 ---------------------------------------------------------------------------------------------------
 -- QUEUE
@@ -152,17 +153,18 @@ instance S.OutputStreamSTM TWindowBuffer where
 
 data Queue = Queue
     { qSize       :: !Int
+    , qEof        :: !Bool
     , qLeftStack  :: [SBS.ShortByteString]
     , qRightStack :: [SBS.ShortByteString]
     }
 
 qEnqueueShort :: SBS.ShortByteString -> Queue -> Queue
-qEnqueueShort bs (Queue sz ls rs) =
-    Queue (sz + SBS.length bs) ls (bs:rs)
+qEnqueueShort bs (Queue sz eof ls rs) =
+    Queue (sz + SBS.length bs) eof ls (bs:rs)
 
 qDequeueShort :: Int -> Queue -> (SBS.ShortByteString, Queue)
-qDequeueShort n q@(Queue sz ls rs)
-    | n >= 0    = (bs, Queue (sz - SBS.length bs) ls' rs')
+qDequeueShort n q@(Queue sz eof ls rs)
+    | n >= 0    = (bs, Queue (sz - SBS.length bs) eof ls' rs')
     | otherwise = (mempty, q)
     where
         (acc', ls', rs') = f n [] ls rs

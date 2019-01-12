@@ -10,6 +10,8 @@ module Network.SSH.Client.Connection
     , Command (..)
     , ExitSignal (..)
     , SessionHandler (..)
+    , InboundMessage (..)
+    , OutboundMessage (..)
     , withConnection
     , getChannelCount
     , runShell
@@ -38,7 +40,7 @@ import           Network.SSH.Encoding
 import           Network.SSH.Message
 import           Network.SSH.Name
 import           Network.SSH.Stream
-import qualified Network.SSH.TStreamingQueue           as Q
+import qualified Network.SSH.TWindowBuffer             as B
 
 data ConnectionConfig
     = ConnectionConfig
@@ -103,9 +105,9 @@ data ChannelApplication
 
 data ChannelSession
     = ChannelSession
-    { sessStdin       :: Q.TStreamingQueue
-    , sessStdout      :: Q.TStreamingQueue
-    , sessStderr      :: Q.TStreamingQueue
+    { sessStdin       :: B.TWindowBuffer
+    , sessStdout      :: B.TWindowBuffer
+    , sessStderr      :: B.TWindowBuffer
     , sessExit        :: TMVar (Either ExitSignal ExitCode)
     }
 
@@ -123,6 +125,7 @@ data InboundMessage
     | I098 ChannelRequest
     | I099 ChannelSuccess
     | I100 ChannelFailure
+    deriving (Eq, Show)
 
 instance Decoding InboundMessage where
     get =   I080 <$> get
@@ -148,6 +151,7 @@ data OutboundMessage
     | O098 ChannelRequest
     | O099 ChannelSuccess
     | O100 ChannelFailure
+    deriving (Eq, Show)
 
 instance Encoding OutboundMessage where
     put (O081 x) = put x
@@ -160,6 +164,18 @@ instance Encoding OutboundMessage where
     put (O098 x) = put x
     put (O099 x) = put x
     put (O100 x) = put x
+
+instance Decoding OutboundMessage where
+    get =   O081 <$> get
+        <|> O082 <$> get
+        <|> O090 <$> get
+        <|> O093 <$> get
+        <|> O094 <$> get
+        <|> O096 <$> get
+        <|> O097 <$> get
+        <|> O098 <$> get
+        <|> O099 <$> get
+        <|> O100 <$> get
 
 data ChannelException
     = ChannelOpenFailed ChannelOpenFailureReason ChannelOpenFailureDescription
@@ -229,9 +245,9 @@ runSession c mcommand (SessionHandler handler) = do
     tRequestSuccess   <- newEmptyTMVarIO
     tLocalWindowSize  <- newTVarIO maxQueueSize
     tRemoteWindowSize <- newTVarIO 0
-    stdin             <- atomically (Q.newTStreamingQueue maxQueueSize tRemoteWindowSize)
-    stdout            <- atomically (Q.newTStreamingQueue maxQueueSize tLocalWindowSize)
-    stderr            <- atomically (Q.newTStreamingQueue maxQueueSize tLocalWindowSize)
+    stdin             <- atomically (B.newTWindowBufferSTM maxQueueSize tLocalWindowSize)
+    stdout            <- atomically (B.newTWindowBufferSTM maxQueueSize tRemoteWindowSize)
+    stderr            <- atomically (B.newTWindowBufferSTM maxQueueSize tRemoteWindowSize)
     -- This function will be executed with the server's reponse
     -- and eventually turn the 'opening' channel into a 'running' one.
     -- NB: This code is executed by the receiver thread and not
@@ -326,19 +342,22 @@ runSession c mcommand (SessionHandler handler) = do
             let x1 = do
                     -- Wait for channel data on stdin to be transmitted to server.
                     checkNotClosedSTM ch
-                    dat <- Q.dequeueShort stdin (chanMaxPacketSizeRemote ch)
+                    dat <- B.dequeueShortSTM stdin (chanMaxPacketSizeRemote ch)
                     sendMessageSTM c $ O094 $ ChannelData (chanIdRemote ch) dat
                     pure Nothing
                 x2 = do
                     -- Wait for necessary window adjust to be transmitted to server.
+                    -- As both stdout and stderr depend on the same window it is necessary
+                    -- to query both for their window size adjust recommendation
+                    -- and take the minimum in order to never exceed either buffer limits.
                     checkNotClosedSTM ch
-                    -- FIXME: need to consider stderr as well
-                    recommended <- Q.askWindowSpaceAdjustRecommended stdout
-                    unless recommended retry
-                    increment <- Q.fillWindowSpace stdout
-                    sendMessageSTM c $ O093 $ ChannelWindowAdjust (chanIdRemote ch) increment
+                    adjust <- min <$> B.getRecommendedWindowAdjustSTM stdout
+                                  <*> B.getRecommendedWindowAdjustSTM stderr
+                    window <- readTVar (chanWindowSizeRemote ch)
+                    writeTVar (chanWindowSizeRemote ch) $! window + adjust
+                    sendMessageSTM c $ O093 $ ChannelWindowAdjust (chanIdRemote ch) adjust
                     pure Nothing
-                x3 = do -- wait for handler thread to terminate
+                x3 = do -- Wait for handler thread to terminate.
                     Just <$> waitSTM handlerAsync
             fix $ \continue -> atomically (x1 <|> x2 <|> x3) >>= \case
                 Nothing -> continue
@@ -450,41 +469,41 @@ dispatchChannelOpenFailureSTM c x@(ChannelOpenFailure lid _ _ _) =
         ChannelClosing {} -> unregisterChannelSTM c lid
 
 dispatchChannelWindowAdjustSTM :: Connection -> ChannelWindowAdjust -> STM ()
-dispatchChannelWindowAdjustSTM c (ChannelWindowAdjust lid sz) =
+dispatchChannelWindowAdjustSTM c (ChannelWindowAdjust lid adjust) =
     getChannelStateSTM c lid >>= \case
         ChannelOpening {} -> throwSTM exceptionInvalidChannelState
-        ChannelRunning ch -> case chanApplication ch of
-            ChannelApplicationSession ChannelSession { sessStdin = queue } ->
-                Q.addWindowSpace queue sz <|> throwSTM exceptionWindowSizeOverflow
+        ChannelRunning ch -> do
+            window <- readTVar (chanWindowSizeLocal ch)
+            when ((fromIntegral window + fromIntegral adjust :: Word64) <= fromIntegral (maxBound :: Word32))
+                $ throwSTM exceptionWindowSizeOverflow
+            writeTVar (chanWindowSizeRemote ch) $! window + adjust
         ChannelClosing {} -> pure ()
 
 dispatchChannelDataSTM :: Connection -> ChannelData -> STM ()
-dispatchChannelDataSTM c (ChannelData lid datShort) =
+dispatchChannelDataSTM c (ChannelData lid bytes) =
     getChannelStateSTM c lid >>= \case
         ChannelOpening {} -> throwSTM exceptionInvalidChannelState
         ChannelRunning ch -> case chanApplication ch of
             ChannelApplicationSession ChannelSession { sessStdout = queue } -> do
                 when (len > chanMaxPacketSizeRemote ch) (throwSTM exceptionPacketSizeExceeded) 
-                enqueued <- Q.enqueue queue dat <|> pure 0
+                enqueued <- B.enqueueShortSTM queue bytes <|> pure 0
                 when (enqueued /= len) (throwSTM exceptionWindowSizeUnderrun)
         ChannelClosing {} -> pure ()
     where
-        dat = SBS.fromShort datShort -- TODO
-        len = fromIntegral (SBS.length datShort)
+        len = fromIntegral (SBS.length bytes)
 
 dispatchChannelExtendedDataSTM :: Connection -> ChannelExtendedData -> STM ()
-dispatchChannelExtendedDataSTM c (ChannelExtendedData lid _ datShort) =
+dispatchChannelExtendedDataSTM c (ChannelExtendedData lid _ bytes) =
     getChannelStateSTM c lid >>= \case
         ChannelOpening {} -> throwSTM exceptionInvalidChannelState
         ChannelRunning ch -> case chanApplication ch of
             ChannelApplicationSession ChannelSession { sessStderr = queue } -> do
                 when (len > chanMaxPacketSizeRemote ch) (throwSTM exceptionPacketSizeExceeded) 
-                enqueued <- Q.enqueue queue dat <|> pure 0
+                enqueued <- B.enqueueShortSTM queue bytes <|> pure 0
                 when (enqueued /= len) (throwSTM exceptionWindowSizeUnderrun)
         ChannelClosing {} -> pure ()
     where
-        dat = SBS.fromShort datShort -- TODO
-        len = fromIntegral (SBS.length datShort)
+        len = fromIntegral (SBS.length bytes)
 
 dispatchChannelEofSTM :: Connection -> ChannelEof -> STM ()
 dispatchChannelEofSTM c (ChannelEof lid) =
@@ -492,8 +511,8 @@ dispatchChannelEofSTM c (ChannelEof lid) =
         ChannelOpening {} -> throwSTM exceptionInvalidChannelState
         ChannelRunning ch -> case chanApplication ch of
             ChannelApplicationSession ChannelSession { sessStdout = out, sessStderr = err } -> do
-                Q.terminate out
-                Q.terminate err
+                sendEofSTM out
+                sendEofSTM err
         ChannelClosing {} -> pure ()
 
 dispatchChannelCloseSTM :: Connection -> ChannelClose -> STM ()
