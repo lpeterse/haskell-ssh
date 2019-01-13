@@ -108,4 +108,4 @@ getUnframedPublicKey :: Get PublicKey
 getUnframedPublicKey = getName >>= \case
     Name "ssh-ed25519" -> PublicKeyEd25519 <$> getEd25519PublicKey
     Name "ssh-rsa"     -> PublicKeyRSA <$> getRsaPublicKey
-    other              -> PublicKeyOther <$> pure other
+    other              -> fail "must ignore unsupported public key types"
