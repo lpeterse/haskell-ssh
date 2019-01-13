@@ -68,6 +68,7 @@ internal-libraries:
       - Network.SSH.Server.UserAuth
       - Network.SSH.Server.Server
       - Network.SSH.Encoding
+      - Network.SSH.Environment
       - Network.SSH.Exception
       - Network.SSH.Key
       - Network.SSH.Message

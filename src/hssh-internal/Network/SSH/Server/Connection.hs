@@ -34,6 +34,7 @@ import           Data.Word
 import           System.Exit
 
 import           Network.SSH.Encoding
+import           Network.SSH.Environment
 import           Network.SSH.Exception
 import           Network.SSH.Constants
 import           Network.SSH.Message
@@ -117,12 +118,6 @@ data SessionRequest
 newtype SessionHandler =
     SessionHandler (forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr)
         => Environment -> Maybe TermInfo -> Maybe Command -> stdin -> stdout -> stderr -> IO ExitCode)
-
--- | The `Environment` is list of key-value pairs.
---
---   > Environment [ ("LC_ALL", "en_US.UTF-8") ]
-newtype Environment = Environment [(BS.ByteString, BS.ByteString)]
-    deriving (Eq, Ord, Show)
 
 -- | The `TermInfo` describes the client's terminal settings if it requested a pty.
 --

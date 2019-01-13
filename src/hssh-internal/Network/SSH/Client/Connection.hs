@@ -37,6 +37,7 @@ import           System.Exit
 import           Network.SSH.Constants
 import           Network.SSH.Exception
 import           Network.SSH.Encoding
+import           Network.SSH.Environment
 import           Network.SSH.Message
 import           Network.SSH.Name
 import           Network.SSH.Stream
@@ -59,6 +60,7 @@ data ConnectionConfig
       --   Values that are larger than `channelMaxQueueSize` or the
       --   maximum message size (35000 bytes) will be automatically adjusted
       --   to the maximum possible value.
+    , getEnvironment        :: IO Environment
     }
 
 instance Default ConnectionConfig where
@@ -66,6 +68,7 @@ instance Default ConnectionConfig where
         { channelMaxCount      = 256
         , channelMaxQueueSize  = 32 * 1024
         , channelMaxPacketSize = 32 * 1024
+        , getEnvironment       = getDefaultEnvironment
         }
 
 data Connection
@@ -185,8 +188,6 @@ instance Exception ChannelException where
 
 newtype ChannelOpenFailureDescription = ChannelOpenFailureDescription BS.ByteString
     deriving (Eq, Ord, Show)
-
-newtype Environment = Environment ()
 
 data ExitSignal
     = ExitSignal
@@ -314,8 +315,16 @@ runSession c mcommand (SessionHandler handler) = do
             Left (ChannelOpenFailure _ reason descr _) -> throwSTM
                 $ ChannelOpenFailed reason
                 $ ChannelOpenFailureDescription $ SBS.fromShort descr
-
     bracket openChannel closeChannel $ const $ waitChannel >>= \ch -> do
+        -- Send environment variables. Confirmation is not necessary.
+        Environment env <- getEnvironment (connConfig c)
+        forM_ env $ \(k,v) -> atomically $ sendMessageSTM c $ O098 $ ChannelRequest
+            { crChannel   = chanIdRemote ch
+            , crType      = "env"
+            , crWantReply = False
+            , crData      = runPut (put $ ChannelRequestEnv (SBS.toShort k) (SBS.toShort v))
+            }
+        -- Send the command to execute or shell request.
         atomically $ sendMessageSTM c $ O098 $ case mcommand of
             Just command -> ChannelRequest
                 { crChannel   = chanIdRemote ch

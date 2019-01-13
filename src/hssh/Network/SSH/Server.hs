@@ -10,8 +10,6 @@ module Network.SSH.Server (
     -- *** Request & Handler
     , SessionRequest (..)
     , SessionHandler (..)
-    -- *** Environment
-    , Environment (..)
     -- *** TermInfo
     , TermInfo ()
     -- *** Command
