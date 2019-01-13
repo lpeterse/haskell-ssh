@@ -1,6 +1,5 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts          #-}
-{-# LANGUAGE RankNTypes                #-}
 module Network.SSH.Client.Client where
 
 import           Control.Concurrent             ( threadDelay )

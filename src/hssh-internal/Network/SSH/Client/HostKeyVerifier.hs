@@ -1,6 +1,5 @@
 module Network.SSH.Client.HostKeyVerifier where
 
-import           Control.Applicative
 import           Control.Monad
 import qualified Crypto.MAC.HMAC        as HMAC
 import qualified Crypto.Hash.Algorithms as Hash
@@ -35,8 +34,8 @@ acceptKnownHostsFromFile path host key = do
         then VerificationPassed
         else VerificationFailed $ BS8.pack $ absolutePath ++ ": no match" 
     where
-        match (KnownHost (name :| names) knownKey) =
-            let nameMatch = matchKnownHostName host name || any (matchKnownHostName host) names
+        match (KnownHost (n :| ns) knownKey) =
+            let nameMatch = matchKnownHostName host n || any (matchKnownHostName host) ns
                 keyMatch  = key == knownKey
             in  nameMatch && keyMatch
         getAbsolutePath = canonicalizePath =<< case splitPath path of
@@ -58,9 +57,9 @@ data KnownHostName
 
 matchKnownHostName :: HostAddress -> KnownHostName -> Bool
 matchKnownHostName (HostAddress (Host host) (Port port)) = \case
-    KnownHostHMAC salt hash -> BA.eq hash (HMAC.hmac salt name :: HMAC.HMAC Hash.SHA1)
+    KnownHostHMAC salt hash -> BA.eq hash (HMAC.hmac salt n :: HMAC.HMAC Hash.SHA1)
     where
-        name = case port of
+        n = case port of
             22 -> host
             _  -> "[" <> host <> "]:" <> BS8.pack (show port)
 
@@ -108,4 +107,4 @@ getUnframedPublicKey :: Get PublicKey
 getUnframedPublicKey = getName >>= \case
     Name "ssh-ed25519" -> PublicKeyEd25519 <$> getEd25519PublicKey
     Name "ssh-rsa"     -> PublicKeyRSA <$> getRsaPublicKey
-    other              -> fail "must ignore unsupported public key types"
+    _                  -> fail "must ignore unsupported public key types"
