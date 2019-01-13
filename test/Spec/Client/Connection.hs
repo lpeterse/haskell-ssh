@@ -239,6 +239,7 @@ testSessionShellOpen01 = testCase "shall send channel open request" $ do
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         ws   = 4096
         ps   = 128
@@ -257,6 +258,7 @@ testSessionShellOpen02 = testCase "shall increase channel ids when requesting se
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         ws   = 4096
         ps   = 128
@@ -282,6 +284,7 @@ testSessionShellOpen03 = testCase "shall throw exception when channel open faile
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -303,6 +306,7 @@ testSessionShellOpen04 = testCase "shall request runShell when channel open conf
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -332,6 +336,7 @@ testSessionShellOpen05 = testCase "shall throw exception when runShell request f
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -361,6 +366,7 @@ testSessionShellOpen06 = testCase "shall invoke session handler when runShell re
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -385,6 +391,7 @@ testSessionShellOpen07 = testCase "shall send eof and close after session handle
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -411,6 +418,7 @@ testSessionShellOpen08 = testCase "shall send eof and close after session handle
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -455,6 +463,7 @@ testSessionShellOpen09 = testCase "shall close properly even if canceled before 
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -494,6 +503,7 @@ testSessionShellOpen10 = testCase "shall close properly even if canceled before 
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -541,6 +551,7 @@ testSessionShellOpen11 = testCase "shall close properly when close initiated by 
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -574,6 +585,7 @@ testSessionShellRequest01 = testCase "unknown requests shall be rejected (when w
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -609,6 +621,7 @@ testSessionShellRequest02 = testCase "unknown requests shall be ignored (when wa
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -645,6 +658,7 @@ testSessionShellRequest03 = testCase "'exit-status' shall be passed to the sessi
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -680,6 +694,7 @@ testSessionShellRequest04 = testCase "'exit-signal' shall be passed to the sessi
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -716,6 +731,7 @@ testSessionShellData01 = testCase "shall receive data on stdout" $ do
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -750,6 +766,7 @@ testSessionShellData02 = testCase "shall receive data on stderr" $ do
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -782,6 +799,7 @@ testSessionShellData03 = testCase "shall send data when writing stdin" $ do
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -818,6 +836,7 @@ testSessionShellData04 = testCase "shall throw exception when window size exceed
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -854,6 +873,7 @@ testSessionShellData05 = testCase "shall throw exception when packet size exceed
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1
@@ -897,6 +917,7 @@ testSessionShellData06 = testCase "shall adjust window size when necessary" $ do
         conf = def
             { channelMaxQueueSize  = ws
             , channelMaxPacketSize = ps
+            , getEnvironment       = pure (Environment [])
             }
         lid  = ChannelId 0
         rid  = ChannelId 1

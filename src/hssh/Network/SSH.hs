@@ -48,6 +48,8 @@ module Network.SSH
     , PublicKey (..)
       -- ** Signature
     , Signature (..)
+      -- *** TermInfo
+    , TermInfo ()
     ) where
 
 import Network.SSH.Algorithms
@@ -60,3 +62,4 @@ import Network.SSH.Name
 import Network.SSH.Stream
 import Network.SSH.Transport
 import Network.SSH.Duration
+import Network.SSH.TermInfo

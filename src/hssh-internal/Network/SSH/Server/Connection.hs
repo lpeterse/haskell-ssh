@@ -10,9 +10,6 @@ module Network.SSH.Server.Connection
     , ConnectionConfig (..)
     , SessionRequest (..)
     , SessionHandler (..)
-    , Environment (..)
-    , TermInfo (..)
-    , Command (..)
     , DirectTcpIpRequest (..)
     , DirectTcpIpHandler (..)
     , ConnectionMsg (..)
@@ -39,6 +36,7 @@ import           Network.SSH.Exception
 import           Network.SSH.Constants
 import           Network.SSH.Message
 import qualified Network.SSH.Stream as S
+import           Network.SSH.TermInfo
 import qualified Network.SSH.TWindowBuffer as B
 
 data ConnectionConfig identity
@@ -118,12 +116,6 @@ data SessionRequest
 newtype SessionHandler =
     SessionHandler (forall stdin stdout stderr. (S.InputStream stdin, S.OutputStream stdout, S.OutputStream stderr)
         => Environment -> Maybe TermInfo -> Maybe Command -> stdin -> stdout -> stderr -> IO ExitCode)
-
--- | The `TermInfo` describes the client's terminal settings if it requested a pty.
---
---   NOTE: This will follow in a future release. You may access the constructor
---   through the `Network.SSH.Internal` module, but should not rely on it yet.
-data TermInfo = TermInfo PtySettings
 
 -- | When the client makes a `DirectTcpIpRequest` it requests a TCP port forwarding.
 data DirectTcpIpRequest

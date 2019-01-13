@@ -74,6 +74,7 @@ internal-libraries:
       - Network.SSH.Message
       - Network.SSH.Name
       - Network.SSH.Stream
+      - Network.SSH.TermInfo
       - Network.SSH.Transport
       - Network.SSH.TWindowBuffer
 

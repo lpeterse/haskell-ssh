@@ -10,10 +10,7 @@ module Network.SSH.Server (
     -- *** Request & Handler
     , SessionRequest (..)
     , SessionHandler (..)
-    -- *** TermInfo
-    , TermInfo ()
-    -- *** Command
-    , Command (..)
+
     -- ** Direct TCP/IP
     -- *** Request & Handler
     , DirectTcpIpRequest (..)
