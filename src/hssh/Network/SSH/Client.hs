@@ -2,7 +2,7 @@
 {-# LANGUAGE FlexibleContexts          #-}
 {-# LANGUAGE RankNTypes                #-}
 module Network.SSH.Client
-    ( withClientConnection
+    ( runClient
     -- * Config
     , ClientConfig (..)
     , ConnectionConfig (..)

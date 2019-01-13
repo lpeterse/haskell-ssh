@@ -59,8 +59,8 @@ data ClientException
 
 instance Exception ClientException where
 
-withClientConnection :: ClientConfig -> ClientIdentity -> HostAddress -> (Connection -> IO a) -> IO a
-withClientConnection config identity addr@(HostAddress (Host host) (Port port)) handler = do
+runClient :: ClientConfig -> ClientIdentity -> HostAddress -> (Connection -> IO a) -> IO a
+runClient config identity addr@(HostAddress (Host host) (Port port)) handler = do
     addresses <- getAddresses
     bracket (connectAny addresses) S.close (handleStream handler)
     where
