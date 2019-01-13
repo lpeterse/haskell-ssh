@@ -26,17 +26,17 @@ import           Network.SSH.Message
 import           Network.SSH.Name
 
 data ClientIdentity
-    = forall agent. Agent agent => ClientIdentity
+    = ClientIdentity
     { getUserName   :: IO UserName
-    , getAgent      :: IO (Maybe agent)
+    , getAgent      :: IO Agent
     , getPassword   :: IO (Maybe Password)
     }
 
 instance Default ClientIdentity where
     def = ClientIdentity
-        { getUserName = getLocalUserName
-        , getAgent    = pure (Just LocalAgent)
-        , getPassword = pure Nothing
+        { getUserName  = getLocalUserName
+        , getAgent     = pure (Agent LocalAgent)
+        , getPassword  = pure Nothing
         }
 
 userPassword :: UserName -> Password -> ClientIdentity
@@ -62,7 +62,7 @@ instance Decoding AuthResponse where
 
 requestServiceWithAuthentication :: MessageStream stream =>
     ClientIdentity -> stream -> SessionId -> ServiceName -> IO ()
-requestServiceWithAuthentication config@ClientIdentity { getAgent = getAgent' } transport sessionId service = do
+requestServiceWithAuthentication config transport sessionId service = do
     sendMessage transport $ ServiceRequest $ Name "ssh-userauth"
     ServiceAccept {} <- receiveMessage transport
     user <- getUserName config
@@ -74,9 +74,8 @@ requestServiceWithAuthentication config@ClientIdentity { getAgent = getAgent' } 
         tryMethods _ []
             = throwIO exceptionNoMoreAuthMethodsAvailable
         tryMethods user (m:ms)
-            | m == methodPubkey = getAgent' >>= \case
-                Nothing    -> tryMethods user ms
-                Just agent -> tryPubkeys user ms (signDigest agent) =<< getIdentities agent
+            | m == methodPubkey = getAgent config >>= \agent ->
+                tryPubkeys user ms (signDigest agent) =<< getIdentities agent
             | m == methodPassword = getPassword config >>= \case
                 Nothing -> tryMethods user ms
                 Just pw -> do

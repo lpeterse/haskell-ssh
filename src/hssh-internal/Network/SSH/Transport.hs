@@ -155,8 +155,8 @@ withClientTransport config stream runWith = withFinalExceptionHandler $ do
         pure a
 
 withServerTransport ::
-    (DuplexStream stream, Agent agent) =>
-    TransportConfig -> stream -> agent ->
+    (DuplexStream stream) =>
+    TransportConfig -> stream -> Agent ->
     (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
 withServerTransport config stream agent runWith = withFinalExceptionHandler $ do
     -- Receive the peer version and reject immediately if this
@@ -234,7 +234,7 @@ transportReceiveMessageMaybe env =
 -- KEY EXCHANGE (SERVER)
 -------------------------------------------------------------------------------
 
-kexServerInitialize :: (DuplexStream stream, Agent agent) => stream -> Transport -> agent -> IO SessionId
+kexServerInitialize :: (DuplexStream stream) => stream -> Transport -> Agent -> IO SessionId
 kexServerInitialize stream env agent = do
     cookie <- newCookie
     putMVar (tKexContinuation env) $ kexServerContinuation stream env cookie agent
@@ -248,7 +248,7 @@ kexServerInitialize stream env agent = do
                 Just sid -> pure sid
 
 -- NB: Uses transportSendMessage to avoid rekeying-loop
-kexServerContinuation :: (DuplexStream stream, Agent agent) => stream -> Transport -> Cookie -> agent -> KexContinuation
+kexServerContinuation :: (DuplexStream stream) => stream -> Transport -> Cookie -> Agent -> KexContinuation
 kexServerContinuation stream env cookie agent = serverKex0
     where
         -- Being in this state means no kex is currently in progress.

@@ -1,3 +1,4 @@
+{-# LANGUAGE ExistentialQuantification #-}
 module Network.SSH.Agent where
 
 import           Control.Exception
@@ -22,7 +23,11 @@ import           Network.SSH.Encoding
 import           Network.SSH.Builder (word32BE)
 import           Network.SSH.Message
 
-type AgentSocket = S.Socket S.Unix S.Stream S.Default
+data Agent = forall agent. IsAgent agent => Agent agent
+
+instance IsAgent Agent where
+    getIdentities (Agent agent) = getIdentities agent
+    signDigest (Agent agent) = signDigest agent
 
 newtype SignFlags = SignFlags Word32
     deriving (Eq, Ord, Show)
@@ -39,7 +44,7 @@ newtype Comment = Comment BS.ByteString
 --   Currently, `KeyPair` is the only instance, but the method
 --   signatures have been designed with other mechanisms like HSM's
 --   or agent-forwarding in mind.
-class Agent agent where
+class IsAgent agent where
     -- | Get a list of public keys for which the agent holds the corresponding
     --   private keys.
     --
@@ -51,7 +56,7 @@ class Agent agent where
     --   This method shall not throw exceptions, but rather return `Nothing` if possible.
     signDigest :: BA.ByteArrayAccess digest => agent -> PublicKey -> digest -> SignFlags -> IO (Maybe Signature)
 
-instance Agent KeyPair where
+instance IsAgent KeyPair where
     getIdentities kp = case kp of
         KeyPairEd25519 pk _ -> pure [(PublicKeyEd25519 pk, Comment "")]
 
@@ -66,10 +71,12 @@ instance Agent KeyPair where
 
 data LocalAgent = LocalAgent
 
-instance Agent LocalAgent where
+instance IsAgent LocalAgent where
     getIdentities _ = runWithAgentSocket getIdentitiesLocal
     signDigest _ pk bytes flags = runWithAgentSocket $ \s ->
         signDigestLocal s pk bytes flags
+
+type AgentSocket = S.Socket S.Unix S.Stream S.Default
 
 runWithAgentSocket :: Default a => (AgentSocket -> IO a) -> IO a
 runWithAgentSocket run = handleExceptions $ lookupEnv "SSH_AUTH_SOCK" >>= \case

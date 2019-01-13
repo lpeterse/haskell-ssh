@@ -87,13 +87,13 @@ import           Network.SSH.Transport
 --           pure ()
 --     | otherwise = pure Nothing
 -- @
-serve :: (DuplexStream stream, Agent agent) => Config identity -> agent -> stream -> IO Disconnect
+serve :: (DuplexStream stream, IsAgent agent) => Config identity -> agent -> stream -> IO Disconnect
 serve config agent stream = run >>= \case
     Left  d  -> pure d
     Right () -> pure $ Disconnect Local DisconnectByApplication mempty
     where
         run =
-            withServerTransport (transportConfig config) stream agent $ \transport session ->
+            withServerTransport (transportConfig config) stream (Agent agent) $ \transport session ->
             withAuthentication (userAuthConfig config) transport session $ \case
                 Name "ssh-connection" ->
                     Just $ serveConnection (connectionConfig config) transport

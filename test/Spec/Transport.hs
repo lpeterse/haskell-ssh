@@ -12,6 +12,7 @@ import           Data.Default
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
+import           Network.SSH.Agent
 import           Network.SSH.Internal
 
 import           Spec.Util
@@ -55,7 +56,7 @@ tests = testGroup "Network.SSH.Transport"
 test04 :: TestTree
 test04 = testCase "server shall return ProtocolVersionNotSupported when client sends incorrect version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- Agent . (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket "GET / HTTP/1.1\n\n"
         wait server >>= assertEqual "res" (Left exceptionProtocolVersionNotSupported)
@@ -65,7 +66,7 @@ test04 = testCase "server shall return ProtocolVersionNotSupported when client s
 test05 :: TestTree
 test05 = testCase "server shall return ProtocolVersionNotSupprted when client sends incomplete version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- Agent . (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket "SSH-2.0-OpenSSH_4.3"
         wait server >>= assertEqual "res" (Left exceptionProtocolVersionNotSupported)
@@ -75,7 +76,7 @@ test05 = testCase "server shall return ProtocolVersionNotSupprted when client se
 test06 :: TestTree
 test06 = testCase "server shall return ConnectionLost when client disconnects before sending version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- Agent . (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         close clientSocket
         wait server >>= assertEqual "res" (Left exceptionConnectionLost)
@@ -85,7 +86,7 @@ test06 = testCase "server shall return ConnectionLost when client disconnects be
 test07 :: TestTree
 test07 = testCase "server shall return DisconnectByApplication when client disconnects gracefully after sending version string" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- Agent . (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server -> do
         sendAll clientSocket $ runPut $ put $ Version "SSH-2.0-OpenSSH_4.3"
         void $ plainEncryptionContext clientSocket 0 (put $ Disconnected DisconnectByApplication "ABC" mempty)
@@ -96,7 +97,7 @@ test07 = testCase "server shall return DisconnectByApplication when client disco
 test01 :: TestTree
 test01 = testCase "key exchange shall yield same session id on both sides" $ do
     (clientSocket, serverSocket) <- newSocketPair
-    agent <- (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
+    agent <- Agent . (\sk -> KeyPairEd25519 (Ed25519.toPublic sk) sk) <$> Ed25519.generateSecretKey
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket def `finally` close clientSocket) $ \client -> do
             (Right sid1, Right sid2) <- waitBoth server client
@@ -114,7 +115,7 @@ test02 = testCase "client shall return server host key after key exchange" $ do
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     withAsync (runServer serverSocket def agent `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket def `finally` close clientSocket) $ \client -> do
             (Right (), Right pk') <- waitBoth server client
@@ -133,7 +134,7 @@ test033 = testCase "client and server version shall be reported correctly" $ do
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
             (Right st, Right ct) <- waitBoth server client
@@ -156,7 +157,7 @@ testSendReceive01 = testCase "server sends Ignore and client shall receive it" $
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     done <- newEmptyMVar
     withAsync (runServer serverSocket def agent done `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket def done `finally` close clientSocket) $ \client -> do
@@ -175,7 +176,7 @@ testSendReceive02 = testCase "server sends Ignore and client shall ignore it whe
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     done <- newEmptyMVar
     withAsync (runServer serverSocket def agent done `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket def done `finally` close clientSocket) $ \client -> do
@@ -195,7 +196,7 @@ testSendReceive05 = testCase "server sends ChannelData and client shall receive 
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     done <- newEmptyMVar
     withAsync (runServer serverSocket def agent done `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket def done `finally` close clientSocket) $ \client -> do
@@ -214,7 +215,7 @@ testSendReceive06 = testCase "client sends ChannelData and server shall receive 
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     done <- newEmptyMVar
     withAsync (runServer serverSocket def agent done `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket def done `finally` close clientSocket) $ \client -> do
@@ -237,7 +238,7 @@ testTraffic01 = testCase "bytes sent/received shall match on client/server after
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
             (Right (stSent, stReceived), Right (ctSent, ctReceived)) <- waitBoth server client
@@ -260,7 +261,7 @@ testTraffic02 = testCase "packets sent/received shall match on client/server aft
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
             (Right (stSent, stReceived), Right (ctSent, ctReceived)) <- waitBoth server client
@@ -292,7 +293,7 @@ testReKex01 = testCase "kex counter shall be 1 right after initial key exchange"
     (clientSocket, serverSocket) <- newSocketPair
     sk <- Ed25519.generateSecretKey
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     withAsync (runServer serverSocket serverConfig agent `finally` close serverSocket) $ \server ->
         withAsync (runClient clientSocket clientConfig `finally` close clientSocket) $ \client -> do
             (Right cs, Right cc) <- waitBoth server client
@@ -313,7 +314,7 @@ testReKex02 = testCase "server shall rekey when bytes sent is exceeded" $ do
     done <- newEmptyMVar
     mt <- newEmptyMVar
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     let runServer stream config agent = withServerTransport config stream agent $ \t _ -> do
             putMVar mt t
             readMVar done -- keep the server alive till end of test
@@ -351,7 +352,7 @@ testReKex03 = testCase "client shall rekey when bytes sent is exceeded" $ do
     done <- newEmptyMVar
     mt <- newEmptyMVar
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     let runServer stream config agent = withServerTransport config stream agent $ \t _ -> forever $ do
             Ignore <- receiveMessage t -- keep the server responsive
             pure ()
@@ -389,7 +390,7 @@ testReKex04 = testCase "server shall rekey when time is exceeded" $ do
     done <- newEmptyMVar
     mt <- newEmptyMVar
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     let runServer stream config agent = withServerTransport config stream agent $ \t _ -> do
             putMVar mt t
             readMVar done -- keep the server alive till end of test
@@ -418,7 +419,7 @@ testReKex05 = testCase "client shall rekey when time is exceeded" $ do
     done <- newEmptyMVar
     mt <- newEmptyMVar
     let pk = Ed25519.toPublic sk
-    let agent = KeyPairEd25519 pk sk
+    let agent = Agent (KeyPairEd25519 pk sk)
     let runServer stream config agent = withServerTransport config stream agent $ \t _ -> forever $ do
             Ignore <- receiveMessage t -- keep the server responsive
             pure ()

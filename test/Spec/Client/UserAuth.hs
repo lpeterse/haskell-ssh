@@ -11,6 +11,7 @@ import           Data.Default
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
+import           Network.SSH.Agent
 import           Network.SSH.Client.UserAuth
 import           Network.SSH.Internal
 
@@ -71,7 +72,7 @@ testPubkey01 = testCase "should try pubkey authentication (when configured)" $ d
         CryptoPassed sig = Ed25519.signature ("\178\RSJi\245\163\141\159V\242`\218\231bE\SOH\DC2\220M\214\221\217Y\195\203X\173\215\232\186\196\204\DC1v\236\239k\SO\243\CAN\241O\169\133\178W\194\DC4\NUL;K\154$N$\FS\224\244r\136\182\NAK\159\t" :: BS.ByteString)
         pk               = Ed25519.toPublic sk
         keypair          = KeyPairEd25519 pk sk
-        conf = def { getUserName = pure user, getAgent = pure (Just keypair) }
+        conf = def { getUserName = pure user, getAgent = pure (Agent keypair) }
         user = Name "USER"
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
@@ -93,7 +94,7 @@ testPubkey02 = testCase "should return when public key accepted" $ do
         CryptoPassed sig = Ed25519.signature ("\178\RSJi\245\163\141\159V\242`\218\231bE\SOH\DC2\220M\214\221\217Y\195\203X\173\215\232\186\196\204\DC1v\236\239k\SO\243\CAN\241O\169\133\178W\194\DC4\NUL;K\154$N$\FS\224\244r\136\182\NAK\159\t" :: BS.ByteString)
         pk               = Ed25519.toPublic sk
         keypair          = KeyPairEd25519 pk sk
-        conf = def { getUserName = pure user, getAgent = pure (Just keypair) }
+        conf = def { getUserName = pure user, getAgent = pure (Agent keypair) }
         user = Name "USER"
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
