@@ -14,9 +14,8 @@ module Network.SSH.Client
     , runShell
     , runExec
     , SessionHandler (..)
-    -- ** Misc
-    , Command (..)
-    , ExitSignal (..)
+    -- ** Exceptions
+    , ClientException (..)
     , ChannelException (..)
     , ChannelOpenFailureDescription (..)
     )

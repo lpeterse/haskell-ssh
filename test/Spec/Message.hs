@@ -21,7 +21,9 @@ import           Test.Tasty.QuickCheck    as QC
 import           Test.QuickCheck          ( arbitraryBoundedEnum )
 import           Test.QuickCheck.Gen      ( Gen (..), chooseAny, vectorOf )
 
-import           Network.SSH.Internal
+import           Network.SSH.Message
+import           Network.SSH.Encoding
+import           Network.SSH.Name
 
 tests :: TestTree
 tests = testGroup "Network.SSH.Message"

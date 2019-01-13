@@ -13,7 +13,10 @@ import           Test.Tasty.HUnit
 
 import           Network.SSH.Agent
 import           Network.SSH.Client.UserAuth
-import           Network.SSH.Internal
+import           Network.SSH.Exception
+import           Network.SSH.Key
+import           Network.SSH.Message
+import           Network.SSH.Name
 
 import           Spec.Util
 
@@ -34,7 +37,7 @@ tests = testGroup "Network.SSH.Client.UserAuth"
     ]
 
 test01 :: TestTree
-test01 = testCase "should request ssh-userauth service" $ do
+test01 = testCase "should request ssh-userauth service" do
     (client, server) <- newDummyTransportPair
     withAsync (requestServiceWithAuthentication conf client sid srvc) $ \_ -> do
         assertEqual "res0" res0 =<< receiveMessage server
@@ -45,7 +48,7 @@ test01 = testCase "should request ssh-userauth service" $ do
         res0 = ServiceRequest (Name "ssh-userauth")
 
 test02 :: TestTree
-test02 = testCase "should throw exception for default config" $ do
+test02 = testCase "should throw exception neither agent nor password configured" do
     (client, server) <- newDummyTransportPair
     withAsync (requestServiceWithAuthentication conf client sid srvc) $ \thread -> do
         assertEqual "res0" res0 =<< receiveMessage server
@@ -53,14 +56,14 @@ test02 = testCase "should throw exception for default config" $ do
         assertThrows "exp2" exp2 $ wait thread
     where
         sid  = undefined
-        conf = def
+        conf = def { getAgent = pure (Agent NoAgent), getPassword = pure Nothing }
         srvc = Name "ssh-connection"
         res0 = ServiceRequest (Name "ssh-userauth")
         req1 = ServiceAccept (Name "ssh-userauth")
         exp2 = exceptionNoMoreAuthMethodsAvailable
 
 testPubkey01 :: TestTree
-testPubkey01 = testCase "should try pubkey authentication (when configured)" $ do
+testPubkey01 = testCase "should try pubkey authentication (when configured)" do
     (client, server) <- newDummyTransportPair
     withAsync (requestServiceWithAuthentication conf client sid srvc) $ \thread -> do
         assertEqual "res0" req0 =<< receiveMessage server
@@ -80,7 +83,7 @@ testPubkey01 = testCase "should try pubkey authentication (when configured)" $ d
         req1 = UserAuthRequest user srvc $ AuthPublicKey (PublicKeyEd25519 pk) (Just (SignatureEd25519 sig))
 
 testPubkey02 :: TestTree
-testPubkey02 = testCase "should return when public key accepted" $ do
+testPubkey02 = testCase "should return when public key accepted" do
     (client, server) <- newDummyTransportPair
     withAsync (requestServiceWithAuthentication conf client sid srvc) $ \thread -> do
         assertEqual "res0" req0 =<< receiveMessage server
@@ -93,8 +96,8 @@ testPubkey02 = testCase "should return when public key accepted" $ do
         CryptoPassed sk  = Ed25519.secretKey ("O6J\227b\US\171lG\v$E\249\195\173\223\RS\227K\186,=\132\147\171\&9\166Q\196j\131\129" :: BS.ByteString)
         CryptoPassed sig = Ed25519.signature ("\178\RSJi\245\163\141\159V\242`\218\231bE\SOH\DC2\220M\214\221\217Y\195\203X\173\215\232\186\196\204\DC1v\236\239k\SO\243\CAN\241O\169\133\178W\194\DC4\NUL;K\154$N$\FS\224\244r\136\182\NAK\159\t" :: BS.ByteString)
         pk               = Ed25519.toPublic sk
-        keypair          = KeyPairEd25519 pk sk
-        conf = def { getUserName = pure user, getAgent = pure (Agent keypair) }
+        agent            = Agent $ KeyPairEd25519 pk sk
+        conf = def { getUserName = pure user, getAgent = pure agent }
         user = Name "USER"
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
@@ -103,7 +106,7 @@ testPubkey02 = testCase "should return when public key accepted" $ do
         res1 = UserAuthSuccess
 
 testPassword01 :: TestTree
-testPassword01 = testCase "should try password authentication (when configured)" $ do
+testPassword01 = testCase "should try password authentication (when configured)" do
     (client, server) <- newDummyTransportPair
     withAsync (requestServiceWithAuthentication conf client sid srvc) $ \thread -> do
         assertEqual "res0" req0 =<< receiveMessage server
@@ -113,14 +116,14 @@ testPassword01 = testCase "should try password authentication (when configured)"
         sid  = undefined
         user = Name "USER"
         pass = Password "PASSWORD"
-        conf = def { getUserName = pure user, getPassword = pure (Just pass) }
+        conf = def { getUserName = pure user, getAgent = pure (Agent NoAgent), getPassword = pure (Just pass) }
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
         res0 = ServiceAccept (Name "ssh-userauth")
         req1 = UserAuthRequest user srvc $ AuthPassword pass
 
 testPassword02 :: TestTree
-testPassword02 = testCase "should return when password accepted" $ do
+testPassword02 = testCase "should return when password accepted" do
     (client, server) <- newDummyTransportPair
     withAsync (requestServiceWithAuthentication conf client sid srvc) $ \thread -> do
         assertEqual "res0" req0 =<< receiveMessage server
@@ -132,7 +135,7 @@ testPassword02 = testCase "should return when password accepted" $ do
         sid  = undefined
         user = Name "USER"
         pass = Password "PASSWORD"
-        conf = def { getUserName = pure user, getPassword = pure (Just pass) }
+        conf = def { getUserName = pure user, getAgent = pure (Agent NoAgent), getPassword = pure (Just pass) }
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
         res0 = ServiceAccept (Name "ssh-userauth")
@@ -140,7 +143,7 @@ testPassword02 = testCase "should return when password accepted" $ do
         res1 = UserAuthSuccess
 
 testPassword03 :: TestTree
-testPassword03 = testCase "should throw exception when password rejected" $ do
+testPassword03 = testCase "should throw exception when password rejected" do
     (client, server) <- newDummyTransportPair
     withAsync (requestServiceWithAuthentication conf client sid srvc) $ \thread -> do
         assertEqual "res0" req0 =<< receiveMessage server
@@ -152,7 +155,7 @@ testPassword03 = testCase "should throw exception when password rejected" $ do
         sid  = undefined
         user = Name "USER"
         pass = Password "PASSWORD"
-        conf = def { getUserName = pure user, getPassword = pure (Just pass) }
+        conf = def { getUserName = pure user, getAgent = pure (Agent NoAgent), getPassword = pure (Just pass) }
         srvc = Name "ssh-connection"
         req0 = ServiceRequest (Name "ssh-userauth")
         res0 = ServiceAccept (Name "ssh-userauth")
@@ -161,7 +164,7 @@ testPassword03 = testCase "should throw exception when password rejected" $ do
         exp2 = exceptionNoMoreAuthMethodsAvailable
 
 testPassword04 :: TestTree
-testPassword04 = testCase "should expect a banner in this state" $ do
+testPassword04 = testCase "should expect a banner in this state" do
     (client, server) <- newDummyTransportPair
     withAsync (requestServiceWithAuthentication conf client sid srvc) $ \thread -> do
         assertEqual "res0" req0 =<< receiveMessage server
@@ -174,7 +177,7 @@ testPassword04 = testCase "should expect a banner in this state" $ do
         sid   = undefined
         user  = Name "USER"
         pass  = Password "PASSWORD"
-        conf  = def { getUserName = pure user, getPassword = pure (Just pass) }
+        conf  = def { getUserName = pure user, getAgent = pure (Agent NoAgent), getPassword = pure (Just pass) }
         srvc  = Name "ssh-connection"
         req0  = ServiceRequest (Name "ssh-userauth")
         res0  = ServiceAccept (Name "ssh-userauth")

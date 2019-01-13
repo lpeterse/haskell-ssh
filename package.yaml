@@ -69,7 +69,6 @@ internal-libraries:
       - Network.SSH.Encoding
       - Network.SSH.Exception
       - Network.SSH.Key
-      - Network.SSH.Internal
       - Network.SSH.Message
       - Network.SSH.Name
       - Network.SSH.Stream

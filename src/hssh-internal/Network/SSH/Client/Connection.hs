@@ -111,8 +111,6 @@ data ChannelSession
     , sessExit        :: TMVar (Either ExitSignal ExitCode)
     }
 
-newtype Command = Command BS.ByteString
-
 data InboundMessage
     = I080 GlobalRequest
     | I091 ChannelOpenConfirmation
@@ -319,11 +317,11 @@ runSession c mcommand (SessionHandler handler) = do
 
     bracket openChannel closeChannel $ const $ waitChannel >>= \ch -> do
         atomically $ sendMessageSTM c $ O098 $ case mcommand of
-            Just (Command command) -> ChannelRequest
+            Just command -> ChannelRequest
                 { crChannel   = chanIdRemote ch
                 , crType      = "exec"
                 , crWantReply = True
-                , crData      = runPut (put $ ChannelRequestExec $ SBS.toShort command)
+                , crData      = runPut (put $ ChannelRequestExec command)
                 }
             Nothing -> ChannelRequest
                 { crChannel   = chanIdRemote ch

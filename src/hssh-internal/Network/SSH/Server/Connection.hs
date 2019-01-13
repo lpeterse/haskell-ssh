@@ -31,7 +31,6 @@ import qualified Data.ByteString.Short        as SBS
 import           Data.Default
 import qualified Data.Map.Strict              as M
 import           Data.Word
-import           Data.String
 import           System.Exit
 
 import           Network.SSH.Encoding
@@ -130,11 +129,6 @@ newtype Environment = Environment [(BS.ByteString, BS.ByteString)]
 --   NOTE: This will follow in a future release. You may access the constructor
 --   through the `Network.SSH.Internal` module, but should not rely on it yet.
 data TermInfo = TermInfo PtySettings
-
--- | The `Command` is what the client wants to execute when making an exec request
---   (shell requests don't have a command).
-newtype Command = Command BS.ByteString
-    deriving (Eq, Ord, Show, IsString)
 
 -- | When the client makes a `DirectTcpIpRequest` it requests a TCP port forwarding.
 data DirectTcpIpRequest
@@ -447,7 +441,7 @@ connectionChannelRequest connection stream (ChannelRequest channelId typ wantRep
                 let SessionHandler handler = sessHandler sessionState
                 pure do
                     forkSessionHandler stream channel stdin stdout stderr $
-                        handler env (TermInfo <$> pty) (Just (Command $ SBS.fromShort command)) stdin stdout stderr
+                        handler env (TermInfo <$> pty) (Just command) stdin stdout stderr
                     success channel
             -- "signal" ->
             -- "exit-status" ->

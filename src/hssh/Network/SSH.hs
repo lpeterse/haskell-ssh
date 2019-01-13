@@ -1,7 +1,8 @@
 module Network.SSH 
     ( -- * Authentication & Identity
-      -- ** Agent
-      Agent (..)
+      -- ** Keys & Agent
+      IsAgent
+    , Agent (..)
     , KeyPair (..)
       -- ** newKeyPair
     , newKeyPair
@@ -18,6 +19,8 @@ module Network.SSH
       -- * Transport
     , TransportConfig (..)
       -- * Misc
+      -- ** Command
+    , Command (..)
       -- ** Duration
     , Duration (..)
     , seconds

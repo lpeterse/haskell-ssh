@@ -11,7 +11,10 @@ import           Data.Default
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
-import           Network.SSH.Internal
+import           Network.SSH.Exception
+import           Network.SSH.Message
+import           Network.SSH.Name
+import           Network.SSH.Server.UserAuth
 
 import           Spec.Util
 

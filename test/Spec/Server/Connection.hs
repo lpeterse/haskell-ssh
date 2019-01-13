@@ -11,8 +11,11 @@ import           Data.Default
 import qualified Data.ByteString       as BS
 import qualified Data.ByteString.Short as SBS
 
+import           Network.SSH.Encoding
+import           Network.SSH.Exception
 import           Network.SSH.Server.Connection
-import           Network.SSH.Internal
+import           Network.SSH.Stream
+import           Network.SSH.Message
 
 import           Test.Tasty
 import           Test.Tasty.HUnit

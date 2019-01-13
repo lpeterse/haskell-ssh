@@ -6,7 +6,7 @@ import           Crypto.Error
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Data.ByteString       as BS
 
-import           Network.SSH.Internal
+import           Network.SSH.Key
 
 import           Test.Tasty
 import           Test.Tasty.HUnit

@@ -4,7 +4,8 @@ module Spec.Algorithms ( tests ) where
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
-import           Network.SSH.Internal
+import           Network.SSH.Algorithms
+import           Network.SSH.Name
 
 tests :: TestTree
 tests = testGroup "Network.SSH.Algorithms"

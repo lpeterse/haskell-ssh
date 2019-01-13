@@ -13,7 +13,12 @@ import           Test.Tasty
 import           Test.Tasty.HUnit
 
 import           Network.SSH.Agent
-import           Network.SSH.Internal
+import           Network.SSH.Encoding
+import           Network.SSH.Exception
+import           Network.SSH.Key
+import           Network.SSH.Message
+import           Network.SSH.Stream
+import           Network.SSH.Transport
 
 import           Spec.Util
 

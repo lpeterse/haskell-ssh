@@ -85,6 +85,7 @@ module Network.SSH.Message
   , ChannelPacketSize
   , ChannelWindowSize
   , Cookie (), newCookie, nilCookie
+  , Command (..)
   , Password (..)
   , PtySettings (..)
   , PublicKey (..)
@@ -92,7 +93,7 @@ module Network.SSH.Message
   , Signature (..)
   , Version (..)
   , ServiceName
-  , UserName (..)
+  , UserName
   , getPublicKey
   , putPublicKey
   , getSignature
@@ -323,7 +324,7 @@ data ChannelRequestShell
 
 data ChannelRequestExec
     = ChannelRequestExec
-    { crCommand       :: SBS.ShortByteString
+    { crCommand       :: Command
     } deriving (Eq, Show)
 
 data ChannelRequestSignal
@@ -396,6 +397,11 @@ type ServiceName = Name
 
 newtype Cookie            = Cookie            SBS.ShortByteString
     deriving (Eq, Ord, Show)
+
+-- | The `Command` is what the client wants to execute when making an exec request
+--   (shell requests don't have a command).
+newtype Command           = Command           BS.ByteString
+    deriving (Eq, Ord, Show, IsString)
 
 newtype Version           = Version           SBS.ShortByteString
     deriving (Eq, Ord, Show)
@@ -752,10 +758,10 @@ instance Decoding ChannelRequestShell where
     get   = pure ChannelRequestShell
 
 instance Encoding ChannelRequestExec where
-    put (ChannelRequestExec c) = putShortString c
+    put (ChannelRequestExec (Command c)) = putString c
 
 instance Decoding ChannelRequestExec where
-    get = ChannelRequestExec <$> getShortString
+    get = ChannelRequestExec . Command <$> getString
 
 instance Encoding ChannelRequestSignal where
     put (ChannelRequestSignal signame) = putShortString signame
