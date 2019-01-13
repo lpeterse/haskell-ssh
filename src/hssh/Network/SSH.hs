@@ -1,7 +1,7 @@
 module Network.SSH 
     ( -- * Authentication & Identity
       -- ** Keys & Agent
-      IsAgent
+      IsAgent (..)
     , Agent (..)
     , KeyPair (..)
       -- ** newKeyPair
@@ -9,12 +9,15 @@ module Network.SSH
       -- ** decodePrivateKeyFile
     , decodePrivateKeyFile
       -- * Input / Output
-    , DuplexStream
+    , DuplexStream (..)
+    , DuplexStreamSTM (..)
     -- ** receive, receiveAll
     , InputStream (..)
+    , InputStreamSTM (..)
     , receiveAll
       -- ** send, sendAll
     , OutputStream (..)
+    , OutputStreamSTM (..)
     , sendAll
       -- * Transport
     , TransportConfig (..)

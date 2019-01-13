@@ -1,15 +1,18 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts          #-}
 {-# LANGUAGE RankNTypes                #-}
-module Network.SSH.Client
-    ( runClient
-    -- * Config
+module Network.SSH.Client (
+    -- * Client
+    -- ** runClient
+      runClient
+    -- ** ClientConfig
     , ClientConfig (..)
-    , ConnectionConfig (..)
+    -- ** ClientIdentity
     , ClientIdentity (..)
     , userPassword
     -- * Connection
     , Connection ()
+    , ConnectionConfig (..)
     -- ** runShell & runExec
     , runShell
     , runExec
@@ -18,8 +21,7 @@ module Network.SSH.Client
     , ClientException (..)
     , ChannelException (..)
     , ChannelOpenFailureDescription (..)
-    )
-where
+    ) where
 
 import Network.SSH.Client.Client
 import Network.SSH.Client.Connection
