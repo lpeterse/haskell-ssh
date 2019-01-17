@@ -3,8 +3,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import           Control.Concurrent             ( forkFinally
-                                                )
+import           Control.Concurrent             ( threadDelay )
+import           Control.Concurrent.Async
 import           Control.Exception              ( bracket
                                                 , bracketOnError
                                                 , handle
@@ -31,30 +31,37 @@ main :: IO ()
 main = do
     file                <- BS.readFile "./resources/id_ed25519"
     (privateKey, _) : _ <- decodePrivateKeyFile BS.empty file :: IO [(KeyPair, BA.Bytes)]
-    bracket open close (accept config privateKey)
+    sb <- Server.newSwitchboard
+    _ <- async (foo sb)
+    Server.runServer (config sb) privateKey
   where
-    config = def
+    foo sb = forever do
+        threadDelay 10000000
+        print "NOW"
+        a <- async $ Server.connect sb "FIXME" (HostAddress "localhost" 8081) (HostAddress "127.0.0.1" 1234) $ Server.StreamHandler $ \s -> do
+            threadDelay 10000
+            pure ()
+        waitCatch a >>= print 
+        
+    config sb = def
         { Server.transportConfig          = def
         , Server.userAuthConfig           = def
-            { Server.onAuthRequest        = \username _ _ -> pure (Just username)
+            { Server.onAuthRequest        = \_ addr username _ _ -> pure (Just username)
             }
         , Server.connectionConfig         = def
             { Server.onSessionRequest     = handleSessionRequest
             , Server.onDirectTcpIpRequest = handleDirectTcpIpRequest
+            , Server.switchboard          = Just sb
             }
+        , Server.onConnect                = \ha -> do
+            print ha
+            pure (Just ())
+        , Server.onDisconnect             = \ha st user d -> do
+            print ha
+            print st
+            print user
+            print d
         }
-    open  = S.socket :: IO (S.Socket S.Inet6 S.Stream S.Default)
-    close = S.close
-    accept config agent s = do
-        S.setSocketOption s (S.ReuseAddress True)
-        S.setSocketOption s (S.V6Only False)
-        S.bind s (S.SocketAddressInet6 S.inet6Any 22 0 0)
-        S.listen s 5
-        forever $ bracketOnError (S.accept s) (S.close . fst) $ \(stream, peer) -> do
-            putStrLn $ "Connection from " ++ show peer
-            void $ forkFinally
-                (Server.serve config agent stream >>= print)
-                (const $ S.close stream)
 
 handleDirectTcpIpRequest :: identity -> Server.DirectTcpIpRequest -> IO (Maybe Server.DirectTcpIpHandler)
 handleDirectTcpIpRequest idnt req = pure $ Just $ Server.DirectTcpIpHandler $ \stream-> do

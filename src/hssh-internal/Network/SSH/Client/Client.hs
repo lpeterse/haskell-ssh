@@ -52,7 +52,6 @@ instance Default SocketConfig where
 data ClientException
     = NameResolutionFailed String
     | ConnectFailed        String
-    | ConnectionLost       String
     | DisconnectByClient   DisconnectReason DisconnectMessage
     | DisconnectByServer   DisconnectReason DisconnectMessage
     deriving (Eq, Ord, Show)
@@ -104,5 +103,6 @@ runClient config identity addr@(HostAddress (Host host) (Port port)) handler = d
                 -- Start the connection layer protocol
                 withConnection (connectionConfig config) transport h
             case ea of
-                Left  e -> throwIO e
+                Left (Disconnect Local  reason msg) -> throwIO (DisconnectByClient reason msg)
+                Left (Disconnect Remote reason msg) -> throwIO (DisconnectByServer reason msg)
                 Right a -> pure a

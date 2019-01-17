@@ -157,7 +157,7 @@ withClientTransport config stream runWith = withFinalExceptionHandler $ do
 withServerTransport ::
     (DuplexStream stream) =>
     TransportConfig -> stream -> Agent ->
-    (Transport -> SessionId -> IO a) -> IO (Either Disconnect a)
+    (Transport -> SessionId -> IO a) -> IO (Either Disconnect a) -- FIXME
 withServerTransport config stream agent runWith = withFinalExceptionHandler $ do
     -- Receive the peer version and reject immediately if this
     -- is not an SSH connection attempt (before allocating

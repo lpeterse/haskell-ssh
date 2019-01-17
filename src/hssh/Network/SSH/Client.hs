@@ -7,6 +7,8 @@ module Network.SSH.Client (
       runClient
     -- ** ClientConfig
     , ClientConfig (..)
+    , HostKeyVerifier
+    , VerificationResult (..)
     -- ** ClientIdentity
     , ClientIdentity (..)
     , userPassword
@@ -24,5 +26,6 @@ module Network.SSH.Client (
     ) where
 
 import Network.SSH.Client.Client
+import Network.SSH.Client.HostKeyVerifier
 import Network.SSH.Client.Connection
 import Network.SSH.Client.UserAuth

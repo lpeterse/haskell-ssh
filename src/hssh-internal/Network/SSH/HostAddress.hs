@@ -5,6 +5,7 @@ import           Data.Word
 import           Data.String
 
 data HostAddress = HostAddress Host Port
+    deriving (Eq, Ord, Show)
 
 newtype Host = Host BS.ByteString
     deriving (Eq, Ord, Show, IsString)

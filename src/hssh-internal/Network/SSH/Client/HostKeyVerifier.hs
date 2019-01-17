@@ -1,5 +1,6 @@
 module Network.SSH.Client.HostKeyVerifier where
 
+import           Control.Applicative
 import           Control.Monad
 import qualified Crypto.MAC.HMAC        as HMAC
 import qualified Crypto.Hash.Algorithms as Hash
@@ -53,11 +54,13 @@ data KnownHost = KnownHost
 
 data KnownHostName
     = KnownHostHMAC BS.ByteString BS.ByteString
+    | KnownHostPlain BS.ByteString
     deriving (Eq, Show)
 
 matchKnownHostName :: HostAddress -> KnownHostName -> Bool
 matchKnownHostName (HostAddress (Host host) (Port port)) = \case
     KnownHostHMAC salt hash -> BA.eq hash (HMAC.hmac salt n :: HMAC.HMAC Hash.SHA1)
+    KnownHostPlain knownName -> knownName == n
     where
         n = case port of
             22 -> host
@@ -67,12 +70,10 @@ parseKnownHostsFile :: BS.ByteString -> [KnownHost]
 parseKnownHostsFile bs = mapMaybe p ls
     where
         ls = BS.splitWith isLineBreak bs
-        p l = case parse parseLine (BS.snoc l 0x20) of
-            Left e -> error e
-            Right e  -> Just e
+        p l = parse parseLine (BS.snoc l 0x20)
 
 parseLine :: BP.Parser BS.ByteString KnownHost
-parseLine = parseHashed
+parseLine = parseHashed <|> parsePlain
     where
         parseHashed = do
             void $ BP.bytes ("|1|" :: BS.ByteString)
@@ -88,6 +89,18 @@ parseLine = parseHashed
             keyBS <- parse parseBase64 key64
             key <- runGetter keyBS getUnframedPublicKey 
             pure $ KnownHost (pure $ KnownHostHMAC hmacSalt hmacHash) key
+        parsePlain = do
+            h <- BP.takeWhile (not . isWhiteSpace)
+            hs <- case BS.splitWith (== (fromIntegral (fromEnum ','))) h of
+                [] -> fail mempty
+                (x:xs) -> pure (x:|xs)
+            BP.skipWhile isWhiteSpace
+            void $ BP.takeWhile (not . isWhiteSpace)
+            BP.skipWhile isWhiteSpace
+            key64 <- BP.takeWhile (not . isWhiteSpace)
+            keyBS <- parse parseBase64 key64
+            key <- runGetter keyBS getUnframedPublicKey
+            pure $ KnownHost (fmap KnownHostPlain hs) key
 
 isWhiteSpace, isLineBreak, isPipe :: Word8 -> Bool
 isWhiteSpace b = b == 0x20 || b == 0x09

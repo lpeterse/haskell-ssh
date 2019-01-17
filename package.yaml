@@ -14,12 +14,6 @@ extra-source-files:
 synopsis:            SSH protocol implementation
 description:         Please see the README on Github at <https://github.com/lpeterse/haskell-ssh#readme>
 
-flags:
-  demo:
-    description: Build server demo executable hssh-demo
-    manual:      true
-    default:     false
-
 dependencies:
 - async
 - base >= 4.7 && < 5
@@ -67,6 +61,7 @@ internal-libraries:
       - Network.SSH.Server.Connection
       - Network.SSH.Server.UserAuth
       - Network.SSH.Server.Server
+      - Network.SSH.Server.Switchboard
       - Network.SSH.Encoding
       - Network.SSH.Environment
       - Network.SSH.Exception

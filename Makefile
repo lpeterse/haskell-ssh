@@ -12,9 +12,9 @@ hpc: test
 hp:
 	./profile.sh
 	sleep 3
-	hp2pretty hssh-demo.hp
-	chromium-browser hssh-demo.svg || true
-	chromium hssh-demo.svg || true
+	hp2pretty hssh-client.hp
+	chromium-browser hssh-client.svg || true
+	chromium hssh-client.svg || true
 
 doc:
 	stack haddock

@@ -89,7 +89,7 @@ instance IsAgent LocalAgent where
 type AgentSocket = S.Socket S.Unix S.Stream S.Default
 
 runWithAgentSocket :: Default a => (AgentSocket -> IO a) -> IO a
-runWithAgentSocket run = handleExceptions $ lookupEnv "SSH_AUTH_SOCK" >>= \case
+runWithAgentSocket run = handleExceptions $ lookupEnv var >>= \case
     Nothing -> pure def
     Just p  -> case S.socketAddressUnixPath (BS8.pack p) of
         Nothing -> pure def
@@ -97,6 +97,7 @@ runWithAgentSocket run = handleExceptions $ lookupEnv "SSH_AUTH_SOCK" >>= \case
             S.connect s a
             run s
     where
+        var = "SSH_AUTH_SOCK"
         handleExceptions = handle $ \e -> do
             let _ = e :: S.SocketException
             pure def

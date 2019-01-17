@@ -234,7 +234,13 @@ getChannelCount c = atomically do
 ---------------------------------------------------------------------------------------------------
 
 sendMessageSTM :: Connection -> OutboundMessage -> STM ()
-sendMessageSTM  c = writeTChan (connOutChan c)
+sendMessageSTM c = writeTChan (connOutChan c)
+
+-- | Must not try to send more than one per transaction!
+sendMessageLowPrioSTM :: Connection -> OutboundMessage -> STM ()
+sendMessageLowPrioSTM c msg = do
+    isEmptyTChan (connOutChan c) >>= check
+    sendMessageSTM c msg
 
 runSession :: Connection -> Maybe Command -> SessionHandler a -> IO a
 runSession c mcommand (SessionHandler handler) = do
@@ -318,7 +324,7 @@ runSession c mcommand (SessionHandler handler) = do
     bracket openChannel closeChannel $ const $ waitChannel >>= \ch -> do
         -- Send environment variables. Confirmation is not necessary.
         Environment env <- getEnvironment (connConfig c)
-        forM_ env $ \(k,v) -> atomically $ sendMessageSTM c $ O098 $ ChannelRequest
+        forM_ env $ \(k,v) -> atomically $ sendMessageLowPrioSTM c $ O098 $ ChannelRequest
             { crChannel   = chanIdRemote ch
             , crType      = "env"
             , crWantReply = False

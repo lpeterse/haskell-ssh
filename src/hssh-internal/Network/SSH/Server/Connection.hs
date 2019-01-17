@@ -22,11 +22,12 @@ import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TMVar
 import           Control.Monad                (join, when, forever, unless)
 import           Control.Monad.STM            (STM, atomically, check, throwSTM)
-import           Control.Exception            (bracket, bracketOnError)
+import           Control.Exception            (bracket, bracketOnError, onException, throwIO)
 import qualified Data.ByteString              as BS
 import qualified Data.ByteString.Short        as SBS
 import           Data.Default
 import qualified Data.Map.Strict              as M
+import qualified Data.Set                     as Set
 import           Data.Word
 import           System.Exit
 
@@ -34,8 +35,10 @@ import           Network.SSH.Encoding
 import           Network.SSH.Environment
 import           Network.SSH.Exception
 import           Network.SSH.Constants
+import           Network.SSH.HostAddress
 import           Network.SSH.Message
 import qualified Network.SSH.Stream as S
+import           Network.SSH.Server.Switchboard
 import           Network.SSH.TermInfo
 import qualified Network.SSH.TWindowBuffer as B
 
@@ -68,6 +71,7 @@ data ConnectionConfig identity
       --   Values that are larger than `channelMaxQueueSize` or the
       --   maximum message size (35000 bytes) will be automatically adjusted
       --   to the maximum possible value.
+    , switchboard           :: Maybe Switchboard
     }
 
 instance Default (ConnectionConfig identity) where
@@ -77,6 +81,7 @@ instance Default (ConnectionConfig identity) where
         , channelMaxCount               = 256
         , channelMaxQueueSize           = 32 * 1024
         , channelMaxPacketSize          = 32 * 1024
+        , switchboard                   = Nothing
         }
 
 -- | Information associated with the session request.
@@ -147,8 +152,14 @@ data Connection identity
     = Connection
     { connConfig       :: ConnectionConfig identity
     , connIdentity     :: identity
-    , connChannels     :: TVar (M.Map ChannelId Channel)
+    , connChannels     :: TVar (M.Map ChannelId ChannelState)
+    , connForwardings  :: TVar (Set.Set HostAddress) -- FIXME: free on exit
     }
+
+data ChannelState
+    = ChannelOpening (Either ChannelOpenFailure ChannelOpenConfirmation -> STM ())
+    | ChannelRunning Channel
+    | ChannelClosing
 
 data Channel
     = Channel
@@ -165,6 +176,7 @@ data Channel
 data ChannelApplication
     = ChannelApplicationSession SessionState
     | ChannelApplicationDirectTcpIp DirectTcpIpState
+    | ChannelApplicationForwardedTcpIp ForwardedTcpIpState
 
 data SessionState
     = SessionState
@@ -182,6 +194,12 @@ data DirectTcpIpState
     , dtiStreamOut    :: B.TWindowBuffer
     }
 
+data ForwardedTcpIpState
+    = ForwardedTcpIpState
+    { ftiStreamIn     :: B.TWindowBuffer
+    , ftiStreamOut    :: B.TWindowBuffer
+    }
+
 instance S.InputStream DirectTcpIpState where
     peek x = S.peek (dtiStreamIn x)
     receive x = S.receive (dtiStreamIn x)
@@ -191,8 +209,18 @@ instance S.OutputStream DirectTcpIpState where
 
 instance S.DuplexStream DirectTcpIpState where
 
+instance S.InputStream ForwardedTcpIpState where
+    peek x = S.peek (ftiStreamIn x)
+    receive x = S.receive (ftiStreamIn x)
+
+instance S.OutputStream ForwardedTcpIpState where
+    send x = S.send (ftiStreamOut x)
+
+instance S.DuplexStream ForwardedTcpIpState where
+
 data ConnectionMsg
-    = ConnectionChannelOpen         ChannelOpen
+    = ConnectionGlobalRequest       GlobalRequest
+    | ConnectionChannelOpen         ChannelOpen
     | ConnectionChannelClose        ChannelClose
     | ConnectionChannelEof          ChannelEof
     | ConnectionChannelData         ChannelData
@@ -201,7 +229,8 @@ data ConnectionMsg
     deriving (Eq, Show)
 
 instance Decoding ConnectionMsg where
-    get =   (ConnectionChannelOpen         <$> get)
+    get =   (ConnectionGlobalRequest       <$> get)
+        <|> (ConnectionChannelOpen         <$> get)
         <|> (ConnectionChannelClose        <$> get)
         <|> (ConnectionChannelEof          <$> get)
         <|> (ConnectionChannelData         <$> get)
@@ -212,6 +241,7 @@ serveConnection :: forall stream identity. MessageStream stream =>
     ConnectionConfig identity -> stream -> identity -> IO ()
 serveConnection config stream idnt = bracket open close $ \connection ->
     forever $ receiveMessage stream >>= \case
+        ConnectionGlobalRequest       req -> connectionGlobalRequest       connection stream req
         ConnectionChannelOpen         req -> connectionChannelOpen         connection stream req
         ConnectionChannelClose        req -> connectionChannelClose        connection stream req
         ConnectionChannelEof          req -> connectionChannelEof          connection        req
@@ -224,14 +254,104 @@ serveConnection config stream idnt = bracket open close $ \connection ->
             <$> pure config
             <*> pure idnt
             <*> newTVarIO mempty
+            <*> newTVarIO mempty
 
         close :: Connection identity -> IO ()
         close connection = do
             channels <- readTVarIO (connChannels connection)
             mapM_ terminate (M.elems channels)
             where
-                terminate channel =
-                    maybe (pure ()) Async.cancel =<< atomically (tryReadTMVar $ chanThread channel)
+                terminate = \case
+                    ChannelOpening {} -> undefined -- FIXME
+                    ChannelRunning ch -> maybe (pure ()) Async.cancel =<< atomically (tryReadTMVar $ chanThread ch)
+                    ChannelClosing    -> pure ()
+
+openForwardedChannel :: MessageStream stream => Connection identity -> stream -> HostAddress -> HostAddress -> IO (Maybe ForwardedTcpIpState)
+openForwardedChannel conn stream bindAddr origAddr = do
+    let lws = maxBufferSize
+        lps = maxPacketSize
+    tSt <- newEmptyTMVarIO
+    mLid <- atomically do
+        channels <- readTVar (connChannels conn)
+        case selectFreeLocalChannelId conn channels of
+            Nothing  -> pure Nothing
+            Just lid -> do
+                insertChannelSTM conn lid $ ChannelOpening $ \case
+                    Left (ChannelOpenFailure {}) -> do
+                        deleteChannelSTM conn lid
+                        putTMVar tSt $ Left ()
+                    Right (ChannelOpenConfirmation _ rid rws rps) -> do
+                        tLws    <- newTVar lws
+                        tRws    <- newTVar rws
+                        tClosed <- newTVar False
+                        tThread <- newEmptyTMVar
+                        st      <- ForwardedTcpIpState
+                                    <$> B.newTWindowBufferSTM maxBufferSize tLws
+                                    <*> B.newTWindowBufferSTM maxBufferSize tRws
+                        let ch = Channel
+                                { chanApplication         = ChannelApplicationForwardedTcpIp st
+                                , chanIdLocal             = lid
+                                , chanIdRemote            = rid
+                                , chanWindowSizeLocal     = tLws
+                                , chanWindowSizeRemote    = tRws
+                                , chanMaxPacketSizeRemote = rps
+                                , chanClosed              = tClosed
+                                , chanThread              = tThread
+                                }
+                        insertChannelSTM conn lid $ ChannelRunning ch
+                        putTMVar tSt $ Right (ch,st)
+                pure (Just lid)
+    case mLid of
+        Nothing -> undefined -- FIXME
+        Just lid -> do
+            sendMessage stream
+                $ ChannelOpen lid lws lps
+                $ ChannelOpenForwardedTcpIp
+                    { coConnected   = bindAddr
+                    , coOrigin      = origAddr
+                    } 
+            atomically (readTMVar tSt) >>= \case
+                Left {} ->
+                    undefined -- FIXME
+                Right (ch,st) ->
+                    pure (Just st)
+    where
+        maxBufferSize :: Word32
+        maxBufferSize = max 1 $ fromIntegral $ min maxBoundIntWord32
+            (channelMaxQueueSize $ connConfig conn)
+
+        maxPacketSize :: Word32
+        maxPacketSize = max 1 $ fromIntegral $ min maxBoundIntWord32
+            (channelMaxPacketSize $ connConfig conn)
+
+connectionGlobalRequest :: MessageStream stream => Connection identity -> stream -> GlobalRequest -> IO ()
+connectionGlobalRequest connection stream (GlobalRequest wantReply tp) = case tp of
+    GlobalRequestOther {} -> failure
+    GlobalRequestTcpIpForward bindAddr -> case switchboard (connConfig connection) of
+        Nothing -> failure
+        Just sb -> do
+            let connect = openForwardedChannel connection stream bindAddr
+            let register = requestForwarding sb "FIXME" bindAddr connect >>= \case
+                    False -> failure
+                    True  -> success >> addForwarding bindAddr
+            let unregister = do
+                    cancelForwarding sb "FIXME" bindAddr
+                    delForwarding bindAddr
+            -- Catching the exception is only relevant for the very
+            -- unlikely case that the connection gets closed right after
+            -- external registration but before local registration.
+            register `onException` unregister
+    where
+        failure = when wantReply (sendMessage stream RequestFailure)
+        success = when wantReply (sendMessage stream RequestSuccess)
+        -- The forwarding needs to registered locally as well as it needs to be
+        -- removed from the switchboard when the connection is closed.
+        addForwarding bindAddr = atomically do
+            fwds <- readTVar (connForwardings connection)
+            writeTVar (connForwardings connection) $! Set.insert bindAddr fwds
+        delForwarding bindAddr = atomically do
+            fwds <- readTVar (connForwardings connection)
+            writeTVar (connForwardings connection) $! Set.delete bindAddr fwds
 
 connectionChannelOpen :: forall stream identity. MessageStream stream =>
     Connection identity -> stream -> ChannelOpen -> IO ()
@@ -306,11 +426,13 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
         tryRegisterChannel :: (ChannelId -> STM Channel) -> STM (Either ChannelOpenFailure (Channel, ChannelOpenConfirmation))
         tryRegisterChannel createChannel = do
             channels <- readTVar (connChannels connection)
-            case selectFreeLocalChannelId channels of
-                Nothing -> pure $ Left $ openFailure ChannelOpenResourceShortage
+            case selectFreeLocalChannelId connection channels of
+                Nothing ->
+                    pure $ Left $ openFailure ChannelOpenResourceShortage
                 Just localChannelId -> do
                     channel <- createChannel localChannelId
-                    writeTVar (connChannels connection) $! M.insert localChannelId channel channels
+                    writeTVar (connChannels connection) $!
+                        M.insert localChannelId (ChannelRunning channel) channels
                     pure $ Right $ (channel,) $ ChannelOpenConfirmation
                         remoteChannelId
                         localChannelId
@@ -330,54 +452,52 @@ connectionChannelOpen connection stream (ChannelOpen remoteChannelId remoteWindo
         maxPacketSize = max 1 $ fromIntegral $ min maxBoundIntWord32
             (channelMaxPacketSize $ connConfig connection)
 
-        selectFreeLocalChannelId :: M.Map ChannelId a -> Maybe ChannelId
-        selectFreeLocalChannelId m
-            | M.size m >= fromIntegral maxCount = Nothing
-            | otherwise = f (ChannelId 0) $ M.keys m
-            where
-                f i []          = Just i
-                f (ChannelId i) (ChannelId k:ks)
-                    | i == k    = f (ChannelId $ i+1) ks
-                    | otherwise = Just (ChannelId i)
-                maxCount = channelMaxCount (connConfig connection)
-
 connectionChannelEof ::
     Connection identity -> ChannelEof -> IO ()
-connectionChannelEof connection (ChannelEof localChannelId) = atomically do
-    channel <- getChannelSTM connection localChannelId
-    let queue = case chanApplication channel of
-            ChannelApplicationSession     st -> sessStdin   st
-            ChannelApplicationDirectTcpIp st -> dtiStreamIn st
-    S.sendEofSTM queue
+connectionChannelEof connection (ChannelEof localChannelId) =
+    atomically $ getChannelSTM connection localChannelId >>= \case
+        ChannelOpening {} -> throwSTM exceptionInvalidChannelState -- FIXME
+        ChannelClosing    -> pure () -- FIXME
+        ChannelRunning ch -> do
+            let queue = case chanApplication ch of
+                    ChannelApplicationSession     st -> sessStdin   st
+                    ChannelApplicationDirectTcpIp st -> dtiStreamIn st
+            S.sendEofSTM queue
 
 connectionChannelClose :: forall stream identity. MessageStream stream =>
     Connection identity -> stream -> ChannelClose -> IO ()
 connectionChannelClose connection stream (ChannelClose localChannelId) = do
-    channel <- atomically $ getChannelSTM connection localChannelId
-    maybe (pure ()) Async.cancel =<< atomically (tryReadTMVar $ chanThread channel)
-    atomically do
-        channels <- readTVar (connChannels connection)
-        writeTVar (connChannels connection) $! M.delete localChannelId channels
-    -- When the channel is not marked as already closed then the close
-    -- must have been initiated by the client and the server needs to send
-    -- a confirmation (both sides may issue close messages simultaneously
-    -- and receive them afterwards).
-    closeAlreadySent <- readTVarIO (chanClosed channel)
-    unless closeAlreadySent $
-        sendMessage stream $ ChannelClose $ chanIdRemote channel
+    atomically (getChannelSTM connection localChannelId) >>= \case
+        ChannelOpening {} -> throwIO exceptionInvalidChannelState -- FIXME
+        ChannelClosing    -> pure () -- FIXME
+        ChannelRunning ch -> do
+            maybe (pure ()) Async.cancel =<< atomically (tryReadTMVar $ chanThread ch)
+            atomically do
+                channels <- readTVar (connChannels connection)
+                writeTVar (connChannels connection) $! M.delete localChannelId channels
+            -- When the channel is not marked as already closed then the close
+            -- must have been initiated by the client and the server needs to send
+            -- a confirmation (both sides may issue close messages simultaneously
+            -- and receive them afterwards).
+            closeAlreadySent <- readTVarIO (chanClosed ch)
+            unless closeAlreadySent $
+                sendMessage stream $ ChannelClose $ chanIdRemote ch
 
 connectionChannelData ::
     Connection identity -> ChannelData -> IO ()
-connectionChannelData connection (ChannelData localChannelId packet) = atomically do
-    when (packetSize > maxPacketSize) (throwSTM exceptionPacketSizeExceeded)
-    channel <- getChannelSTM connection localChannelId
-    let queue = case chanApplication channel of
-            ChannelApplicationSession     st -> sessStdin   st
-            ChannelApplicationDirectTcpIp st -> dtiStreamIn st
-    eof <- B.askEofSTM queue
-    when eof (throwSTM exceptionDataAfterEof)
-    i <- B.enqueueShortSTM queue packet <|> throwSTM exceptionWindowSizeUnderrun
-    when (i /= packetSize) (throwSTM exceptionWindowSizeUnderrun)
+connectionChannelData connection (ChannelData localChannelId packet) =
+    atomically $ getChannelSTM connection localChannelId >>= \case
+        ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+        ChannelClosing    -> pure () -- FIXME
+        ChannelRunning channel -> do
+            when (packetSize > maxPacketSize) (throwSTM exceptionPacketSizeExceeded)
+            let queue = case chanApplication channel of
+                    ChannelApplicationSession     st -> sessStdin   st
+                    ChannelApplicationDirectTcpIp st -> dtiStreamIn st
+            eof <- B.askEofSTM queue
+            when eof (throwSTM exceptionDataAfterEof)
+            i <- B.enqueueShortSTM queue packet <|> throwSTM exceptionWindowSizeUnderrun
+            when (i /= packetSize) (throwSTM exceptionWindowSizeUnderrun)
     where
         packetSize :: Word32
         packetSize = fromIntegral $ SBS.length packet
@@ -388,62 +508,63 @@ connectionChannelData connection (ChannelData localChannelId packet) = atomicall
 
 connectionChannelWindowAdjust ::
     Connection identity -> ChannelWindowAdjust -> IO ()
-connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId increment) = atomically $ do
-    channel <- getChannelSTM connection channelId
-    window <- readTVar (chanWindowSizeRemote channel)
-    unless ((fromIntegral window + fromIntegral increment :: Word64) <= fromIntegral (maxBound :: Word32))
-        $ throwSTM exceptionWindowSizeOverflow
-    writeTVar (chanWindowSizeRemote channel) $! window + increment
+connectionChannelWindowAdjust connection (ChannelWindowAdjust channelId increment) =
+    atomically $ getChannelSTM connection channelId >>= \case
+        ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+        ChannelClosing    -> pure () -- FIXME
+        ChannelRunning channel -> do
+            window <- readTVar (chanWindowSizeRemote channel)
+            unless ((fromIntegral window + fromIntegral increment :: Word64) <= fromIntegral (maxBound :: Word32))
+                $ throwSTM exceptionWindowSizeOverflow
+            writeTVar (chanWindowSizeRemote channel) $! window + increment
 
 connectionChannelRequest :: forall identity stream. MessageStream stream =>
     Connection identity -> stream -> ChannelRequest -> IO ()
 connectionChannelRequest connection stream (ChannelRequest channelId typ wantReply dat) = join $ atomically $ do
-    channel <- getChannelSTM connection channelId
-    case chanApplication channel of
-        ChannelApplicationSession sessionState -> case typ of
-            "env" -> interpret $ \(ChannelRequestEnv name value) -> do
-                Environment env <- readTVar (sessEnvironment sessionState)
-                writeTVar (sessEnvironment sessionState) $! Environment $ (SBS.fromShort name, SBS.fromShort value):env
-                pure $ success channel
-            "pty-req" -> interpret $ \(ChannelRequestPty settings) -> do
-                writeTVar (sessPtySettings sessionState) (Just settings)
-                pure $ success channel
-            "shell" -> interpret $ \ChannelRequestShell -> do
-                env    <- readTVar (sessEnvironment sessionState)
-                pty    <- readTVar (sessPtySettings sessionState)
-                stdin  <- pure (sessStdin  sessionState)
-                stdout <- pure (sessStdout sessionState)
-                stderr <- pure (sessStderr sessionState)
-                let SessionHandler handler = sessHandler sessionState
-                pure do
-                    forkSessionHandler stream channel stdin stdout stderr $
-                        handler env (TermInfo <$> pty) Nothing stdin stdout stderr
-                    success channel
-            "exec" -> interpret $ \(ChannelRequestExec command) -> do
-                env    <- readTVar (sessEnvironment sessionState)
-                pty    <- readTVar (sessPtySettings sessionState)
-                stdin  <- pure (sessStdin  sessionState)
-                stdout <- pure (sessStdout sessionState)
-                stderr <- pure (sessStderr sessionState)
-                let SessionHandler handler = sessHandler sessionState
-                pure do
-                    forkSessionHandler stream channel stdin stdout stderr $
-                        handler env (TermInfo <$> pty) (Just command) stdin stdout stderr
-                    success channel
-            -- "signal" ->
-            -- "exit-status" ->
-            -- "exit-signal" ->
-            -- "window-change" ->
-            _ -> pure $ failure channel
-        ChannelApplicationDirectTcpIp {} -> pure $ failure channel
+    getChannelSTM connection channelId >>= \case
+        ChannelOpening {} -> throwSTM exceptionInvalidChannelState
+        ChannelClosing    -> pure $ pure () -- FIXME
+        ChannelRunning channel -> case chanApplication channel of
+            ChannelApplicationSession sessionState -> case typ of
+                "env" -> interpret $ \(ChannelRequestEnv name value) -> do
+                    Environment env <- readTVar (sessEnvironment sessionState)
+                    writeTVar (sessEnvironment sessionState) $! Environment $ (SBS.fromShort name, SBS.fromShort value):env
+                    pure $ success channel
+                "pty-req" -> interpret $ \(ChannelRequestPty settings) -> do
+                    writeTVar (sessPtySettings sessionState) (Just settings)
+                    pure $ success channel
+                "shell" -> interpret $ \ChannelRequestShell -> do
+                    env    <- readTVar (sessEnvironment sessionState)
+                    pty    <- readTVar (sessPtySettings sessionState)
+                    stdin  <- pure (sessStdin  sessionState)
+                    stdout <- pure (sessStdout sessionState)
+                    stderr <- pure (sessStderr sessionState)
+                    let SessionHandler handler = sessHandler sessionState
+                    pure do
+                        forkSessionHandler stream channel stdin stdout stderr $
+                            handler env (TermInfo <$> pty) Nothing stdin stdout stderr
+                        success channel
+                "exec" -> interpret $ \(ChannelRequestExec command) -> do
+                    env    <- readTVar (sessEnvironment sessionState)
+                    pty    <- readTVar (sessPtySettings sessionState)
+                    stdin  <- pure (sessStdin  sessionState)
+                    stdout <- pure (sessStdout sessionState)
+                    stderr <- pure (sessStderr sessionState)
+                    let SessionHandler handler = sessHandler sessionState
+                    pure do
+                        forkSessionHandler stream channel stdin stdout stderr $
+                            handler env (TermInfo <$> pty) (Just command) stdin stdout stderr
+                        success channel
+                -- "signal" ->
+                -- "exit-status" ->
+                -- "exit-signal" ->
+                -- "window-change" ->
+                _ -> pure $ failure channel
+            ChannelApplicationDirectTcpIp {} -> pure $ failure channel
     where
         interpret f     = maybe (throwSTM exceptionInvalidChannelRequest) f (runGet dat)
-        success channel
-            | wantReply = sendMessage stream $ ChannelSuccess (chanIdRemote channel)
-            | otherwise = pure ()
-        failure channel
-            | wantReply = sendMessage stream $ ChannelFailure (chanIdRemote channel)
-            | otherwise = pure ()
+        success channel = when wantReply $ sendMessage stream $ ChannelSuccess (chanIdRemote channel)
+        failure channel = when wantReply $ sendMessage stream $ ChannelFailure (chanIdRemote channel)
 
 forkDirectTcpIpHandler :: forall stream. MessageStream stream =>
     stream -> Channel -> DirectTcpIpState -> IO () -> IO ()
@@ -543,12 +664,22 @@ forkSessionHandler stream channel stdin stdout stderr run = do
                 sendMessage stream $ ChannelWindowAdjust (chanIdRemote channel) increment
                 pure True
 
-getChannelSTM :: Connection identity -> ChannelId -> STM Channel
-getChannelSTM connection channelId = do
-    channels <- readTVar (connChannels connection)
-    case M.lookup channelId channels of
+getChannelSTM :: Connection identity -> ChannelId -> STM ChannelState
+getChannelSTM conn lid = do
+    channels <- readTVar (connChannels conn)
+    case M.lookup lid channels of
         Just channel -> pure channel
         Nothing      -> throwSTM exceptionInvalidChannelId
+
+insertChannelSTM :: Connection identity -> ChannelId -> ChannelState -> STM ()
+insertChannelSTM conn lid chst = do
+    channels <- readTVar (connChannels conn)
+    writeTVar (connChannels conn) $! M.insert lid chst channels
+
+deleteChannelSTM :: Connection identity -> ChannelId -> STM ()
+deleteChannelSTM conn lid = do
+    channels <- readTVar (connChannels conn)
+    writeTVar (connChannels conn) $! M.delete lid channels
 
 -- Two threads are forked: a worker thread running as Async and a
 -- supervisor thread which is registered with the channel.
@@ -572,3 +703,14 @@ registerThread channel run supervise = do
             <|> throwSTM exceptionAlreadyExecuting
     bracketOnError prepare abort $ \thread -> atomically $
         register thread >> writeTVar barrier True
+
+selectFreeLocalChannelId :: Connection identity -> M.Map ChannelId a -> Maybe ChannelId
+selectFreeLocalChannelId connection m
+    | M.size m >= fromIntegral maxCount = Nothing
+    | otherwise = f (ChannelId 0) $ M.keys m
+    where
+        f i []          = Just i
+        f (ChannelId i) (ChannelId k:ks)
+            | i == k    = f (ChannelId $ i+1) ks
+            | otherwise = Just (ChannelId i)
+        maxCount = channelMaxCount (connConfig connection)

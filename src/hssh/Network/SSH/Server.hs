@@ -1,7 +1,9 @@
 module Network.SSH.Server (
     -- * Server
-      serve
-    , Config (..)
+      runServer
+    , ServerConfig (..)
+    -- * Network layer
+    , SocketConfig (..)
     -- * Authentication Layer
     , UserAuthConfig (..)
     -- * Connection Layer
@@ -15,8 +17,14 @@ module Network.SSH.Server (
     -- *** Request & Handler
     , DirectTcpIpRequest (..)
     , DirectTcpIpHandler (..)
+    -- ** Forwarded TCP/IP
+    , Switchboard
+    , StreamHandler (..)
+    , newSwitchboard
+    , connect
     ) where
 
 import           Network.SSH.Server.Connection
 import           Network.SSH.Server.UserAuth
 import           Network.SSH.Server.Server
+import           Network.SSH.Server.Switchboard

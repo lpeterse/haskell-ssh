@@ -126,6 +126,7 @@ import           System.Exit
 import qualified Network.SSH.Builder as B
 import           Network.SSH.Exception
 import           Network.SSH.Encoding
+import           Network.SSH.HostAddress
 import           Network.SSH.Key
 import           Network.SSH.Name
 
@@ -226,11 +227,15 @@ data GlobalRequest
     } deriving (Eq, Show)
 
 data GlobalRequestType
-    = GlobalRequestOther Name
+    = GlobalRequestTcpIpForward
+    { grBindAddress :: HostAddress
+    }
+    | GlobalRequestOther Name
     deriving (Eq, Show)
 
 instance HasName GlobalRequestType where
-    name (GlobalRequestOther n) = n
+    name (GlobalRequestTcpIpForward {}) = Name "tcpip-forward"
+    name (GlobalRequestOther n)         = n
 
 data RequestSuccess
     = RequestSuccess
@@ -251,6 +256,10 @@ data ChannelOpenType
     , coDestinationPort    :: Word32
     , coSourceAddress      :: SBS.ShortByteString
     , coSourcePort         :: Word32
+    }
+    | ChannelOpenForwardedTcpIp
+    { coConnected          :: HostAddress
+    , coOrigin             :: HostAddress
     }
     | ChannelOpenOther ChannelType
     deriving (Eq, Show)
@@ -592,14 +601,19 @@ instance Decoding UserAuthPublicKeyOk where
     get = expectWord8 60 >> getName >> UserAuthPublicKeyOk <$> getPublicKey
 
 instance Encoding GlobalRequest where
-    put (GlobalRequest wantReply t) = putWord8 80 <> putName (name t) <> putBool wantReply
+    put (GlobalRequest wantReply t) = putWord8 80 <> putName (name t) <> putBool wantReply <> case t of
+        GlobalRequestTcpIpForward (HostAddress (Host h) (Port p)) ->
+            putString h <> B.word32BE p
+        _ -> mempty
 
 instance Decoding GlobalRequest where
     get = do 
         expectWord8 80
         n <- getName
-        wantReply <- getBool
-        pure (GlobalRequest wantReply $ GlobalRequestOther n)  
+        GlobalRequest <$> getBool <*> case n of
+            Name "tcpip-forward" -> GlobalRequestTcpIpForward
+                <$> (HostAddress <$> (Host <$> getString) <*> (Port <$> getWord32))
+            _ -> pure $ GlobalRequestOther n  
 
 instance Encoding RequestSuccess where
     put _ = putWord8 81
@@ -619,6 +633,7 @@ instance Encoding ChannelOpen where
         (case ct of
             ChannelOpenSession {} -> put (ChannelType "session")
             ChannelOpenDirectTcpIp {} -> put (ChannelType "direct-tcpip")
+            ChannelOpenForwardedTcpIp {} -> put (ChannelType "forwarded-tcpip")
             ChannelOpenOther t -> put t ) <>
         put rc <>
         B.word32BE rw <>
@@ -629,6 +644,11 @@ instance Encoding ChannelOpen where
                 putShortString da <>
                 B.word32BE dp <>
                 putShortString sa <>
+                B.word32BE sp
+            ChannelOpenForwardedTcpIp (HostAddress (Host da) (Port dp)) (HostAddress (Host sa) (Port sp)) ->
+                putString da <>
+                B.word32BE dp <>
+                putString sa <>
                 B.word32BE sp
             ChannelOpenOther {} -> mempty
 
@@ -648,6 +668,10 @@ instance Decoding ChannelOpen where
                     <*> getWord32
                     <*> getShortString
                     <*> getWord32
+            ChannelType "forwarded-tcpip" ->
+                ChannelOpenForwardedTcpIp
+                    <$> (HostAddress <$> (Host <$> getString) <*> (Port <$> getWord32))
+                    <*> (HostAddress <$> (Host <$> getString) <*> (Port <$> getWord32))
             other ->
                 pure $ ChannelOpenOther other
 

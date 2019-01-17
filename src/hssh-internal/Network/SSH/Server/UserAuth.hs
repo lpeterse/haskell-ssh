@@ -15,6 +15,7 @@ import           Data.Word
 
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
+import           Network.SSH.HostAddress
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Name
@@ -29,16 +30,16 @@ import           Network.SSH.Name
 -- layer. Except for transport messages, all other message types
 -- will result in a disconnect as long as user authentication
 -- is in progress (looking at you, libssh ;-)
-data UserAuthConfig identity
+data UserAuthConfig state user
     = UserAuthConfig
-    {   onAuthRequest :: UserName -> ServiceName -> PublicKey -> IO (Maybe identity)
+    {   onAuthRequest :: state -> HostAddress -> UserName -> ServiceName -> PublicKey -> IO (Maybe user)
         -- ^ This handler will be called for each authentication attempt.
         --
         --  (1) The client might try several methods and keys: Just return `Nothing`
         --   for every request that is not sufficient to determine the user's
         --   identity.
         --
-        --   (2) When access shall be granted, return `Just`. The `identity` may
+        --   (2) When access shall be granted, return `Just`. The `state` may
         --   contain whatever is desired; it may be just the `UserName`.
         --
         --   (3) When the client uses public key authentication, the transport layer
@@ -58,22 +59,22 @@ data UserAuthConfig identity
         --   when limit has been exceeded.
     }
 
-instance Default (UserAuthConfig identity) where
+instance Default (UserAuthConfig state user) where
     def = UserAuthConfig
-        { onAuthRequest       = \_ _ _ -> pure Nothing
+        { onAuthRequest       = \_ _ _ _ _-> pure Nothing
         , userAuthMaxTime     = 60
         , userAuthMaxAttempts = 20
         }
 
 withAuthentication ::
-    forall identity stream a. (MessageStream stream) =>
-    UserAuthConfig identity -> stream -> SessionId ->
-    (ServiceName -> Maybe (identity -> IO a)) -> IO a
-withAuthentication config transport session serviceHandler = do
-    ServiceRequest srv <- receiveMessage transport
+    forall stream state user a. (MessageStream stream) =>
+    UserAuthConfig state user -> stream -> state -> HostAddress -> SessionId ->
+    (ServiceName -> Maybe (user -> IO a)) -> IO a
+withAuthentication config stream state addr session serviceHandler = do
+    ServiceRequest srv <- receiveMessage stream
     case srv of
         Name "ssh-userauth" -> do
-            sendMessage transport (ServiceAccept srv)
+            sendMessage stream (ServiceAccept srv)
             Async.race timeout (authenticate maxAttempts) >>= \case
                 Left () -> throwIO exceptionAuthenticationTimeout
                 Right (s,i) -> case serviceHandler s of
@@ -85,22 +86,22 @@ withAuthentication config transport session serviceHandler = do
         timeout     = threadDelay $ 1000 * 1000 * fromIntegral (userAuthMaxTime config)
 
         sendSupportedAuthMethods =
-            sendMessage transport $ UserAuthFailure [Name "publickey"] False
+            sendMessage stream $ UserAuthFailure [Name "publickey"] False
         sendPublicKeyIsOk pk =
-            sendMessage transport $ UserAuthPublicKeyOk pk
+            sendMessage stream $ UserAuthPublicKeyOk pk
         sendSuccess =
-            sendMessage transport UserAuthSuccess
+            sendMessage stream UserAuthSuccess
 
         authenticate limit
             | limit <= 0 = throwIO exceptionAuthenticationLimitExceeded
             | otherwise  = do
-                UserAuthRequest user service method <- receiveMessage transport
+                UserAuthRequest user service method <- receiveMessage stream
                 case method of
                     AuthPublicKey pk msig -> case msig of
                         Just sig
                             | signatureValid session user service pk sig -> do
-                                onAuthRequest config user service pk >>= \case
-                                    Just idnt -> pure (service, idnt)
+                                onAuthRequest config state addr user service pk >>= \case
+                                    Just st -> pure (service, st)
                                     Nothing -> do
                                         sendSupportedAuthMethods
                                         authenticate (limit - 1)

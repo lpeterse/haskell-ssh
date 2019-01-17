@@ -9,8 +9,8 @@ module Network.SSH
       -- ** decodePrivateKeyFile
     , decodePrivateKeyFile
       -- * Input / Output
-    , DuplexStream (..)
-    , DuplexStreamSTM (..)
+    , DuplexStream
+    , DuplexStreamSTM
     -- ** receive, receiveAll
     , InputStream (..)
     , InputStreamSTM (..)
@@ -24,6 +24,7 @@ module Network.SSH
       -- * Misc
       -- ** Command
     , Command (..)
+    , Environment (..)
       -- ** Duration
     , Duration (..)
     , seconds
@@ -54,6 +55,7 @@ module Network.SSH
 
 import Network.SSH.Algorithms
 import Network.SSH.Agent
+import Network.SSH.Environment
 import Network.SSH.Exception
 import Network.SSH.HostAddress
 import Network.SSH.Key
