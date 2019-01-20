@@ -46,6 +46,7 @@ import           Network.SSH.Algorithms
 import qualified Network.SSH.Builder           as B
 import           Network.SSH.Agent
 import           Network.SSH.Constants
+import           Network.SSH.Duration
 import           Network.SSH.Transport.Crypto
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
@@ -80,6 +81,7 @@ data TransportConfig
     , serverHostKeyAlgorithms :: NEL.NonEmpty HostKeyAlgorithm
     , kexAlgorithms           :: NEL.NonEmpty KeyExchangeAlgorithm
     , encryptionAlgorithms    :: NEL.NonEmpty EncryptionAlgorithm
+    , kexTimeout              :: Duration
     , maxTimeBeforeRekey      :: Word64
     , maxDataBeforeRekey      :: Word64
     , onSend                  :: BS.ByteString -> IO ()
@@ -92,6 +94,7 @@ instance Default TransportConfig where
         , serverHostKeyAlgorithms  = pure SshEd25519
         , kexAlgorithms            = pure Curve25519Sha256AtLibsshDotOrg
         , encryptionAlgorithms     = pure Chacha20Poly1305AtOpensshDotCom
+        , kexTimeout               = seconds 10
         , maxTimeBeforeRekey       = 3600
         , maxDataBeforeRekey       = 1000 * 1000 * 1000
         , onSend                   = const (pure ())
@@ -142,14 +145,16 @@ withClientTransport ::
     (DuplexStream stream) =>
     TransportConfig -> stream ->
     (Transport -> SessionId -> PublicKey -> IO a) -> IO (Either Disconnect a)
-withClientTransport config stream runWith = withFinalExceptionHandler $ do
+withClientTransport config stream runWith = withFinalExceptionHandler do
     -- The client starts by sending its own version and then waits
     -- for the server to respond.
     sendVersion stream (version config)
     sv <- receiveVersion stream
     env <- newTransport config stream (version config) sv
-    withRespondingExceptionHandler env $ do
-        (sessionId, hostKey) <- kexClientInitialize stream env
+    withRespondingExceptionHandler env do
+        (sessionId, hostKey) <- withTimeout
+            (kexTimeout config)
+            (kexClientInitialize stream env)
         a <- runWith env sessionId hostKey
         transportSendMessage env (Disconnected DisconnectByApplication mempty mempty)
         pure a
@@ -158,15 +163,17 @@ withServerTransport ::
     (DuplexStream stream) =>
     TransportConfig -> stream -> Agent ->
     (Transport -> SessionId -> IO a) -> IO (Either Disconnect a) -- FIXME
-withServerTransport config stream agent runWith = withFinalExceptionHandler $ do
+withServerTransport config stream agent runWith = withFinalExceptionHandler do
     -- Receive the peer version and reject immediately if this
     -- is not an SSH connection attempt (before allocating
     -- any more resources); respond with the server version string.
     cv <- receiveVersion stream
     sendVersion stream (version config)
     env <- newTransport config stream cv (version config)
-    withRespondingExceptionHandler env $ do
-        sessionId <- kexServerInitialize stream env agent
+    withRespondingExceptionHandler env do
+        sessionId <- withTimeout
+            (kexTimeout config)
+            (kexServerInitialize stream env agent)
         a <- runWith env sessionId
         transportSendMessage env (Disconnected DisconnectByApplication mempty mempty)
         pure a
@@ -174,6 +181,13 @@ withServerTransport config stream agent runWith = withFinalExceptionHandler $ do
 -------------------------------------------------------------------------------
 -- PRIVATE FUNCTIONS
 -------------------------------------------------------------------------------
+
+withTimeout :: Duration -> IO a -> IO a
+withTimeout t action = race timeout action >>= \case
+    Left () -> throwIO exceptionKexTimeout
+    Right a -> pure a
+    where
+        timeout = threadDelay $ fromIntegral $ asMicroSeconds t
 
 transportSendMessage :: Encoding msg => Transport -> msg -> IO ()
 transportSendMessage env msg =

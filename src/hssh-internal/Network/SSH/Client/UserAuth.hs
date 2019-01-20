@@ -12,7 +12,6 @@ import           Control.Applicative
 import           Control.Exception                     ( throwIO )
 import qualified Data.ByteString                       as BS
 import qualified Data.ByteString.Char8                 as BS8
-import qualified Data.ByteString.Short                 as SBS
 import           Data.Default
 import           Data.Function                         ( fix )
 import           Data.Maybe

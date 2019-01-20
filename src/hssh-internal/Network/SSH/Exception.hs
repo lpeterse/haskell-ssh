@@ -57,6 +57,10 @@ exceptionKexNoSignature :: Disconnect
 exceptionKexNoSignature =
     Disconnect Local DisconnectKeyExchangeFailed "no signature"
 
+exceptionKexTimeout :: Disconnect
+exceptionKexTimeout =
+    Disconnect Local DisconnectKeyExchangeFailed "timeout"
+
 exceptionKexNoCommonKexAlgorithm :: Disconnect
 exceptionKexNoCommonKexAlgorithm = 
     Disconnect Local DisconnectKeyExchangeFailed "no common kex algorithm"
