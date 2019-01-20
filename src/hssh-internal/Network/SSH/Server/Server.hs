@@ -17,13 +17,13 @@ import qualified System.Socket.Protocol.Default as S
 import qualified System.Socket.Type.Stream      as S
 
 import           Network.SSH.Agent
+import           Network.SSH.Exception
+import           Network.SSH.Address
 import           Network.SSH.Name
 import           Network.SSH.Server.Connection
 import           Network.SSH.Server.UserAuth
 import           Network.SSH.Stream
 import           Network.SSH.Transport
-import           Network.SSH.HostAddress
-import           Network.SSH.Exception
 
 -- | The server configuration.
 --
@@ -36,15 +36,15 @@ data ServerConfig state user
         { socketConfig     :: SocketConfig
         , transportConfig  :: TransportConfig
         , userAuthConfig   :: UserAuthConfig state user
-        , connectionConfig :: ConnectionConfig user
-        , onConnect        :: HostAddress -> IO (Maybe state)
-        , onDisconnect     :: HostAddress -> Maybe state -> Maybe user -> Disconnect -> IO ()
+        , connectionConfig :: ConnectionConfig state user
+        , onConnect        :: Address -> IO (Maybe state)
+        , onDisconnect     :: Address -> Maybe state -> Maybe user -> Disconnect -> IO ()
         }
 
 -- | The listening socket configuration.
 data SocketConfig
     = SocketConfig
-        { socketBindAddresses :: NonEmpty HostAddress
+        { socketBindAddresses :: NonEmpty Address
           -- ^ The addresses to listen on (default "*:2200").
           --
           --   This will listen on IPv4 and IPv6 when available. Use "0.0.0.0:2200"
@@ -70,7 +70,7 @@ instance Default (ServerConfig state user) where
 
 instance Default SocketConfig where
     def = SocketConfig
-        { socketBindAddresses = pure (HostAddress "*" 2200)
+        { socketBindAddresses = pure (Address "*" 2200)
         , socketBacklog       = 1024
         }
 
@@ -124,7 +124,7 @@ instance Default SocketConfig where
 --           pure ()
 --     | otherwise = pure Nothing
 -- @
-runServer :: IsAgent agent => ServerConfig state user -> agent -> IO ()
+runServer :: (IsAgent agent, HasName user) => ServerConfig state user -> agent -> IO ()
 runServer config agent = do
     addrs <- nub . fmap S.socketAddress <$> getAddressInfos
     bracket newAsyncSet cancelAsyncSet $ \tas ->
@@ -134,32 +134,32 @@ runServer config agent = do
         getAddressInfos :: IO [S.AddressInfo S.Inet6 S.Stream S.Default]
         getAddressInfos = concat <$> forM
             (toList $ socketBindAddresses $ socketConfig config)
-            (\(HostAddress (Host h) (Port p)) -> S.getAddressInfo (Just h) (Just $ BS8.pack $ show p) flags)
+            (\(Address (Name h) (Port p)) -> S.getAddressInfo (Just h) (Just $ BS8.pack $ show p) flags)
             -- Return both IPv4 and/or IPv6 addresses, but only when configured on the system.
             -- IPv4 addresses appear as IPv6 (IPv6-mapped), but they are perfectly reachable via IPv4.
             where flags = S.aiAll <> S.aiNumericService <> S.aiPassive <> S.aiV4Mapped <> S.aiAddressConfig
 
         serve :: (DuplexStream stream) => S.SocketAddress S.Inet6 -> stream -> IO ()
         serve peerAddr stream = do
-            tIdentity <- newTVarIO Nothing
-            ha <- toHostAddress <$> S.getNameInfo peerAddr (S.niNumericHost <> S.niNumericService)
+            tUser <- newTVarIO Nothing
+            ha <- toAddress <$> S.getNameInfo peerAddr (S.niNumericHost <> S.niNumericService)
             onConnect config ha >>= \case
                 Nothing -> onDisconnect config ha Nothing Nothing disconnectNotAllowed
-                Just st -> foobar tIdentity st ha >>= \case
+                Just state -> foobar state tUser ha >>= \case
                     Right () -> pure () -- FIXME
                     Left disconnect -> do
-                        identity <- readTVarIO tIdentity
-                        onDisconnect config ha (Just st) identity disconnect
+                        mUser <- readTVarIO tUser
+                        onDisconnect config ha (Just state) mUser disconnect
             where
-                toHostAddress ni = HostAddress
-                    (Host $ S.hostName ni)
+                toAddress ni = Address
+                    (Name $ S.hostName ni)
                     (Port $ fromIntegral $ S.inet6Port peerAddr)
-                foobar tIdentity st ha =
+                foobar state tUser ha =
                     withServerTransport (transportConfig config) stream (Agent agent) $ \transport session ->
-                    withAuthentication (userAuthConfig config) transport st ha session $ \case
-                        Name "ssh-connection" -> Just $ \identity -> do
-                            atomically $ writeTVar tIdentity (Just identity)
-                            serveConnection (connectionConfig config) transport identity
+                    withAuthentication (userAuthConfig config) transport state ha session $ \case
+                        Name "ssh-connection" -> Just $ \user -> do
+                            atomically $ writeTVar tUser (Just user)
+                            serveConnection (connectionConfig config) state user transport
                         _ -> Nothing
                 disconnectNotAllowed = Disconnect Local DisconnectHostNotAllowedToConnect mempty
 

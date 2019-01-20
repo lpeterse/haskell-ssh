@@ -9,13 +9,8 @@ module Network.SSH.Server (
     -- * Connection Layer
     , ConnectionConfig (..)
     -- ** Session
-    -- *** Request & Handler
-    , SessionRequest (..)
     , SessionHandler (..)
-
     -- ** Direct TCP/IP
-    -- *** Request & Handler
-    , DirectTcpIpRequest (..)
     , DirectTcpIpHandler (..)
     -- ** Forwarded TCP/IP
     , Switchboard

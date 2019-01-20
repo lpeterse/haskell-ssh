@@ -21,8 +21,9 @@ import           Test.Tasty.QuickCheck    as QC
 import           Test.QuickCheck          ( arbitraryBoundedEnum )
 import           Test.QuickCheck.Gen      ( Gen (..), chooseAny, vectorOf )
 
-import           Network.SSH.Message
 import           Network.SSH.Encoding
+import           Network.SSH.Address
+import           Network.SSH.Message
 import           Network.SSH.Name
 
 tests :: TestTree
@@ -235,8 +236,9 @@ instance Arbitrary ChannelOpen where
 instance Arbitrary ChannelOpenType where
     arbitrary = elements
         [ ChannelOpenSession
-        , ChannelOpenDirectTcpIp "localhost" 8080 "10.0.0.1" 73594
-        , ChannelOpenOther (ChannelType "other")
+        , ChannelOpenDirectTcpIp $ OpenDirectTcpIp (Address "localhost" 8080) (Address "10.0.0.1" 73594)
+        , ChannelOpenForwardedTcpIp $ OpenForwardedTcpIp (Address "localhost" 8080) (Address "10.0.0.1" 73594)
+        , ChannelOpenOther (Name "other")
         ]
 
 instance Arbitrary ChannelOpenConfirmation where
@@ -321,7 +323,6 @@ instance Arbitrary PtySettings where
         <*> elements [ "\129\NUL\NUL\150\NUL\128\NUL\NUL\150\NUL\SOH\NUL\NUL\NUL\ETX\STX\NUL\NUL\NUL\FS\ETX\NUL\NUL\NUL\DEL\EOT\NUL\NUL\NUL\NAK\ENQ\NUL\NUL\NUL\EOT\ACK\NUL\NUL\NUL\NUL\a\NUL\NUL\NUL\NUL\b\NUL\NUL\NUL\DC1\t\NUL\NUL\NUL\DC3\n\NUL\NUL\NUL\SUB\f\NUL\NUL\NUL\DC2\r\NUL\NUL\NUL\ETB\SO\NUL\NUL\NUL\SYN\DC2\NUL\NUL\NUL\SI\RS\NUL\NUL\NUL\SOH\US\NUL\NUL\NUL\NUL \NUL\NUL\NUL\NUL!\NUL\NUL\NUL\NUL\"\NUL\NUL\NUL\NUL#\NUL\NUL\NUL\NUL$\NUL\NUL\NUL\SOH%\NUL\NUL\NUL\NUL&\NUL\NUL\NUL\SOH'\NUL\NUL\NUL\NUL(\NUL\NUL\NUL\NUL)\NUL\NUL\NUL\SOH*\NUL\NUL\NUL\SOH2\NUL\NUL\NUL\SOH3\NUL\NUL\NUL\SOH4\NUL\NUL\NUL\NUL5\NUL\NUL\NUL\SOH6\NUL\NUL\NUL\SOH7\NUL\NUL\NUL\SOH8\NUL\NUL\NUL\NUL9\NUL\NUL\NUL\NUL:\NUL\NUL\NUL\NUL;\NUL\NUL\NUL\SOH<\NUL\NUL\NUL\SOH=\NUL\NUL\NUL\SOH>\NUL\NUL\NUL\NULF\NUL\NUL\NUL\SOHG\NUL\NUL\NUL\NULH\NUL\NUL\NUL\SOHI\NUL\NUL\NUL\NULJ\NUL\NUL\NUL\NULK\NUL\NUL\NUL\NULZ\NUL\NUL\NUL\SOH[\NUL\NUL\NUL\SOH\\\NUL\NUL\NUL\NUL]\NUL\NUL\NUL\NUL\NUL" ]
 
 deriving instance Arbitrary ChannelId
-deriving instance Arbitrary ChannelType
 
 instance Arbitrary Cookie where
     arbitrary = pure nilCookie

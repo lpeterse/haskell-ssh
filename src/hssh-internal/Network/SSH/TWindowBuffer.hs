@@ -24,6 +24,10 @@ data TWindowBufferException
 
 instance Exception TWindowBufferException where
 
+newTWindowBufferIO :: Word32 -> TVar Word32 -> IO TWindowBuffer
+newTWindowBufferIO capacity window = TWindowBuffer capacity window
+    <$> newTVarIO (Queue 0 False [] [])
+
 newTWindowBufferSTM :: Word32 -> TVar Word32 -> STM TWindowBuffer
 newTWindowBufferSTM capacity window = TWindowBuffer capacity window
     <$> newTVar (Queue 0 False [] [])

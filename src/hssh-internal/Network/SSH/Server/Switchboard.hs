@@ -3,13 +3,13 @@
 module Network.SSH.Server.Switchboard where
 
 import Control.Concurrent.STM
-import Control.Concurrent.STM.TVar
 import Control.Exception
 import Data.Map.Strict                 as M
 
 import Network.SSH.Message
-import Network.SSH.HostAddress
+import Network.SSH.Address
 import Network.SSH.Stream
+import Network.SSH.Name
 
 ---------------------------------------------------------------------------------------------------
 -- SWITCHBOARD
@@ -28,12 +28,11 @@ instance OutputStream S where
     send (S s) = send s
     sendUnsafe (S s) = sendUnsafe s
 
-data Switchboard
-    = Switchboard
-    { crFoo :: TVar (M.Map (UserName, HostAddress) (HostAddress -> IO (Maybe S)))
-    }
+newtype Switchboard = Switchboard (TVar (M.Map (UserName, Address) StreamServer))
 
 newtype StreamHandler a = StreamHandler (forall stream. DuplexStream stream => stream -> IO a)
+
+newtype StreamServer = StreamServer (forall a. Address -> StreamHandler a -> IO (Maybe a))
 
 data SwitchboardException
     = ConnectionRefused
@@ -44,25 +43,26 @@ instance Exception SwitchboardException where
 newSwitchboard :: IO Switchboard
 newSwitchboard = Switchboard <$> newTVarIO mempty
 
-requestForwarding :: DuplexStream stream =>
-    Switchboard -> UserName -> HostAddress -> (HostAddress -> IO (Maybe stream)) -> IO Bool
-requestForwarding sb user addr getStream = do
+requestForwarding :: Switchboard -> Name -> Address -> StreamServer -> IO Bool
+requestForwarding (Switchboard sb) user addr server = do
     atomically do
-        m <- readTVar (crFoo sb)
+        m <- readTVar sb
         case M.lookup (user, addr) m of
             Just {} -> pure False
             Nothing -> do
-                writeTVar (crFoo sb) $! M.insert (user, addr) (\oa -> (S <$>) <$> getStream oa) m
+                writeTVar sb $! M.insert (user, addr) server m
                 pure True
 
-cancelForwarding :: Switchboard -> UserName -> HostAddress -> IO ()
-cancelForwarding sb user addr = atomically do
-    n <- readTVar (crFoo sb)
-    writeTVar (crFoo sb) $! M.delete (user, addr) n
+cancelForwarding :: Switchboard -> Name -> Address -> IO ()
+cancelForwarding (Switchboard sb) user addr = do
+    putStrLn $ "CANCEL ------------------------------------------------: " ++ show user ++ show addr
+    atomically do
+        n <- readTVar sb
+        writeTVar sb $! M.delete (user, addr) n
 
-connect :: Switchboard -> UserName -> HostAddress -> HostAddress -> StreamHandler a -> IO a
-connect sb user destAddr origAddr (StreamHandler run) = do
-    m <- readTVarIO (crFoo sb)
+connect :: Switchboard -> Name -> Address -> Address -> StreamHandler a -> IO a
+connect (Switchboard sb) user destAddr origAddr handler = do
+    m <- readTVarIO sb
     case M.lookup (user, destAddr) m of
-        Nothing -> throwIO ConnectionRefused
-        Just getStream -> maybe (throwIO ConnectionRefused) (\(S s)-> run s) =<< getStream origAddr
+        Nothing  -> throwIO ConnectionRefused
+        Just (StreamServer serve) -> maybe (throwIO ConnectionRefused) pure =<< serve origAddr handler

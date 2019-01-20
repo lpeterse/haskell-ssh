@@ -1,14 +1,16 @@
 module Network.SSH.Name where
 
-import qualified Data.ByteArray        as BA
-import qualified Data.ByteString.Short as SBS
+import qualified Data.ByteString       as BS
 import           Data.String
 
-newtype Name = Name SBS.ShortByteString
-    deriving (Eq, Ord, Show)
-
-instance IsString Name where
-    fromString = Name . SBS.toShort . BA.pack . fmap (fromIntegral . fromEnum)
+newtype Name = Name BS.ByteString
+    deriving (Eq, Ord, Show, IsString)
 
 class HasName a where
     name :: a -> Name
+
+instance HasName Name where
+    name = id
+
+instance HasName () where
+    name = const (Name "()")

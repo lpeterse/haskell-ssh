@@ -18,7 +18,7 @@ import           Network.SSH.Client.HostKeyVerifier
 import           Network.SSH.Client.UserAuth
 import           Network.SSH.Duration
 import           Network.SSH.Exception
-import           Network.SSH.HostAddress
+import           Network.SSH.Address
 import           Network.SSH.Name
 import           Network.SSH.Stream
 import           Network.SSH.Transport
@@ -58,8 +58,8 @@ data ClientException
 
 instance Exception ClientException where
 
-runClient :: ClientConfig -> ClientIdentity -> HostAddress -> (Connection -> IO a) -> IO a
-runClient config identity addr@(HostAddress (Host host) (Port port)) handler = do
+runClient :: ClientConfig -> ClientIdentity -> Address -> (Connection -> IO a) -> IO a
+runClient config identity addr@(Address (Name host) (Port port)) handler = do
     addresses <- getAddresses
     bracket (connectAny addresses) S.close (handleStream handler)
     where

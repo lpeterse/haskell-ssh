@@ -57,7 +57,7 @@ internal-libraries:
       - Network.SSH.Client.HostKeyVerifier
       - Network.SSH.Client.UserAuth
       - Network.SSH.Duration
-      - Network.SSH.HostAddress
+      - Network.SSH.Address
       - Network.SSH.Server.Connection
       - Network.SSH.Server.UserAuth
       - Network.SSH.Server.Server

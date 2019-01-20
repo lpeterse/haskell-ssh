@@ -14,13 +14,13 @@ import           Data.Word
 import           System.FilePath
 import           System.Directory
 
-import Network.SSH.HostAddress
+import Network.SSH.Address
 import Network.SSH.Key
 import Network.SSH.Message
 import Network.SSH.Name
 import Network.SSH.Encoding
 
-type HostKeyVerifier = HostAddress -> PublicKey -> IO VerificationResult
+type HostKeyVerifier = Address -> PublicKey -> IO VerificationResult
 
 data VerificationResult
     = VerificationFailed BS.ByteString
@@ -57,8 +57,8 @@ data KnownHostName
     | KnownHostPlain BS.ByteString
     deriving (Eq, Show)
 
-matchKnownHostName :: HostAddress -> KnownHostName -> Bool
-matchKnownHostName (HostAddress (Host host) (Port port)) = \case
+matchKnownHostName :: Address -> KnownHostName -> Bool
+matchKnownHostName (Address (Name host) (Port port)) = \case
     KnownHostHMAC salt hash -> BA.eq hash (HMAC.hmac salt n :: HMAC.HMAC Hash.SHA1)
     KnownHostPlain knownName -> knownName == n
     where

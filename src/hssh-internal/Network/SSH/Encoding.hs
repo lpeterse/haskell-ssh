@@ -114,11 +114,11 @@ getString = getWord32 >>= getBytes
 {-# INLINEABLE getString #-}
 
 getName :: Get Name
-getName = Name <$> getShortString
+getName = Name <$> getString
 {-# INLINEABLE getName #-}
 
 putName :: B.Builder b => Name -> b
-putName (Name n) = putShortString n
+putName (Name n) = putString n
 {-# INLINEABLE putName #-}
 
 putBool :: B.Builder b => Bool -> b

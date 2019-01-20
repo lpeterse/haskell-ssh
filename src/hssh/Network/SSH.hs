@@ -28,15 +28,17 @@ module Network.SSH
       -- ** Duration
     , Duration (..)
     , seconds
-      -- ** HostAddress
-    , HostAddress (..)
+      -- ** Address
+    , Address (..)
+    , SourceAddress
+    , DestinationAddress
       -- ** Disconnect
     , Disconnect (..)
     , DisconnectParty (..)
     , DisconnectReason (..)
     , DisconnectMessage (..)
       -- ** Name
-    , Name ()
+    , Name (..)
     , UserName
     , ServiceName
     , HasName (..)
@@ -57,7 +59,7 @@ import Network.SSH.Algorithms
 import Network.SSH.Agent
 import Network.SSH.Environment
 import Network.SSH.Exception
-import Network.SSH.HostAddress
+import Network.SSH.Address
 import Network.SSH.Key
 import Network.SSH.Message
 import Network.SSH.Name

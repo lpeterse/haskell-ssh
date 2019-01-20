@@ -48,7 +48,7 @@ userPassword u p = def
 getLocalUserName :: IO UserName
 getLocalUserName  = do
     user <- fromMaybe "root" <$> lookupEnv "USER"
-    pure $ Name $ SBS.toShort $ BS8.pack user
+    pure $ Name $ BS8.pack user
 
 data AuthResponse
     = A1 UserAuthBanner

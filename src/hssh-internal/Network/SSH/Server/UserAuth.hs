@@ -11,11 +11,11 @@ import qualified Crypto.PubKey.Ed25519        as Ed25519
 import qualified Crypto.PubKey.RSA.PKCS15     as RSA.PKCS15
 import qualified Data.ByteString              as BS
 import           Data.Default
-import           Data.Word
 
+import           Network.SSH.Duration
 import           Network.SSH.Encoding
 import           Network.SSH.Exception
-import           Network.SSH.HostAddress
+import           Network.SSH.Address
 import           Network.SSH.Key
 import           Network.SSH.Message
 import           Network.SSH.Name
@@ -32,14 +32,14 @@ import           Network.SSH.Name
 -- is in progress (looking at you, libssh ;-)
 data UserAuthConfig state user
     = UserAuthConfig
-    {   onAuthRequest :: state -> HostAddress -> UserName -> ServiceName -> PublicKey -> IO (Maybe user)
+    {   onAuthRequest :: state -> Address -> UserName -> ServiceName -> PublicKey -> IO (Maybe user)
         -- ^ This handler will be called for each authentication attempt.
         --
         --  (1) The client might try several methods and keys: Just return `Nothing`
         --   for every request that is not sufficient to determine the user's
         --   identity.
         --
-        --   (2) When access shall be granted, return `Just`. The `state` may
+        --   (2) When access shall be granted, return `Just`. The `user` may
         --   contain whatever is desired; it may be just the `UserName`.
         --
         --   (3) When the client uses public key authentication, the transport layer
@@ -47,12 +47,12 @@ data UserAuthConfig state user
         --   corresponding private key (by requesting and validating a signature).
         --
         --   (4) The default rejects all authentication attempts unconditionally.
-    , userAuthMaxTime :: Word16
-        -- ^ Timeout for user authentication in seconds (default is 60).
+    , userAuthTimeout :: Duration
+        -- ^ Timeout for user authentication in seconds (default is 60 seconds).
         --
         --   (1) A @SSH_DISCONNECT_BY_APPLICATION@ will be sent to the client
         --   when the timeout occurs before successful authentication.
-    , userAuthMaxAttempts :: Word16
+    , userAuthMaxAttempts :: Int
         -- ^ A limit for the number of failed attempts per connection (default is 20).
         --
         --   (1) A @SSH_DISCONNECT_BY_APPLICATION@ will be sent to the client
@@ -62,13 +62,13 @@ data UserAuthConfig state user
 instance Default (UserAuthConfig state user) where
     def = UserAuthConfig
         { onAuthRequest       = \_ _ _ _ _-> pure Nothing
-        , userAuthMaxTime     = 60
+        , userAuthTimeout     = seconds 60
         , userAuthMaxAttempts = 20
         }
 
 withAuthentication ::
     forall stream state user a. (MessageStream stream) =>
-    UserAuthConfig state user -> stream -> state -> HostAddress -> SessionId ->
+    UserAuthConfig state user -> stream -> state -> SourceAddress -> SessionId ->
     (ServiceName -> Maybe (user -> IO a)) -> IO a
 withAuthentication config stream state addr session serviceHandler = do
     ServiceRequest srv <- receiveMessage stream
@@ -83,7 +83,7 @@ withAuthentication config stream state addr session serviceHandler = do
         _ -> throwIO exceptionServiceNotAvailable
     where
         maxAttempts = userAuthMaxAttempts config
-        timeout     = threadDelay $ 1000 * 1000 * fromIntegral (userAuthMaxTime config)
+        timeout     = threadDelay $ fromIntegral (asMicroSeconds $ userAuthTimeout config)
 
         sendSupportedAuthMethods =
             sendMessage stream $ UserAuthFailure [Name "publickey"] False

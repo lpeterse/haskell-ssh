@@ -13,7 +13,7 @@ import           Test.Tasty
 import           Test.Tasty.HUnit
 
 import           Network.SSH.Key
-import           Network.SSH.HostAddress
+import           Network.SSH.Address
 import           Network.SSH.Client.HostKeyVerifier
 
 import           Spec.Util
@@ -31,7 +31,7 @@ test01 = testCase "keyfile with sinlge ssh-ed25519 key shall match 'localhost'" 
     assertEqual "number of names" 1 (NE.length $ khNames x)
     let knownName :| _ = khNames x
     assertBool "hmac matches"
-        $ matchKnownHostName (HostAddress (Host "localhost") (Port 22)) knownName
+        $ matchKnownHostName (Address "localhost" 22) knownName
     case khPublicKey x of
         PublicKeyEd25519 {} -> pure ()
         _                   -> assertFailure "wrong public key type"

@@ -23,7 +23,7 @@ import           Network.SSH.Client
 
 main :: IO ()
 main = do
-    runClient config def (HostAddress "localhost" 22) $ \c ->
+    runClient config def (Address "localhost" 22) $ \c ->
         runExec c (Command "ls") $ SessionHandler $ \stdin stdout stderr exit -> do
             receive stdout 4096 >>= print
             atomically exit >>= print

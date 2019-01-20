@@ -57,17 +57,15 @@ data ConnectionConfig
     , channelMaxPacketSize  :: Word32
       -- ^ The maximum size of inbound channel data payload (default: 32 kB)
       --
-      --   Values that are larger than `channelMaxQueueSize` or the
-      --   maximum message size (35000 bytes) will be automatically adjusted
-      --   to the maximum possible value.
+      --   Maximum possible value is 32 kB and will be silently adjusted if larger.
     , getEnvironment        :: IO Environment
     }
 
 instance Default ConnectionConfig where
     def = ConnectionConfig
         { channelMaxCount      = 256
-        , channelMaxQueueSize  = 32 * 1024
-        , channelMaxPacketSize = 32 * 1024
+        , channelMaxQueueSize  = 32 * 1000
+        , channelMaxPacketSize = 32 * 1000
         , getEnvironment       = getDefaultEnvironment
         }
 
@@ -558,7 +556,7 @@ dispatchChannelRequestSTM c (ChannelRequest lid typ wantReply dat) =
                     Nothing -> throwSTM exceptionInvalidChannelRequest
                     Just (ChannelRequestExitSignal signame coredumped errmsg _) ->
                         void $ tryPutTMVar exit $ Left $ ExitSignal
-                            (Name signame)
+                            (Name $ SBS.fromShort signame)
                             coredumped
                             (SBS.fromShort errmsg)
                 ("exit-status", False) -> case runGet dat of

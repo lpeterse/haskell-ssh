@@ -48,6 +48,8 @@ module Network.SSH.Message
     -- ** ChannelOpen (90)
   , ChannelOpen (..)
   , ChannelOpenType (..)
+  , OpenDirectTcpIp (..)
+  , OpenForwardedTcpIp (..)
     -- ** ChannelOpenConfirmation (91)
   , ChannelOpenConfirmation (..)
     -- ** ChannelOpenFailure (92)
@@ -81,7 +83,6 @@ module Network.SSH.Message
     -- * Misc
   , AuthMethod (..)
   , ChannelId (..)
-  , ChannelType (..)
   , ChannelPacketSize
   , ChannelWindowSize
   , Cookie (), newCookie, nilCookie
@@ -106,8 +107,12 @@ module Network.SSH.Message
   , putEd25519PublicKey
   , getEd25519Signature
   , putEd25519Signature
+
+  -- * Specific message types
+  , ConnectionMessage (..)
   ) where
 
+import           Control.Applicative
 import           Control.Monad            (void, when)
 import           Crypto.Error
 import qualified Crypto.PubKey.Curve25519 as Curve25519
@@ -126,7 +131,7 @@ import           System.Exit
 import qualified Network.SSH.Builder as B
 import           Network.SSH.Exception
 import           Network.SSH.Encoding
-import           Network.SSH.HostAddress
+import           Network.SSH.Address
 import           Network.SSH.Key
 import           Network.SSH.Name
 
@@ -228,7 +233,7 @@ data GlobalRequest
 
 data GlobalRequestType
     = GlobalRequestTcpIpForward
-    { grBindAddress :: HostAddress
+    { grBindAddress :: Address
     }
     | GlobalRequestOther Name
     deriving (Eq, Show)
@@ -251,18 +256,22 @@ data ChannelOpen
 
 data ChannelOpenType
     = ChannelOpenSession
-    | ChannelOpenDirectTcpIp
-    { coDestinationAddress :: SBS.ShortByteString
-    , coDestinationPort    :: Word32
-    , coSourceAddress      :: SBS.ShortByteString
-    , coSourcePort         :: Word32
-    }
-    | ChannelOpenForwardedTcpIp
-    { coConnected          :: HostAddress
-    , coOrigin             :: HostAddress
-    }
-    | ChannelOpenOther ChannelType
+    | ChannelOpenDirectTcpIp    OpenDirectTcpIp
+    | ChannelOpenForwardedTcpIp OpenForwardedTcpIp
+    | ChannelOpenOther          Name
     deriving (Eq, Show)
+
+data OpenDirectTcpIp
+    = OpenDirectTcpIp
+    { odtiDst :: Address
+    , odtiSrc :: Address 
+    } deriving (Eq, Ord, Show)
+
+data OpenForwardedTcpIp
+    = OpenForwardedTcpIp
+    { oftiDst :: Address
+    , oftiSrc :: Address
+    } deriving (Eq, Ord, Show)
 
 data ChannelOpenConfirmation
     = ChannelOpenConfirmation ChannelId ChannelId ChannelWindowSize ChannelPacketSize
@@ -422,9 +431,6 @@ instance IsString Password where
     fromString = Password . SBS.toShort . fromString
 
 newtype SessionId         = SessionId         SBS.ShortByteString
-    deriving (Eq, Ord, Show)
-
-newtype ChannelType       = ChannelType       SBS.ShortByteString
     deriving (Eq, Ord, Show)
 
 newtype ChannelId         = ChannelId         Word32
@@ -602,7 +608,7 @@ instance Decoding UserAuthPublicKeyOk where
 
 instance Encoding GlobalRequest where
     put (GlobalRequest wantReply t) = putWord8 80 <> putName (name t) <> putBool wantReply <> case t of
-        GlobalRequestTcpIpForward (HostAddress (Host h) (Port p)) ->
+        GlobalRequestTcpIpForward (Address (Name h) (Port p)) ->
             putString h <> B.word32BE p
         _ -> mempty
 
@@ -612,7 +618,7 @@ instance Decoding GlobalRequest where
         n <- getName
         GlobalRequest <$> getBool <*> case n of
             Name "tcpip-forward" -> GlobalRequestTcpIpForward
-                <$> (HostAddress <$> (Host <$> getString) <*> (Port <$> getWord32))
+                <$> (Address <$> (Name <$> getString) <*> (Port <$> getWord32))
             _ -> pure $ GlobalRequestOther n  
 
 instance Encoding RequestSuccess where
@@ -631,21 +637,21 @@ instance Encoding ChannelOpen where
     put (ChannelOpen rc rw rp ct) =
         putWord8 90 <>
         (case ct of
-            ChannelOpenSession {} -> put (ChannelType "session")
-            ChannelOpenDirectTcpIp {} -> put (ChannelType "direct-tcpip")
-            ChannelOpenForwardedTcpIp {} -> put (ChannelType "forwarded-tcpip")
-            ChannelOpenOther t -> put t ) <>
+            ChannelOpenSession {} -> putName (Name "session")
+            ChannelOpenDirectTcpIp {} -> putName (Name "direct-tcpip")
+            ChannelOpenForwardedTcpIp {} -> putName (Name "forwarded-tcpip")
+            ChannelOpenOther t -> putName t ) <>
         put rc <>
         B.word32BE rw <>
         B.word32BE rp <>
         case ct of
             ChannelOpenSession {} -> mempty
-            ChannelOpenDirectTcpIp da dp sa sp ->
-                putShortString da <>
+            ChannelOpenDirectTcpIp (OpenDirectTcpIp (Address (Name da) (Port dp)) (Address (Name sa) (Port sp))) ->
+                putString da <>
                 B.word32BE dp <>
-                putShortString sa <>
+                putString sa <>
                 B.word32BE sp
-            ChannelOpenForwardedTcpIp (HostAddress (Host da) (Port dp)) (HostAddress (Host sa) (Port sp)) ->
+            ChannelOpenForwardedTcpIp (OpenForwardedTcpIp (Address (Name da) (Port dp)) (Address (Name sa) (Port sp))) ->
                 putString da <>
                 B.word32BE dp <>
                 putString sa <>
@@ -655,23 +661,21 @@ instance Encoding ChannelOpen where
 instance Decoding ChannelOpen where
     get = do
         expectWord8 90
-        ct <- get
+        ct <- getName
         rc <- get
         rw <- getWord32
         rp <- getWord32
         ChannelOpen rc rw rp <$> case ct of
-            ChannelType "session" ->
+            Name "session" ->
                 pure ChannelOpenSession
-            ChannelType "direct-tcpip" ->
-                ChannelOpenDirectTcpIp
-                    <$> getShortString
-                    <*> getWord32
-                    <*> getShortString
-                    <*> getWord32
-            ChannelType "forwarded-tcpip" ->
-                ChannelOpenForwardedTcpIp
-                    <$> (HostAddress <$> (Host <$> getString) <*> (Port <$> getWord32))
-                    <*> (HostAddress <$> (Host <$> getString) <*> (Port <$> getWord32))
+            Name "direct-tcpip" ->
+                ChannelOpenDirectTcpIp <$> (OpenDirectTcpIp
+                    <$> (Address <$> (Name <$> getString) <*> (Port <$> getWord32))
+                    <*> (Address <$> (Name <$> getString) <*> (Port <$> getWord32)))
+            Name "forwarded-tcpip" ->
+                ChannelOpenForwardedTcpIp <$> (OpenForwardedTcpIp
+                    <$> (Address <$> (Name <$> getString) <*> (Port <$> getWord32))
+                    <*> (Address <$> (Name <$> getString) <*> (Port <$> getWord32)))
             other ->
                 pure $ ChannelOpenOther other
 
@@ -829,12 +833,6 @@ instance Encoding ChannelId where
 instance Decoding ChannelId where
     get = ChannelId <$> getWord32
 
-instance Encoding ChannelType where
-    put (ChannelType x) = putShortString x
-
-instance Decoding ChannelType where
-    get = ChannelType <$> getShortString
-
 instance Encoding SessionId where
     put (SessionId x) = putShortString x
 
@@ -933,15 +931,15 @@ putNameList :: (B.Builder b) => [Name] -> b
 putNameList xs = B.word32BE (fromIntegral $ g xs) <> h xs
     where
         g [] = 0
-        g ys = sum ((\(Name y) -> SBS.length y) <$> ys) + length ys - 1
+        g ys = sum ((\(Name y) -> BS.length y) <$> ys) + length ys - 1
         h [] = mempty
-        h [Name y] = B.shortByteString y
-        h (Name y:ys) = B.shortByteString y <> B.word8 0x2c <> h ys
+        h [Name y] = B.byteString y
+        h (Name y:ys) = B.byteString y <> B.word8 0x2c <> h ys
 
 getNameList :: Get [Name]
 getNameList = do
     s <- getString :: Get BS.ByteString
-    pure $ Name . SBS.toShort <$> BS.split 0x2c s
+    pure $ Name <$> BS.split 0x2c s
 
 putCurve25519PublicKey :: B.Builder b => Curve25519.PublicKey -> b
 putCurve25519PublicKey = putString
@@ -995,3 +993,52 @@ getRsaPublicKey = do
         getIntegerAndSize = do
             ws <- dropWhile (== 0) . (BA.unpack :: BS.ByteString -> [Word8]) <$> getString -- remove leading 0 bytes
             pure (foldl' (\acc w8-> acc * 256 + fromIntegral w8) 0 ws, length ws)
+
+data ConnectionMessage
+    = M080 GlobalRequest
+    | M081 RequestSuccess
+    | M082 RequestFailure
+    | M090 ChannelOpen
+    | M091 ChannelOpenConfirmation
+    | M092 ChannelOpenFailure
+    | M093 ChannelWindowAdjust
+    | M094 ChannelData
+    | M095 ChannelExtendedData
+    | M096 ChannelEof
+    | M097 ChannelClose
+    | M098 ChannelRequest
+    | M099 ChannelSuccess
+    | M100 ChannelFailure
+    deriving (Eq, Show)
+
+instance Decoding ConnectionMessage where
+    get =   M080 <$> get
+        <|> M081 <$> get
+        <|> M082 <$> get
+        <|> M090 <$> get
+        <|> M091 <$> get
+        <|> M092 <$> get
+        <|> M093 <$> get
+        <|> M094 <$> get
+        <|> M095 <$> get
+        <|> M096 <$> get
+        <|> M097 <$> get
+        <|> M098 <$> get
+        <|> M099 <$> get
+        <|> M100 <$> get
+
+instance Encoding ConnectionMessage where
+    put (M080 x) = put x
+    put (M081 x) = put x
+    put (M082 x) = put x
+    put (M090 x) = put x
+    put (M091 x) = put x
+    put (M092 x) = put x
+    put (M093 x) = put x
+    put (M094 x) = put x
+    put (M095 x) = put x
+    put (M096 x) = put x
+    put (M097 x) = put x
+    put (M098 x) = put x
+    put (M099 x) = put x
+    put (M100 x) = put x
