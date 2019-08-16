@@ -1,4 +1,4 @@
-.PHONY: install test hpc hp doc
+.PHONY: install test hpc hp doc clean
 
 install:
 	stack install
@@ -18,3 +18,7 @@ hp:
 
 doc:
 	stack haddock
+
+clean:
+	stack clean
+	rm *.hp *.prof *.svg

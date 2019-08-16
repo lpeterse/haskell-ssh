@@ -69,7 +69,7 @@ test00 :: TestTree
 test00  = testCase "open one session channel (no handler, expect rejection)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxBufferSize = lws, channelMaxPacketSize = lps }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
     where
@@ -89,7 +89,7 @@ test01  = testCase "open one session channel (with handler)" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = \_ _ -> pure $ Just undefined
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
     where
@@ -110,7 +110,7 @@ test02  = testCase "open two session channels (with handler)" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = \_ _ -> pure $ Just undefined
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -138,7 +138,7 @@ test03  = testCase "open two session channels (exceed limit)" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = \_ _ -> pure $ Just undefined
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -164,7 +164,7 @@ test04  = testCase "open two session channels (close first, reuse first)" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = \_ _ -> pure $ Just undefined
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -190,7 +190,7 @@ test05 :: TestTree
 test05  = testCase "open unknown channel type" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxBufferSize = lws, channelMaxPacketSize = lps }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
     where
@@ -206,7 +206,7 @@ test06 :: TestTree
 test06  = testCase "close non-existing channel id" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config () () serverStream) $ \thread -> do
         sendMessage clientStream req0
         assertThrows "exp0" exp0 $ wait thread
     where
@@ -218,7 +218,7 @@ test07 :: TestTree
 test07  = testCase "close channel (don't reuse unless acknowledged)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxBufferSize = lws, channelMaxPacketSize = lps, onSessionRequest = handler }
-    withAsync (serveConnection config serverStream ()) $ const $ do
+    withAsync (serveConnection config () () serverStream) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -251,7 +251,7 @@ test08 :: TestTree
 test08  = testCase "close channel (reuse when acknowledged)" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxBufferSize = lws, channelMaxPacketSize = lps, onSessionRequest = handler }
-    withAsync (serveConnection config serverStream ()) $ const $ do
+    withAsync (serveConnection config () () serverStream) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -289,7 +289,7 @@ testRequest01 = testCase "reject unknown / unimplemented requests" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = \_ _ -> pure $ Just undefined
         }
-    withAsync (serveConnection config serverStream ()) $ const $ do
+    withAsync (serveConnection config () () serverStream) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -310,7 +310,7 @@ testRequestSession01 :: TestTree
 testRequestSession01 = testCase "env request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxBufferSize = lws, channelMaxPacketSize = lps, onSessionRequest = h }
-    withAsync (serveConnection config serverStream ()) $ const $ do
+    withAsync (serveConnection config () () serverStream) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -339,7 +339,7 @@ testRequestSession02 :: TestTree
 testRequestSession02 = testCase "pty request" $ do
     (serverStream,clientStream) <- newDummyTransportPair
     let config = def { channelMaxBufferSize = lws, channelMaxPacketSize = lps, onSessionRequest = h }
-    withAsync (serveConnection config serverStream ()) $ const $ do
+    withAsync (serveConnection config () () serverStream) $ const $ do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -381,7 +381,7 @@ testRequestSessionShell01 = testCase "handler exits with 0" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -412,7 +412,7 @@ testRequestSessionShell02 = testCase "handler exits with 1" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -443,7 +443,7 @@ testRequestSessionShell03 = testCase "handler exits with 0 after writing to stdo
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -478,7 +478,7 @@ testRequestSessionShell04 = testCase "handler exits with 0 after writing to stde
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -513,7 +513,7 @@ testRequestSessionShell05 = testCase "handler exits with 0 after echoing stdin t
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -550,7 +550,7 @@ testRequestSessionShell06 = testCase "handler throws exception" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -588,7 +588,7 @@ testRequestSessionShell07 = testCase "handler running while closed by client" $ 
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -624,7 +624,7 @@ testSessionData01 = testCase "honor remote max packet size" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -645,9 +645,9 @@ testSessionData01 = testCase "honor remote max packet size" $ do
         res0  = ChannelOpenConfirmation rid lid lws lps
         req1  = ChannelRequest lid "shell" True mempty
         res11 = ChannelSuccess rid
-        res12 = I094 $ ChannelData rid "A"
-        res13 = I094 $ ChannelData rid "B"
-        res14 = I094 $ ChannelData rid "C"
+        res12 = M094 $ ChannelData rid "A"
+        res13 = M094 $ ChannelData rid "B"
+        res14 = M094 $ ChannelData rid "C"
 
 testSessionData02 :: TestTree
 testSessionData02 = testCase "throw exception if local maxPacketSize is exeeded" $ do
@@ -664,7 +664,7 @@ testSessionData02 = testCase "throw exception if local maxPacketSize is exeeded"
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config () () serverStream) $ \thread -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -701,7 +701,7 @@ testSessionData03 = testCase "throw exception if remote sends data after eof" $ 
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config () () serverStream) $ \thread -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -746,7 +746,7 @@ testSessionFlowControl01 = testCase "adjust inbound window when buffer size + av
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -796,7 +796,7 @@ testSessionFlowControl02 = testCase "throw exception on inbound window size unde
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config () () serverStream) $ \thread -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -834,7 +834,7 @@ testSessionFlowControl03 = testCase "honor outbound window size and adjustment" 
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -879,7 +879,7 @@ testSessionFlowControl04 = testCase "remote adjusts window size to maximum" $ do
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \_ -> do
+    withAsync (serveConnection config () () serverStream) $ \_ -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1
@@ -916,7 +916,7 @@ testSessionFlowControl05 = testCase "throw exception if remote adjusts window si
             channelMaxPacketSize = lps,
             onSessionRequest = handler
         }
-    withAsync (serveConnection config serverStream ()) $ \thread -> do
+    withAsync (serveConnection config () () serverStream) $ \thread -> do
         sendMessage clientStream req0
         receiveMessage clientStream >>= assertEqual "res0" res0
         sendMessage clientStream req1

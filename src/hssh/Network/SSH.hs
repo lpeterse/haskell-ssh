@@ -1,10 +1,10 @@
 module Network.SSH 
     ( -- * Authentication & Identity
-      -- ** Keys & Agent
+      -- ** Agent
       IsAgent (..)
     , Agent (..)
+    -- ** KeyPair(s)
     , KeyPair (..)
-      -- ** newKeyPair
     , newKeyPair
       -- ** decodePrivateKeyFile
     , decodePrivateKeyFile
@@ -20,6 +20,7 @@ module Network.SSH
     , OutputStreamSTM (..)
     , sendAll
       -- * Transport
+      -- ** Config
     , TransportConfig (..)
       -- * Misc
       -- ** Command
