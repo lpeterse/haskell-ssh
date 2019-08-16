@@ -137,7 +137,7 @@ runServer config agent = do
             (\(Address (Name h) (Port p)) -> S.getAddressInfo (Just h) (Just $ BS8.pack $ show p) flags)
             -- Return both IPv4 and/or IPv6 addresses, but only when configured on the system.
             -- IPv4 addresses appear as IPv6 (IPv6-mapped), but they are perfectly reachable via IPv4.
-            where flags = S.aiAll <> S.aiNumericService <> S.aiPassive <> S.aiV4Mapped <> S.aiAddressConfig
+            where flags = S.aiAll <> S.aiNumericService <> S.aiPassive <> S.aiV4Mapped
 
         serve :: (DuplexStream stream) => S.SocketAddress S.Inet6 -> stream -> IO ()
         serve peerAddr stream = do

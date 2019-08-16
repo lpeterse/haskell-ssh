@@ -1,4 +1,4 @@
-resolver: lts-13.1
+resolver: lts-14.1
 packages:
 - .
 extra-deps:
@@ -6,4 +6,3 @@ extra-deps:
 #    commit: c616a6762ed30a726c2659072bfbe839c1b70dda
 - socket-0.8.2.0
 - socket-unix-0.2.0.0
-

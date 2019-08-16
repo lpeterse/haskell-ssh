@@ -60,6 +60,10 @@ cancelForwarding (Switchboard sb) user addr = do
         n <- readTVar sb
         writeTVar sb $! M.delete (user, addr) n
 
+getForwardings :: Switchboard -> IO [(Name, Address)]
+getForwardings (Switchboard sb) =
+    M.keys <$> readTVarIO sb
+
 connect :: Switchboard -> Name -> Address -> Address -> StreamHandler a -> IO a
 connect (Switchboard sb) user destAddr origAddr handler = do
     m <- readTVarIO sb

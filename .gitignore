@@ -5,3 +5,4 @@
 *.prof
 *.svg
 *.cabal
+*.lock

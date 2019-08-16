@@ -16,6 +16,7 @@ module Network.SSH.Server (
     , Switchboard
     , StreamHandler (..)
     , newSwitchboard
+    , getForwardings
     , connect
     ) where
 
